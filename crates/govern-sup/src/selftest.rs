@@ -26,6 +26,9 @@ const CHECKS: &[(&str, bool)] = &[
     ("write the tool's settings file", false),
     ("write outside the worktree", false),
     ("connect to the daemon's Unix socket", false),
+    // The route that defeats protect mode: asking systemd --user (on the session bus) to run
+    // something outside the sandbox. Checked only where the bus exists.
+    ("reach the session bus (systemd --user)", false),
     ("write into an input FIFO by path (#177)", false),
     ("connect to loopback TCP on a non-listed port", false),
     ("bind a TCP port", false),
@@ -59,6 +62,7 @@ fn attempt(name: &str, dir: &Path, wt: &Path, port: u16) -> bool {
         "write the tool's settings file" => write(&dir.join("settings.json")),
         "write outside the worktree" => write(&dir.join("outside.txt")),
         "connect to the daemon's Unix socket" => UnixStream::connect(dir.join("daemon.sock")).is_ok(),
+        "reach the session bus (systemd --user)" => session_bus().map(|b| UnixStream::connect(b).is_ok()).unwrap_or(false),
         "write into an input FIFO by path (#177)" => OpenOptions::new().write(true)
             .custom_flags(libc::O_NONBLOCK).open(dir.join("input.fifo")).is_ok(),
         "connect to loopback TCP on a non-listed port" => TcpStream::connect(("127.0.0.1", port)).is_ok(),
@@ -66,6 +70,13 @@ fn attempt(name: &str, dir: &Path, wt: &Path, port: u16) -> bool {
         "run a binary outside the exec list" => Command::new(dir.join("bin/not-allowed")).status().is_ok(),
         _ => false,
     }
+}
+
+/// The user's session bus socket, if this machine has one.
+fn session_bus() -> Option<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
+    let bus = PathBuf::from(runtime).join("bus");
+    bus.exists().then_some(bus)
 }
 
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
@@ -117,7 +128,9 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
     // "refused" inside the sandbox would prove nothing.
     let control = Command::new(me).arg("check").arg(dir).arg(port.to_string()).output().map_err(io)?;
     let broken: Vec<String> = String::from_utf8_lossy(&control.stdout).lines()
-        .filter_map(|l| l.split_once('\t')).filter(|(_, r)| *r != "worked").map(|(n, _)| n.to_string()).collect();
+        .filter_map(|l| l.split_once('\t'))
+        .filter(|(n, r)| *r != "worked" && !(*n == "reach the session bus (systemd --user)" && session_bus().is_none()))
+        .map(|(n, _)| n.to_string()).collect();
     if !control.status.success() || !broken.is_empty() {
         return Err(format!("self-test fixtures are broken (these failed even unsandboxed: {})", broken.join(", ")));
     }
