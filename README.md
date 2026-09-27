@@ -53,6 +53,17 @@ GovernCode checks Codex's measured usage against your Limit first, runs it in a 
 of its own inside the sandbox (it can write only the scope), shows every step that needs
 approval as a Gate, and applies nothing until you accept.
 
+### The Dashboard (desktop app, early)
+
+```sh
+npm run build -w apps/dashboard
+npm start -w apps/dashboard
+```
+
+It talks to the same `govd`: chat with the Controller and answer Gates inline, review
+Specs (diff, accept, discard), see Gates across projects and the Trace. The window's page
+has no access to your files or sockets; only the app's main process talks to `govd`.
+
 ## Plan
 
 | Phase | Delivers |
