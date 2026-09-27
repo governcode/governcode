@@ -72,8 +72,7 @@ async function crew(ctx: DelegationContext) {
   const out = [];
   for (const provider of Object.keys(ctx.usage)) {
     await measured(ctx, provider);
-    const probe = ctx.limits.admit(`probe-${provider}`, provider, 1);
-    ctx.limits.release(`probe-${provider}`);
+    const probe = ctx.limits.check(provider);
     out.push({ provider, available: probe.ok, ...(probe.ok ? {} : { reason: probe.reason, resetsAt: probe.resetsAt }) });
   }
   return { runners: out };

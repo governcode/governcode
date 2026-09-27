@@ -56,27 +56,47 @@ export class LimitGate {
 
   /** May a Spec reserving `requested` percent start on `provider`? Reserves it if so. */
   admit(spec: string, provider: string, requested: number): Verdict {
+    const { verdict, percent, baseline } = this.decide(provider, requested);
+    if (verdict.ok) this.inflight.set(spec, { provider, percent, baseline });
+    return verdict;
+  }
+
+  /** The verdict admit would give, reserving nothing (a probe must not leave a debit behind). */
+  check(provider: string, requested = 1): Verdict {
+    return this.decide(provider, requested).verdict;
+  }
+
+  private decide(provider: string, requested: number): { verdict: Verdict; percent: number; baseline: number } {
     const percent = Math.min(Math.max(requested, 1), this.config.maxSpecPercent); // clamp: a request, not authority
+    const no = (reason: string, resetsAt: string | null = null) => ({ verdict: { ok: false as const, provider, reason, resetsAt }, percent, baseline: 0 });
     if (this.config.unmetered.includes(provider)) {
-      this.inflight.set(spec, { provider, percent: 0, baseline: 0 });
-      return { ok: true, provider, note: "unmetered (opt-in): spend not tracked" };
+      return { verdict: { ok: true, provider, note: "unmetered (opt-in): spend not tracked" }, percent: 0, baseline: 0 };
     }
     const m = this.latest.get(provider);
-    if (!m || !m.readings.length) return { ok: false, provider, reason: "no usage source · held", resetsAt: null };
+    if (!m || !m.readings.length) return no("no usage source · held");
     if (this.now() - m.measuredAt > this.config.ttlMs) {
-      return { ok: false, provider, reason: `usage stale (measured ${Math.round((this.now() - m.measuredAt) / 1000)} s ago) · held`, resetsAt: null };
+      return no(`usage stale (measured ${Math.round((this.now() - m.measuredAt) / 1000)} s ago) · held`);
     }
-    const pending = [...this.inflight.values()].filter((f) => f.provider === provider).reduce((a, f) => a + f.percent, 0)
-      + this.debitFor(provider);
+    const pending = this.reserved(provider) + this.debitFor(provider);
     const ceiling = 100 - this.reserve(provider);
     for (const r of m.readings) {
       if (r.usedPercent + pending + percent > ceiling) {
-        return { ok: false, provider, resetsAt: r.resetsAt,
-          reason: `inside its ${this.reserve(provider)}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})` };
+        return no(`inside its ${this.reserve(provider)}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})`, r.resetsAt);
       }
     }
-    this.inflight.set(spec, { provider, percent, baseline: Math.max(...m.readings.map((r) => r.usedPercent)) });
-    return { ok: true, provider };
+    return { verdict: { ok: true, provider }, percent, baseline: Math.max(...m.readings.map((r) => r.usedPercent)) };
+  }
+
+  private reserved(provider: string): number {
+    return [...this.inflight.values()].filter((f) => f.provider === provider).reduce((a, f) => a + f.percent, 0);
+  }
+
+  /** What a Limits screen shows for one provider: the reading, the reserve, what is held back. */
+  view(provider: string) {
+    const m = this.latest.get(provider);
+    return { provider, unmetered: this.config.unmetered.includes(provider), reservePercent: this.reserve(provider),
+      measuredAt: m?.measuredAt ?? null, readings: m?.readings ?? [], reservedPercent: this.reserved(provider),
+      owedPercent: this.debitFor(provider), verdict: this.check(provider) };
   }
 
   /** While a Spec runs: has its provider crossed the line? Unknown now also means stop. */

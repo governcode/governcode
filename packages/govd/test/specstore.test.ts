@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, symlinkSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, renameSync, symlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as ss from "../src/specstore.ts";
@@ -80,4 +80,52 @@ test("limits: a failed reading holds, and finished Specs keep counting until the
   assert.ok(gate.admit("S-4", "codex", 10).ok, "60 + 20 + 10 = 90");
   gate.forget("codex");
   assert.equal(gate.admit("S-5", "codex", 1).ok, false, "forgotten means held");
+});
+
+test("limits: checking availability reserves nothing (crew probes left a 1% debit each)", () => {
+  const gate = new LimitGate();
+  gate.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 80, resetsAt: null }] });
+  for (let i = 0; i < 20; i++) assert.ok(gate.check("codex").ok);
+  assert.ok(gate.admit("S-1", "codex", 10).ok, "80 + 10 = 90: nothing owed from the checks");
+  const v = gate.view("codex");
+  assert.equal(v.reservedPercent, 10);
+  assert.equal(v.owedPercent, 0);
+  assert.equal(v.verdict.ok, false);
+  assert.equal(gate.view("gemini").verdict.ok, false, "unmeasured holds");
+});
+
+test("apply never writes through a dangling symlink, or into a project folder swapped for one", () => {
+  // Rattle: existsSync() is false for a dangling link, so a new file was written through it.
+  const proj = project();
+  const state = mkdtempSync(join(tmpdir(), "gc-state-"));
+  const outside = mkdtempSync(join(tmpdir(), "gc-outside-"));
+  const p = ss.specPaths(state, "S-0002");
+  ss.createWorkspace(proj, p);
+  const before = ss.snapshot(p, "before");
+  writeFileSync(join(p.work, "planted.txt"), "payload\n");
+  const after = ss.snapshot(p, "after", before);
+  symlinkSync(join(outside, "owned.txt"), join(proj, "planted.txt"));   // dangling: owned.txt does not exist
+  assert.throws(() => ss.applyToProject(p, proj, before, after), /symlink/);
+  assert.ok(!existsSync(join(outside, "owned.txt")), "nothing was written outside the project");
+  // The whole project folder replaced by a link to somewhere else.
+  const moved = proj + "-real";
+  renameSync(proj, moved);
+  symlinkSync(outside, proj);
+  assert.throws(() => ss.applyToProject(p, proj, before, after), /symlink/);
+  assert.deepEqual(readdirSync(outside), []);
+});
+
+test("a refused apply leaves no staged files behind", () => {
+  const proj = project();
+  const state = mkdtempSync(join(tmpdir(), "gc-state-"));
+  const p = ss.specPaths(state, "S-0003");
+  ss.createWorkspace(proj, p);
+  const before = ss.snapshot(p, "before");
+  writeFileSync(join(p.work, "a.txt"), "two\n");
+  writeFileSync(join(p.work, "src/b.txt"), "changed\n");
+  const after = ss.snapshot(p, "after", before);
+  writeFileSync(join(proj, "src/b.txt"), "edited by the user\n");
+  assert.throws(() => ss.applyToProject(p, proj, before, after), /changed since/);
+  assert.equal(readFileSync(join(proj, "a.txt"), "utf8"), "one\n", "all or nothing");
+  assert.ok(!readdirSync(proj).concat(readdirSync(join(proj, "src"))).some((f) => f.includes(".governcode-")));
 });

@@ -1,7 +1,7 @@
 // govd end to end with a fake supervisor and a fake Claude Code, so it runs anywhere.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
@@ -104,6 +104,17 @@ test("a turn streams, raises a Gate on the user's connection, and runs exactly w
   const kinds = d.ledger.events("tidepool", 20).map((e) => e.kind);
   assert.deepEqual(kinds.filter((k) => k.startsWith("turn.") || k.startsWith("project.")),
     ["project.created", "turn.started", "turn.text", "turn.completed"]);
+  c.end(); d.close();
+});
+
+test("a new project cannot reach a denied folder through a symlinked parent", async () => {
+  const d = daemon("smuggle");
+  await d.listen();
+  const c = client(join(root, "smuggle", "govd.sock"));
+  symlinkSync(join(root, "smuggle"), join(root, "smuggle-link"));   // govd's own state, behind a link
+  const r = await c.call("project.new", { name: "s", path: join(root, "smuggle-link", "p"), git: false });
+  assert.match(r.error?.message ?? "", /cannot be a project/);
+  assert.ok(!existsSync(join(root, "smuggle", "p")));
   c.end(); d.close();
 });
 

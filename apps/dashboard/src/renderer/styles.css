@@ -142,3 +142,11 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
   display: flex; flex-direction: column; gap: 6px; background: var(--bg); }
 .checkpoint .row { flex-wrap: wrap; }
 .checkpoint .undo-confirm { flex-basis: 100%; }
+
+/* Limits: one bar per usage window, with the reserve line drawn where holding starts. */
+.limit .window { display: grid; grid-template-columns: 110px 1fr 44px 150px; align-items: center; gap: 10px; }
+.limit .bar { position: relative; height: 8px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
+.limit .fill { height: 100%; border-radius: 4px; background: var(--accent); }
+.limit .fill.inside { background: var(--warn); }
+.limit .reserve { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--danger); }
+.view-head .btn { white-space: nowrap; }

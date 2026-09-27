@@ -10,11 +10,12 @@ import { Pipeline } from "./views/Pipeline.tsx";
 import { Gates } from "./views/Gates.tsx";
 import { Trace } from "./views/Trace.tsx";
 import { Checkpoints } from "./views/Checkpoints.tsx";
+import { Limits } from "./views/Limits.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import mark from "../../../../docs/brand/governcode-mark.svg";
 
-type View = "terminal" | "pipeline" | "checkpoints" | "gates" | "trace";
-const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["pipeline", "Pipeline"], ["checkpoints", "Checkpoints"], ["gates", "Gates"], ["trace", "Trace"]];
+type View = "terminal" | "pipeline" | "checkpoints" | "gates" | "limits" | "trace";
+const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["pipeline", "Pipeline"], ["checkpoints", "Checkpoints"], ["gates", "Gates"], ["limits", "Limits"], ["trace", "Trace"]];
 const HOME = "";
 
 
@@ -143,6 +144,7 @@ export function App() {
               onSend={send} onGate={(id, a) => markGate(project, id, a)} />}
             {view === "pipeline" && <Pipeline project={current?.name ?? null} live={live} />}
             {view === "checkpoints" && <Checkpoints project={current?.name ?? null} live={live} />}
+            {view === "limits" && <Limits />}
             {view === "gates" && <Gates gates={gates} onAnswered={() => void refreshGates()} />}
             {view === "trace" && <Trace project={current?.name ?? null} live={live} />}
           </>

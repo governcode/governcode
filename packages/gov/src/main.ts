@@ -141,6 +141,16 @@ async function main(argv: string[]): Promise<number> {
         console.log(`${r.id}: restored ${r.restored.length} file(s): ${r.restored.join(", ")}`);
         return 0;
       }
+      case "limits": {
+        const { providers } = await api.call("limits.list", { measure: true });
+        if (!providers.length) console.log(dim("no measured Runners"));
+        for (const x of providers) {
+          const windows = x.readings.map((r: any) => `${r.window} ${r.usedPercent}%${r.resetsAt ? ` (resets ${r.resetsAt})` : ""}`).join(", ") || "not measured";
+          const held = [x.reservedPercent ? `${x.reservedPercent}% reserved` : "", x.owedPercent ? `${x.owedPercent}% owed` : ""].filter(Boolean).join(", ");
+          console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${windows}  · keeps ${x.reservePercent}% back${held ? ` · ${held}` : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
+        }
+        return 0;
+      }
       case "specs": {
         const project = await currentProject(api);
         const { specs } = await api.call("spec.list", { project: project ?? undefined });
@@ -193,7 +203,7 @@ async function main(argv: string[]): Promise<number> {
         return r.ok ? 0 : 1;
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

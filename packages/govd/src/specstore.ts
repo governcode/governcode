@@ -4,8 +4,8 @@
 // call here uses a git directory govd created, plumbing that never runs filters, hooks or
 // external diff drivers, and a config that turns off anything that could run a program.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync,
-  unlinkSync, mkdtempSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync,
+  renameSync, rmSync, unlinkSync, mkdtempSync, writeSync } from "node:fs";
 import { join, relative, resolve, sep, dirname, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -128,46 +128,81 @@ function entryAt(p: SpecPaths, commit: string, path: string): Entry {
   return m ? { mode: m[1], oid: m[2] } : null;
 }
 
-/** Refuse any path that leaves the root or passes through a symlink. */
+/** Refuse any path that leaves the root or passes through a symlink, dangling ones included. */
 export function safeTarget(root: string, rel: string): string {
   if (isAbsolute(rel) || rel.split("/").some((c) => c === ".." || c === "")) throw new Error(`unsafe path ${rel}`);
+  if (lstatSync(root).isSymbolicLink()) throw new Error(`the project folder ${root} is now a symlink; refused`);
   const target = resolve(root, rel);
   let cur = root;
   for (const part of relative(root, target).split(sep)) {
     cur = join(cur, part);
-    if (existsSync(cur) && lstatSync(cur).isSymbolicLink()) throw new Error(`${rel} passes through a symlink; refused`);
+    const st = lstatOrNull(cur);
+    if (!st) break;                          // nothing further down exists yet
+    if (st.isSymbolicLink()) throw new Error(`${rel} passes through a symlink; refused`);
   }
   return target;
+}
+
+function lstatOrNull(p: string) {
+  try { return lstatSync(p); } catch { return null; }
 }
 
 /**
  * Apply a reviewed Spec to the project: for each changed file, the project must still hold the
  * `before` content (or not exist where before had nothing); then it gets exactly the `after`
- * bytes. Symlinks are never written. Nothing is changed unless every file passes.
+ * bytes. Symlinks are never written or followed. Every new file is staged first and the
+ * project re-checked, so a change that lands meanwhile stops the whole apply, not half of it.
  */
 export function applyToProject(p: SpecPaths, projectPath: string, before: string, after: string, since = "this Spec started"): string[] {
   const files = changedFiles(p, before, after);
-  const plan: Array<{ path: string; target: string; to: Entry }> = [];
+  const plan: Array<{ path: string; target: string; from: Entry; to: Entry; staged?: string }> = [];
   const conflicts: string[] = [];
+  const current = (target: string): string | null | undefined => {
+    const st = lstatOrNull(target);
+    if (!st) return null;
+    if (!st.isFile()) return undefined;      // a symlink, folder or device: never overwritten
+    return git(p.gitDir, ["hash-object", "--no-filters", "--stdin"], readFileSync(target)).toString().trim();
+  };
   for (const f of files) {
     const target = safeTarget(projectPath, f);
     const from = entryAt(p, before, f), to = entryAt(p, after, f);
     if (to?.mode === "120000" || from?.mode === "120000") throw new Error(`${f}: symlinks are not applied; review by hand`);
-    const exists = existsSync(target);
-    if (exists && !lstatSync(target).isFile()) { conflicts.push(`${f} (not a regular file in the project)`); continue; }
-    const current = exists ? git(p.gitDir, ["hash-object", "--no-filters", "--stdin"], readFileSync(target)).toString().trim() : null;
-    if ((from?.oid ?? null) !== current) { conflicts.push(f); continue; }
-    plan.push({ path: f, target, to });
+    const now = current(target);
+    if (now === undefined) { conflicts.push(`${f} (not a regular file in the project)`); continue; }
+    if ((from?.oid ?? null) !== now) { conflicts.push(f); continue; }
+    plan.push({ path: f, target, from, to });
   }
   if (conflicts.length) throw new Error(`the project changed since ${since}, so nothing was applied: ${conflicts.join(", ")}`);
-  for (const { path, target, to } of plan) {
-    safeTarget(projectPath, path);   // again, at write time: a symlink planted since the plan is refused
-    if (!to) { unlinkSync(target); continue; }
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, git(p.gitDir, ["cat-file", "blob", to.oid]));
-    chmodSync(target, to.mode === "100755" ? 0o755 : 0o644);
+  try {
+    for (const item of plan) {
+      if (!item.to) continue;
+      safeTarget(projectPath, item.path);
+      mkdirSync(dirname(item.target), { recursive: true });
+      safeTarget(projectPath, item.path);   // mkdir must not have gone through a link planted meanwhile
+      const staged = `${item.target}.governcode-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+      const fd = openSync(staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, item.to.mode === "100755" ? 0o755 : 0o644);
+      item.staged = staged;
+      try {
+        writeSync(fd, git(p.gitDir, ["cat-file", "blob", item.to.oid]));
+        fchmodSync(fd, item.to.mode === "100755" ? 0o755 : 0o644);   // exactly, whatever the umask
+      } finally { closeSync(fd); }
+    }
+    const moved = plan.filter((item) => safeTargetOk(projectPath, item.path) && (item.from?.oid ?? null) !== current(item.target)).map((item) => item.path);
+    if (moved.length) throw new Error(`the project changed while applying, so nothing was applied: ${moved.join(", ")}`);
+    for (const item of plan) {
+      if (item.staged) renameSync(item.staged, item.target);   // replaces, never follows
+      else unlinkSync(item.target);                            // removes a link itself, never its target
+      item.staged = undefined;
+    }
+  } finally {
+    for (const item of plan) if (item.staged) rmSync(item.staged, { force: true });
   }
   return files;
+}
+
+function safeTargetOk(root: string, rel: string): boolean {
+  safeTarget(root, rel);   // throws on a link planted since the plan
+  return true;
 }
 
 export function removeWorkspace(p: SpecPaths): void {

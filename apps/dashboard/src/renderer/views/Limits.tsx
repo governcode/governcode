@@ -1,0 +1,85 @@
+// Limits: each Runner's measured usage windows against its reserve, and whether a Spec may
+// start on it now. Measuring starts the tool briefly, so it happens on open and on request,
+// never on a timer; the Trace still refreshes what is shown.
+import { useCallback, useEffect, useState } from "react";
+import { call, clock, useWatch } from "../api.ts";
+import { Empty, Pill } from "../ui.tsx";
+
+type Reading = { window: string; usedPercent: number; resetsAt: string | null };
+export type ProviderLimit = {
+  provider: string; unmetered: boolean; reservePercent: number; measuredAt: number | null; readings: Reading[];
+  reservedPercent: number; owedPercent: number;
+  verdict: { ok: true; note?: string } | { ok: false; reason: string; resetsAt: string | null };
+};
+
+export function ago(ms: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+
+export function Limits() {
+  const [providers, setProviders] = useState<ProviderLimit[] | null>(null);
+  const [measuring, setMeasuring] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (measure: boolean) => {
+    if (measure) setMeasuring(true);
+    try {
+      setProviders((await call<{ providers: ProviderLimit[] }>("limits.list", { measure })).providers);
+      setError(null);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { if (measure) setMeasuring(false); }
+  }, []);
+
+  useEffect(() => { void load(true); }, [load]);
+  useWatch((w) => { if (w.kind === "trace" && w.event.kind.startsWith("spec.")) void load(false); });
+
+  return (
+    <section className="view">
+      <div className="view-head">
+        <h1>Limits</h1>
+        <span className="dim">a measured hold, not a billing ceiling: vendor reports lag, so a run can overshoot a little</span>
+        <span className="spacer" />
+        <button className="btn" disabled={measuring} onClick={() => load(true)}>{measuring ? "Measuring…" : "Measure now"}</button>
+      </div>
+      <div className="pad dim small">Unknown or stale (over 5 min) usage holds. Checked right before a Spec starts and while it runs. Paid API billing is never switched on.</div>
+      {error && <div className="error pad">{error}</div>}
+      {providers && !providers.length ? <Empty title="No measured Runners"><p className="dim">GovernCode can delegate only to Runners that report their usage.</p></Empty> : (
+        <div className="scroll">
+          {providers?.map((p) => (
+            <div key={p.provider} className="checkpoint limit">
+              <div className="row">
+                <b>{p.provider}</b>
+                <span className="dim small">Runner · keeps {p.reservePercent}% of every window back</span>
+                <span className="spacer" />
+                {p.unmetered ? <Pill tone="info">unmetered (opt-in)</Pill>
+                  : p.verdict.ok ? <Pill tone="ok">available</Pill>
+                  : <Pill tone="warn" title={p.verdict.reason}>held{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt)}` : ""}</Pill>}
+              </div>
+              {p.readings.map((r) => {
+                const inside = r.usedPercent > 100 - p.reservePercent;
+                return (
+                  <div key={r.window} className="window">
+                    <span className="mono small label">{r.window}</span>
+                    <div className="bar" role="meter" aria-label={`${p.provider} ${r.window}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={r.usedPercent}>
+                      <div className={`fill ${inside ? "inside" : ""}`} style={{ width: `${Math.min(100, r.usedPercent)}%` }} />
+                      <div className="reserve" style={{ left: `${100 - p.reservePercent}%` }} />
+                    </div>
+                    <span className={`mono small ${inside ? "warn" : ""}`}>{r.usedPercent}%</span>
+                    <span className="dim small">{r.resetsAt ? `resets ${clock(r.resetsAt)}` : ""}</span>
+                  </div>
+                );
+              })}
+              <div className="dim small">
+                {p.measuredAt ? `measured ${ago(p.measuredAt)}` : "never measured"}
+                {p.reservedPercent ? ` · ${p.reservedPercent}% reserved by running Specs` : ""}
+                {p.owedPercent ? ` · ${p.owedPercent}% still owed by finished Specs` : ""}
+                {!p.verdict.ok && ` · ${p.verdict.reason}`}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}

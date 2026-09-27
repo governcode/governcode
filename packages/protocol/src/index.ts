@@ -50,6 +50,8 @@ export const Params = {
   "gate.list": z.object({}),
   "spec.list": z.object({ project: ProjectName.optional() }),
   "turn.list": z.object({ project: ProjectName }),
+  // measure: read each Runner's usage now (starts its tool briefly); otherwise the last reading.
+  "limits.list": z.object({ measure: z.boolean().default(false) }),
   "turn.undo": z.object({ id: z.string().regex(/^T-\d+$/) }),
   "spec.diff": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),

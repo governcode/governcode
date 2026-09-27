@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { mkdirSync, rmSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method, type WatchEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
@@ -39,6 +39,9 @@ export class Daemon {
   private sockets = new Set<Socket>();
   private gates = new Map<string, Gate>();
   private limits = new LimitGate();
+  // Controller turns running per project: accept and undo wait for them, so a running tool
+  // cannot swap a folder for a symlink while govd writes into the project.
+  private turning = new Map<string, number>();
   private usage: Record<string, UsageSource> = {};
   private gateSeq = 0;
   /** Connections that called `watch`: each gets Trace appends and Gate changes pushed to it. */
@@ -103,6 +106,10 @@ export class Daemon {
     const pr = this.ledger.project(name);
     if (!pr) throw new RpcError(Errors.notFound, `no project ${name}`);
     return pr.path;
+  }
+
+  private notWhileTurning(project: string): void {
+    if (this.turning.get(project)) throw new RpcError(Errors.refused, `a Controller turn is running in ${project}; try again when it ends`);
   }
 
   /** A project folder becomes an AI tool's writable root, so some folders never can. */
@@ -193,6 +200,7 @@ export class Daemon {
         const path = resolve(p.path);
         if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists; use project.open`);
         this.checkProjectPath(path);
+        this.checkProjectPath(realAncestor(path));   // a symlinked parent must not smuggle in a denied folder
         mkdirSync(path, { recursive: true });
         if (p.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
         return { project: L.addProject(p.name, path, "project.created") };
@@ -213,6 +221,13 @@ export class Daemon {
         return { events: L.events(p.project, p.limit) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
+      case "limits.list": {
+        if (p.measure) await Promise.all(Object.values(this.usage).map(async (src) => {
+          const m = await src.read();
+          if (m) this.limits.record(m); else this.limits.forget(src.provider);   // unknown holds
+        }));
+        return { providers: Object.keys(this.usage).map((name) => this.limits.view(name)) };
+      }
       case "spec.list":
         return { specs: L.specs(p.project) };
       case "turn.list": {
@@ -228,6 +243,7 @@ export class Daemon {
           throw new RpcError(Errors.refused, `${p.id} was already undone`);
         }
         const project = ev.project;
+        this.notWhileTurning(project);
         const path = this.projectPath(project);
         // Restore the before-state, only where the project still holds exactly the after-state.
         const files = this.refusing(() => applyToProject(turnStore(this.stateDir(), project, path), path, String(ev.data.after), String(ev.data.before), p.id));
@@ -242,6 +258,7 @@ export class Daemon {
       case "spec.accept": {
         const s = this.specOr404(p.id);
         if (s.status !== "needs-review") throw new RpcError(Errors.refused, `${s.id} is ${s.status}, not waiting for review`);
+        this.notWhileTurning(s.project);
         const files = this.refusing(() => accept(this.stateDir(), this.projectPath(s.project), s));
         L.updateSpec(s.id, { status: "accepted" }, "user");
         discard(this.stateDir(), s.id);
@@ -278,6 +295,7 @@ export class Daemon {
     const actor = `controller · ${project.controller.provider}`;
     const L = this.ledger;
     L.append(project.name, "turn.started", "user", { prompt: prompt.slice(0, 2000), controller: project.controller, home: !found });
+    if (found) this.turning.set(found.name, (this.turning.get(found.name) ?? 0) + 1);
     // A tool that can write the project can write .git; hooks and some config keys would then
     // run later, outside the sandbox, when the user runs git. Undone after every turn.
     const guard = found ? gitGuard(project.path) : null;
@@ -302,6 +320,7 @@ export class Daemon {
             notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical });
           }),
           done: (r) => {
+            if (found) this.turning.set(found.name, (this.turning.get(found.name) ?? 1) - 1);
             if (store && before) {
               try {
                 const after = snapshot(store, `turns/${turnId}/after`, before, [...new Set([...(files ?? []), ...(projectFiles(found!.path) ?? [])])]);
@@ -332,4 +351,11 @@ export class Daemon {
       }
     });
   }
+}
+
+/** The path with its deepest existing ancestor resolved through any symlinks. */
+function realAncestor(path: string): string {
+  let head = path, tail: string[] = [];
+  while (!existsSync(head) && head !== dirname(head)) { tail.unshift(basename(head)); head = dirname(head); }
+  return join(realpathSync(head), ...tail);
 }

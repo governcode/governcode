@@ -44,6 +44,9 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.throws(() => checkCall("turn.list", {}));
   assert.deepEqual(checkCall("turn.undo", { id: "T-12" }).params, { id: "T-12" });
   for (const id of ["S-0001", "T-", "T-1; rm", 7]) assert.throws(() => checkCall("turn.undo", { id }));
+  // Limits: a read; measuring is an explicit boolean.
+  assert.deepEqual(checkCall("limits.list", undefined).params, { measure: false });
+  assert.throws(() => checkCall("limits.list", { measure: "yes" }));
 });
 
 test("an ask needs a well-formed id and prompt; Home is a null project", () => {
@@ -110,6 +113,9 @@ test("against the real govd: hello reports the sandbox, and lists come back", as
       const req = checkCall(m, {});
       assert.ok(await link.call(req.method, req.params));
     }
+    // Unmeasured Runners show as held, not available (unknown usage holds).
+    const { providers } = await link.call("limits.list", { measure: false }) as { providers: Array<{ provider: string; verdict: { ok: boolean } }> };
+    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false]]);
     // The link watches: a project made and a Controller chosen arrive as live Trace events.
     const seen: string[] = [];
     link.onWatch((w) => { if (w.kind === "trace") seen.push(w.event.kind); });

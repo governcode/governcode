@@ -48,7 +48,10 @@ Snapshots hash raw bytes with git plumbing under a config that runs no program, 
 filter, hook or diff driver ever executes. A change outside the scope is never offered.
 `gov accept` applies exactly the reviewed after-state of each changed file, bound to the
 snapshot ids stored on the Spec, and only if the project still holds the before-state;
-otherwise nothing is applied.
+otherwise nothing is applied. It never writes or follows a symlink (a dangling one
+included): new content is staged beside each file with `O_NOFOLLOW`, every file is checked
+again, and only then renamed into place. Accept and undo wait while a Controller turn is
+running in that project, since a running tool could swap a folder for a symlink mid-write.
 
 ## Checkpoints of Controller turns
 
