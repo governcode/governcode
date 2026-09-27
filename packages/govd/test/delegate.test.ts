@@ -127,3 +127,17 @@ test("delegate: the controller socket offers nothing else (no Gate answers)", as
   const r = await t.call("gate.answer", { id: "G-1", answer: "allow" });
   assert.match(r.error.message, /not offered to the Controller/);
 });
+
+test("codex MCP approvals match exactly one in-flight GovernCode call, or are declined", async () => {
+  const { matchMcpApproval } = await import("../src/codex.ts");
+  const ask = (tool: string, extra: object = {}) => ({ serverName: "governcode", _meta: { codex_approval_kind: "mcp_tool_call" },
+    message: `Allow the governcode MCP server to run tool "${tool}"?`, ...extra });
+  const one = new Map([["c1", { tool: "delegate", args: { to: "codex" } }]]);
+  assert.deepEqual(matchMcpApproval(ask("delegate"), one), { tool: "delegate", args: { to: "codex" } });
+  assert.equal(matchMcpApproval(ask("crew"), one), null, "a tool that was not announced");
+  assert.equal(matchMcpApproval(ask("delegate", { serverName: "other" }), one), null, "another server");
+  assert.equal(matchMcpApproval({ ...ask("delegate"), message: 'x "delegate" y' }, one), null, "not Codex's exact sentence");
+  assert.equal(matchMcpApproval({ ...ask("delegate"), _meta: {} }, one), null, "not a tool-call approval");
+  const two = new Map([["c1", { tool: "delegate", args: { to: "a" } }], ["c2", { tool: "delegate", args: { to: "b" } }]]);
+  assert.equal(matchMcpApproval(ask("delegate"), two), null, "two parallel calls: ambiguous, so declined");
+});

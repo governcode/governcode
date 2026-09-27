@@ -138,6 +138,18 @@ export function codexUsage(o: { supervisor: string; policyDir: string; stateDir:
   };
 }
 
+/**
+ * Which in-flight GovernCode tool call a Codex MCP approval is for, or null (then declined).
+ * Codex names the tool only in its prose message, so it must match that exact sentence and
+ * exactly one started, unfinished call of that tool; another server's request never matches.
+ */
+export function matchMcpApproval(p: any, inflight: Map<string, { tool: string; args: unknown }>): { tool: string; args: unknown } | null {
+  if (p?.serverName !== "governcode" || p?._meta?.codex_approval_kind !== "mcp_tool_call") return null;
+  const named = /^Allow the governcode MCP server to run tool "([A-Za-z0-9_]+)"\?$/.exec(String(p.message ?? ""))?.[1];
+  const candidates = [...inflight.values()].filter((c) => c.tool === named);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
 export async function runCodexTurn(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string;
   readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks;
@@ -174,21 +186,24 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   });
   // Codex asks before each MCP tool call. Only GovernCode's own server is answered, and only
   // for the tool call it just announced (the request names the tool only in prose).
-  let announced: { tool: string; args: unknown } | null = null;
+  // Every GovernCode call Codex has started and not finished; an approval must match exactly
+  // one of them, or it is declined (two parallel calls could otherwise swap their arguments).
+  const inflight = new Map<string, { tool: string; args: unknown }>();
   const mcpApproval = async (p: any) => {
-    const tool = announced?.tool;
-    if (!o.mcp || p.serverName !== "governcode" || p._meta?.codex_approval_kind !== "mcp_tool_call" || !tool
-        || !String(p.message ?? "").includes(`"${tool}"`)) return { action: "decline" };
+    const announced = o.mcp ? matchMcpApproval(p, inflight) : null;
+    if (!announced) return { action: "decline" };
+    const tool = announced.tool;
     // Proposing creates nothing (the user's Create does), so it needs no Gate, as for Claude.
-    if (tool === "propose_project" && o.mcp.mode === "home") return { action: "accept", content: {} };
-    const input = (announced!.args ?? {}) as Record<string, unknown>;
+    if (tool === "propose_project" && o.mcp?.mode === "home") return { action: "accept", content: {} };
+    const input = (announced.args ?? {}) as Record<string, unknown>;
     const req: GateRequest = { id: `mcp-${Date.now()}`, tool: `governcode ${tool}`, input, canonical: canonical({ tool: `governcode ${tool}`, input }) };
     return { action: (await o.hooks.gate(req)) === "allow" ? "accept" : "decline", content: {} };
   };
   rpc.onNotify((m) => {
     const p = m.params ?? {};
-    if (m.method === "item/started" && p.item?.type === "mcpToolCall") {
-      announced = p.item.server === "governcode" ? { tool: String(p.item.tool), args: p.item.arguments } : null;
+    if (p.item?.type === "mcpToolCall" && p.item.server === "governcode" && p.item.id) {
+      if (m.method === "item/started") inflight.set(String(p.item.id), { tool: String(p.item.tool), args: p.item.arguments });
+      if (m.method === "item/completed") inflight.delete(String(p.item.id));
     }
     if (m.method === "item/agentMessage/delta" && typeof p.delta === "string") text += p.delta;
     if (m.method === "item/completed" && p.item?.type === "agentMessage" && typeof p.item.text === "string") {
