@@ -11,7 +11,8 @@ import { resolve } from "node:path";
 import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { Ledger } from "./ledger.ts";
-import { runTurn } from "./claude.ts";
+import { runTurn, type TurnHooks } from "./claude.ts";
+import { runCodexTurn } from "./codex.ts";
 
 export type DaemonOptions = { socketPath: string; ledgerPath: string; policyDir: string; homeDir: string; supervisor: string; version: string };
 
@@ -170,10 +171,7 @@ export class Daemon {
     // run later, outside the sandbox, when the user runs git. Undone after every turn.
     const guard = found ? gitGuard(project.path) : null;
     return new Promise((done) => {
-      runTurn({
-        supervisor: this.opts.supervisor, policyDir: this.opts.policyDir, worktree: project.path,
-        readOnly: "readOnly" in project, controller: project.controller, prompt,
-        hooks: {
+      const hooks: TurnHooks = {
           text: (t) => { notify({ kind: "text", text: t }); L.append(project.name, "turn.text", actor, { text: t.slice(0, 4000) }); },
           tool: (name, input) => { notify({ kind: "tool", name, input }); L.append(project.name, "turn.tool", actor, { name }); },
           gate: (req) => new Promise((answer) => {
@@ -189,8 +187,14 @@ export class Daemon {
             L.append(project.name, r.ok ? "turn.completed" : "turn.failed", actor, { summary: r.summary.slice(0, 2000) });
             done(r);
           },
-        },
-      });
+      };
+      const common = { supervisor: this.opts.supervisor, policyDir: this.opts.policyDir, worktree: project.path,
+        readOnly: "readOnly" in project, prompt, hooks };
+      if (project.controller.provider === "codex") {
+        void runCodexTurn({ ...common, stateDir: resolve(this.opts.ledgerPath, ".."), model: project.controller.model, effort: project.controller.effort });
+      } else {
+        runTurn({ ...common, controller: project.controller });
+      }
     });
   }
 }

@@ -9,7 +9,7 @@ export const FEATURES = ["projects", "trace", "ask", "gates", "home"] as const;
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
 export const ControllerChoice = z.object({
-  provider: z.literal("claude-code"), // phase 0 ships one driver
+  provider: z.enum(["claude-code", "codex"]),
   model: z.string().min(1).max(80),
   effort: Effort.nullable(),
 });
