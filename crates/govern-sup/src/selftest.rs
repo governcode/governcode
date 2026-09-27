@@ -137,11 +137,15 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
 
     let mut all_ok = seen.len() == CHECKS.len();
     let mut rows = Vec::new();
-    for (name, expect_allowed) in CHECKS {
+    // Below Landlock ABI 9 the sandbox refuses every new Unix socket (seccomp), so a listed
+    // socket is expected to be refused there too: stricter, never looser.
+    let abi = crate::sandbox::kernel_abi();
+    for (name, allowed) in CHECKS {
+        let expect_allowed = if *name == "connect to a Unix socket the policy lists" { abi >= 9 } else { *allowed };
         let worked = seen.iter().find(|(n, _)| n == name).map(|(_, w)| *w);
-        let ok = worked == Some(*expect_allowed);
+        let ok = worked == Some(expect_allowed);
         all_ok &= ok;
-        rows.push((name, *expect_allowed, worked, ok));
+        rows.push((name, expect_allowed, worked, ok));
     }
     if json {
         let items: Vec<_> = rows.iter().map(|(n, allowed, worked, ok)| serde_json::json!({
