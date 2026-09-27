@@ -132,3 +132,13 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .hint { font-size: 11px; }
 .check { display: flex; align-items: center; gap: 8px; }
 .row.end { justify-content: flex-end; }
+
+/* Checkpoints */
+.checkpoint { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+.checkpoint .files { color: var(--text); overflow-wrap: anywhere; }
+.checkpoint-line { padding-left: 94px; font-size: 12px; }
+.linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; }
+.undo-confirm { border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; padding: 8px 10px; margin-top: 4px;
+  display: flex; flex-direction: column; gap: 6px; background: var(--bg); }
+.checkpoint .row { flex-wrap: wrap; }
+.checkpoint .undo-confirm { flex-basis: 100%; }

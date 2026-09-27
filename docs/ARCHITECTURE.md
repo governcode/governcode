@@ -64,7 +64,8 @@ JSON-RPC 2.0, one object per line. `hello` returns the protocol number, a featur
 the sandbox status; clients check features, not versions. Methods: `project.list`,
 `project.new`, `project.open`, `controller.set`, `ask` (streams `event` notifications),
 `gate.list`, `gate.answer`, `trace.list`, `spec.list`, `spec.diff`, `spec.accept`,
-`spec.discard`, and `watch`: after it, the connection also receives every Trace append
+`spec.discard`, `turn.list` (a project's Checkpoints: id, time, files, whether undone),
+`turn.undo`, and `watch`: after it, the connection also receives every Trace append
 (`{kind: "trace", event}`) and a `{kind: "gates"}` nudge whenever a Gate opens or is
 settled, so clients update without polling. Parameters are validated with Zod schemas in
 `packages/protocol`.

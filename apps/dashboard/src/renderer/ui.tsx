@@ -62,7 +62,7 @@ export function GateCard(props: { id: string; tool: string; canonical: string; p
 }
 
 /** A button that asks once more before it acts. */
-export function ConfirmButton(props: { label: string; confirm: string; tone: "ok" | "danger"; disabled?: boolean; onConfirm: () => void }) {
+export function ConfirmButton(props: { label: string; confirm: ReactNode; tone: "ok" | "danger"; disabled?: boolean; onConfirm: () => void }) {
   const [asking, setAsking] = useState(false);
   if (!asking) return <button className={`btn btn-${props.tone}`} disabled={props.disabled} onClick={() => setAsking(true)}>{props.label}</button>;
   return (
@@ -92,6 +92,44 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
     <div className="empty">
       <div className="empty-title">{title}</div>
       {children}
+    </div>
+  );
+}
+
+/**
+ * Undo of one Controller turn: a two-step confirm that names exactly the files govd will
+ * restore, and govd's refusal (a file changed since, already undone) shown inline.
+ */
+export function UndoCheckpoint({ id, files, compact, onUndone }: { id: string; files: string[]; compact?: boolean; onUndone: (restored: string[]) => void }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const undo = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await call<{ id: string; restored: string[] }>("turn.undo", { id });
+      setAsking(false);
+      onUndone(r.restored);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  if (!asking) {
+    return <span className="undo">
+      {compact ? <button className="linkish" onClick={() => setAsking(true)}>Undo</button>
+        : <button className="btn btn-danger" onClick={() => setAsking(true)}>Undo</button>}
+      {error && <span className="error"> {error}</span>}
+    </span>;
+  }
+  return (
+    <div className="undo-confirm">
+      <div>Restore {files.length === 1 ? "this file" : `these ${files.length} files`} to how they were before {id}:</div>
+      <div className="mono small">{files.join("  ")}</div>
+      <div className="dim small">Nothing is restored if any of them changed since {id}.</div>
+      <div className="row">
+        <button className="btn btn-danger btn-solid" disabled={busy} onClick={undo}>Yes, undo {id}</button>
+        <button className="btn" disabled={busy} onClick={() => { setAsking(false); setError(null); }}>Cancel</button>
+        {error && <span className="error">{error}</span>}
+      </div>
     </div>
   );
 }

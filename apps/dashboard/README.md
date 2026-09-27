@@ -10,6 +10,10 @@ Controller, asks, Gates, Specs, the Trace), nothing more. Electron shell, React 
   appears inline with the exact canonical request; **Allow once** or **Deny**.
 - **Pipeline**: the Specs and their status. Select one for its details and **Diff**;
   **Accept** applies it to the project, **Discard** throws it away (both ask to confirm).
+- **Checkpoints**: the selected project's Controller turns that changed files (id, time,
+  files). **Undo** names exactly the files it will restore and asks to confirm; govd refuses,
+  and the Dashboard shows why, if any of them changed since. The Terminal also shows a
+  "Checkpoint T-n · k files · Undo" line after each such turn.
 - **Gates**: every Gate waiting, from any project, answerable here too.
 - **Trace**: the history, newest first, in local 24-hour time, with filter chips.
 

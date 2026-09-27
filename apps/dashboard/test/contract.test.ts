@@ -5,7 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -38,6 +39,11 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.ok(checkCall("controller.set", { project: "demo", controller: { provider: "codex", model: "gpt-5.5", effort: null } }));
   assert.throws(() => checkCall("controller.set", { project: "demo", controller: { provider: "other", model: "m", effort: null } }));
   assert.throws(() => checkCall("controller.set", { project: "demo", controller: { provider: "codex", model: "m", effort: "huge" } }));
+  // Checkpoints.
+  assert.deepEqual(checkCall("turn.list", { project: "demo" }).params, { project: "demo" });
+  assert.throws(() => checkCall("turn.list", {}));
+  assert.deepEqual(checkCall("turn.undo", { id: "T-12" }).params, { id: "T-12" });
+  for (const id of ["S-0001", "T-", "T-1; rm", 7]) assert.throws(() => checkCall("turn.undo", { id }));
 });
 
 test("an ask needs a well-formed id and prompt; Home is a null project", () => {
@@ -142,4 +148,59 @@ test("the built preload needs only electron and exposes exactly the Dashboard AP
   await exposed.governcode.ask("a1", null, "hi");
   await exposed.governcode.pickFolder();
   assert.deepEqual(JSON.parse(JSON.stringify(invoked)), [[Channel.call, "gate.list", {}], [Channel.ask, "a1", null, "hi"], [Channel.pickFolder]]);
+});
+
+test("against the real govd: a Controller turn's Checkpoint is listed, undone once, and refused after", async () => {
+  // A fake supervisor and a fake Controller that edits README.md and adds notes.txt.
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const exe = (name: string, body: string) => { const p = join(bin, name); writeFileSync(p, body); chmodSync(p, 0o755); return p; };
+  const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\nshift 4\nexec "$@"\n`);
+  exe("claude", `#!/usr/bin/env node
+const fs = require("node:fs");
+require("node:readline").createInterface({ input: process.stdin }).on("line", () => {
+  fs.writeFileSync("README.md", "# changed by the controller\\n");
+  fs.writeFileSync("notes.txt", "new\\n");
+  process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "edited" }) + "\\n");
+  process.exit(0);
+});
+`);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  const d = new Daemon({ socketPath: join(dir, "cp-run", "govd.sock"), ledgerPath: join(dir, "cp-state", "trace.sqlite"),
+    policyDir: join(dir, "cp-state", "pol"), homeDir: join(dir, "cp-state", "home"), supervisor, version: "t" });
+  d.selftest();
+  await d.listen();
+  const link = new GovdLink(join(dir, "cp-run", "govd.sock"));
+  const call = (m: string, p: unknown) => { const r = checkCall(m, p); return link.call<any>(r.method, r.params); };
+  try {
+    await link.start();
+    const taken: string[] = [];
+    link.onWatch((w) => { if (w.kind === "trace" && w.event.kind === "checkpoint.taken") taken.push(String(w.event.data.turn)); });
+    for (const name of ["cp", "cp2"]) {
+      const proj = join(dir, name);
+      await call("project.new", { name, path: proj, git: true });
+      writeFileSync(join(proj, "README.md"), "# original\n");
+      execFileSync("git", ["-C", proj, "add", "-A"]);
+      const ask = checkAsk("a1", name, "edit things");
+      assert.equal((await link.ask(ask.params, () => {})).ok, true);
+    }
+    const [t] = (await call("turn.list", { project: "cp" })).turns;
+    assert.deepEqual([...t.files].sort(), ["README.md", "notes.txt"]);
+    assert.equal(t.undone, false);
+    assert.equal(taken.length, 2, "each Checkpoint arrives on the watch stream");
+    const u = await call("turn.undo", { id: t.id });
+    assert.deepEqual([...u.restored].sort(), ["README.md", "notes.txt"]);
+    assert.equal(readFileSync(join(dir, "cp", "README.md"), "utf8"), "# original\n");
+    assert.equal((await call("turn.list", { project: "cp" })).turns[0].undone, true);
+    await assert.rejects(call("turn.undo", { id: t.id }), /already undone/);
+    // The user kept working after the turn: govd refuses, and says why.
+    const [t2] = (await call("turn.list", { project: "cp2" })).turns;
+    writeFileSync(join(dir, "cp2", "notes.txt"), "the user kept working\n");
+    await assert.rejects(call("turn.undo", { id: t2.id }), /changed since.*notes\.txt/);
+  } finally {
+    process.env.PATH = oldPath;
+    link.stop();
+    d.close();
+  }
 });

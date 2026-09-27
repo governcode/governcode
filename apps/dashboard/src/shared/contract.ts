@@ -21,7 +21,7 @@ export const Channel = {
  * own, forwarded as `onWatch`.
  */
 export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "controller.set", "gate.list",
-  "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "trace.list"] as const;
+  "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "trace.list", "turn.list", "turn.undo"] as const;
 export type Callable = (typeof CALLABLE)[number];
 
 export function isCallable(m: unknown): m is Callable {

@@ -2,7 +2,7 @@
 // they happen; a Gate appears inline with the exact request and waits for an answer.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { controllerLabel, type Gate, type Project } from "../api.ts";
-import { GateCard, Pill, type GateState } from "../ui.tsx";
+import { GateCard, Pill, UndoCheckpoint, type GateState } from "../ui.tsx";
 
 export type Entry =
   | { t: "you"; text: string }
@@ -10,6 +10,7 @@ export type Entry =
   | { t: "tool"; name: string }
   | { t: "gate"; id: string; tool: string; canonical: string; arrived: number; answered?: "allow" | "deny" }
   | { t: "spec"; id: string; to: string; brief: string; lines: string[] }
+  | { t: "checkpoint"; id: string; files: string[]; undone?: boolean }
   | { t: "done"; ok: boolean; summary: string }
   | { t: "error"; text: string };
 export type Thread = { entries: Entry[]; busy: boolean };
@@ -56,6 +57,12 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
               <div key={i} className="spec-card">
                 <div className="spec-head"><b className="mono">{e.id}</b> <span className="dim">→ Runner ·</span> <b>{e.to}</b> <span className="dim">{e.brief.slice(0, 160)}</span></div>
                 {e.lines.slice(-12).map((l, j) => <div key={j} className="spec-line mono dim">{l.slice(0, 300)}</div>)}
+              </div>
+            );
+            case "checkpoint": return (
+              <div key={i} className="checkpoint-line">
+                <span className="mono">Checkpoint {e.id}</span> <span className="dim">· {e.files.length} file{e.files.length === 1 ? "" : "s"} ·</span>{" "}
+                {e.undone ? <span className="dim">undone</span> : <UndoCheckpoint id={e.id} files={e.files} compact onUndone={() => {}} />}
               </div>
             );
             case "done": return <div key={i} className={`done ${e.ok ? "dim" : "error"}`}>{e.ok ? "— done" : `— failed: ${e.summary}`}</div>;

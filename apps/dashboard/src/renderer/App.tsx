@@ -9,11 +9,12 @@ import { Terminal, type Entry, type Thread } from "./views/Terminal.tsx";
 import { Pipeline } from "./views/Pipeline.tsx";
 import { Gates } from "./views/Gates.tsx";
 import { Trace } from "./views/Trace.tsx";
+import { Checkpoints } from "./views/Checkpoints.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import mark from "../../../../docs/brand/governcode-mark.svg";
 
-type View = "terminal" | "pipeline" | "gates" | "trace";
-const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["pipeline", "Pipeline"], ["gates", "Gates"], ["trace", "Trace"]];
+type View = "terminal" | "pipeline" | "checkpoints" | "gates" | "trace";
+const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["pipeline", "Pipeline"], ["checkpoints", "Checkpoints"], ["gates", "Gates"], ["trace", "Trace"]];
 const HOME = "";
 
 
@@ -60,6 +61,13 @@ export function App() {
   useWatch((w) => {
     if (w.kind === "gates") void refreshGates();
     else if (w.event.kind.startsWith("project.") || w.event.kind === "controller.set") void loadProjects();
+    else if (w.event.project && (w.event.kind === "checkpoint.taken" || w.event.kind === "checkpoint.undone")) {
+      // A Controller turn's Checkpoint, shown in that project's Terminal (and marked when undone).
+      const d = w.event.data, turn = String(d.turn), files = Array.isArray(d.files) ? d.files.map(String) : [];
+      push(w.event.project, (t) => w.event.kind === "checkpoint.taken"
+        ? { ...t, entries: [...t.entries, { t: "checkpoint", id: turn, files }] }
+        : { ...t, entries: t.entries.map((e) => e.t === "checkpoint" && e.id === turn ? { ...e, undone: true } : e) });
+    }
   });
 
   const push = useCallback((key: string, f: (t: Thread) => Thread) => {
@@ -134,6 +142,7 @@ export function App() {
               thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
               onSend={send} onGate={(id, a) => markGate(project, id, a)} />}
             {view === "pipeline" && <Pipeline project={current?.name ?? null} live={live} />}
+            {view === "checkpoints" && <Checkpoints project={current?.name ?? null} live={live} />}
             {view === "gates" && <Gates gates={gates} onAnswered={() => void refreshGates()} />}
             {view === "trace" && <Trace project={current?.name ?? null} live={live} />}
           </>

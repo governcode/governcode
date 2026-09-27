@@ -84,6 +84,11 @@ export class Daemon {
     chmodSync(this.opts.socketPath, 0o600);
   }
 
+  /** A rule saying no (the project changed, a path is unsafe) is a refusal, not a crash. */
+  private refusing<T>(f: () => T): T {
+    try { return f(); } catch (e) { throw new RpcError(Errors.refused, e instanceof Error ? e.message : String(e)); }
+  }
+
   private stateDir(): string {
     return resolve(this.opts.ledgerPath, "..");
   }
@@ -210,19 +215,23 @@ export class Daemon {
         return this.ask(p.project, p.prompt, notify, sock);
       case "spec.list":
         return { specs: L.specs(p.project) };
-      case "turn.list":
-        return { turns: L.events(p.project, 1000).filter((e) => e.kind === "checkpoint.taken")
-          .map((e) => ({ id: e.data.turn, at: e.ts, files: e.data.files })) };
+      case "turn.list": {
+        const events = L.events(p.project, 1000);
+        const undone = new Set(events.filter((e) => e.kind === "checkpoint.undone").map((e) => e.data.turn));
+        return { turns: events.filter((e) => e.kind === "checkpoint.taken")
+          .map((e) => ({ id: e.data.turn, at: e.ts, files: e.data.files, undone: undone.has(e.data.turn) })) };
+      }
       case "turn.undo": {
         const ev = L.events(undefined, 5000).find((e) => e.kind === "checkpoint.taken" && e.data.turn === p.id);
         if (!ev || !ev.project) throw new RpcError(Errors.notFound, `no Checkpoint ${p.id}`);
         if (L.events(ev.project, 5000).some((e) => e.kind === "checkpoint.undone" && e.data.turn === p.id)) {
           throw new RpcError(Errors.refused, `${p.id} was already undone`);
         }
-        const path = this.projectPath(ev.project);
+        const project = ev.project;
+        const path = this.projectPath(project);
         // Restore the before-state, only where the project still holds exactly the after-state.
-        const files = applyToProject(turnStore(this.stateDir(), ev.project, path), path, String(ev.data.after), String(ev.data.before));
-        L.append(ev.project, "checkpoint.undone", "user", { turn: p.id, files });
+        const files = this.refusing(() => applyToProject(turnStore(this.stateDir(), project, path), path, String(ev.data.after), String(ev.data.before), p.id));
+        L.append(project, "checkpoint.undone", "user", { turn: p.id, files });
         return { id: p.id, restored: files };
       }
       case "spec.diff": {
@@ -233,7 +242,7 @@ export class Daemon {
       case "spec.accept": {
         const s = this.specOr404(p.id);
         if (s.status !== "needs-review") throw new RpcError(Errors.refused, `${s.id} is ${s.status}, not waiting for review`);
-        const files = accept(this.stateDir(), this.projectPath(s.project), s);
+        const files = this.refusing(() => accept(this.stateDir(), this.projectPath(s.project), s));
         L.updateSpec(s.id, { status: "accepted" }, "user");
         discard(this.stateDir(), s.id);
         return { id: s.id, applied: files };

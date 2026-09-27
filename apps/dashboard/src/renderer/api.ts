@@ -18,6 +18,7 @@ export async function call<T>(method: Callable, params?: Record<string, unknown>
 
 export type Controller = { provider: string; model: string; effort: string | null };
 export type Project = { name: string; path: string; created: string; controller: Controller };
+export type Turn = { id: string; at: string; files: string[]; undone?: boolean };
 export type Gate = { id: string; project: string | null; tool: string; canonical: string; opened: string };
 export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "undone" | "failed";
 export type Spec = {

@@ -57,6 +57,8 @@ test("a Controller turn's changes are checkpointed and can be undone exactly onc
   assert.ok(!existsSync(join(proj, "notes.txt")));
   const again = await c.call("turn.undo", { id: turns[0].id });
   assert.match(again.error.message, /already undone/);
+  assert.equal(turns[0].undone, false);
+  assert.equal((await c.call("turn.list", { project: "proj" })).result.turns[0].undone, true);
   c.end(); d.close();
 });
 

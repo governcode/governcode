@@ -139,7 +139,7 @@ export function safeTarget(root: string, rel: string): string {
  * `before` content (or not exist where before had nothing); then it gets exactly the `after`
  * bytes. Symlinks are never written. Nothing is changed unless every file passes.
  */
-export function applyToProject(p: SpecPaths, projectPath: string, before: string, after: string): string[] {
+export function applyToProject(p: SpecPaths, projectPath: string, before: string, after: string, since = "this Spec started"): string[] {
   const files = changedFiles(p, before, after);
   const plan: Array<{ path: string; target: string; to: Entry }> = [];
   const conflicts: string[] = [];
@@ -153,7 +153,7 @@ export function applyToProject(p: SpecPaths, projectPath: string, before: string
     if ((from?.oid ?? null) !== current) { conflicts.push(f); continue; }
     plan.push({ path: f, target, to });
   }
-  if (conflicts.length) throw new Error(`the project changed since this Spec started, so nothing was applied: ${conflicts.join(", ")}`);
+  if (conflicts.length) throw new Error(`the project changed since ${since}, so nothing was applied: ${conflicts.join(", ")}`);
   for (const { target, to } of plan) {
     if (!to) { unlinkSync(target); continue; }
     mkdirSync(dirname(target), { recursive: true });
