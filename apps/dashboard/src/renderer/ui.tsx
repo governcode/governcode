@@ -1,6 +1,7 @@
 // Small shared pieces: status pills, the Gate card, a two-step confirm, the diff view.
-import { useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { call, clock } from "./api.ts";
+import { parseDiff, sideBySide, type DiffLine } from "../shared/diff.ts";
 
 export function Pill({ tone, children, title }: { tone: "ok" | "warn" | "danger" | "info" | "accent" | "dim"; children: ReactNode; title?: string }) {
   return <span className={`pill pill-${tone}`} title={title}>{children}</span>;
@@ -74,16 +75,54 @@ export function ConfirmButton(props: { label: string; confirm: ReactNode; tone: 
   );
 }
 
+/** The review diff: a summary per file (jumps to it), then each file Unified or Side by side. */
 export function DiffView({ diff }: { diff: string }) {
-  if (!diff) return <div className="dim pad">(no changes)</div>;
+  const files = useMemo(() => parseDiff(diff), [diff]);
+  const [mode, setMode] = useState<"unified" | "split">("split");
+  const refs = useRef<Record<string, HTMLDivElement | null>>({});
+  if (!files.length) return <div className="dim pad">(no changes)</div>;
+  const num = (n: number | null) => <span className="ln">{n ?? ""}</span>;
+  const cls = (l: DiffLine | null) => !l ? "d-empty" : l.kind === "add" ? "d-add" : l.kind === "del" ? "d-del" : "";
   return (
-    <pre className="code diff">
-      {diff.split("\n").map((line, i) => {
-        const cls = line.startsWith("+++") || line.startsWith("---") || /^(diff |index |new file mode|deleted file mode|similarity |rename )/.test(line) ? "d-head"
-          : line.startsWith("@@") ? "d-hunk" : line.startsWith("+") ? "d-add" : line.startsWith("-") ? "d-del" : "";
-        return <div key={i} className={cls}>{line || " "}</div>;
-      })}
-    </pre>
+    <div className="review">
+      <div className="row review-bar">
+        <div className="file-chips">
+          {files.map((f) => (
+            <button key={f.path} className="chip mono" onClick={() => refs.current[f.path]?.scrollIntoView({ block: "start" })}>
+              {f.path.split("/").pop()} {f.binary ? <span className="dim">binary</span> : <><span className="ok">+{f.added}</span> <span className="danger">−{f.removed}</span></>}
+            </button>
+          ))}
+        </div>
+        <span className="spacer" />
+        <div className="seg" role="group" aria-label="Diff layout">
+          <button className={mode === "split" ? "on" : ""} aria-pressed={mode === "split"} onClick={() => setMode("split")}>Side by side</button>
+          <button className={mode === "unified" ? "on" : ""} aria-pressed={mode === "unified"} onClick={() => setMode("unified")}>Unified</button>
+        </div>
+      </div>
+      {files.map((f) => (
+        <div key={f.path} className="diff-file" ref={(el) => { refs.current[f.path] = el; }}>
+          <div className="diff-file-head mono"><b>{f.path}</b> {!f.binary && <><span className="ok">+{f.added}</span> <span className="danger">−{f.removed}</span></>}</div>
+          {f.binary ? <div className="dim pad">Binary file changed; not shown.</div>
+            : mode === "unified" || f.added === 0 || f.removed === 0 ? (   // one-sided changes read best unified
+              <pre className="code diff">
+                {f.hunks.map((h, i) => [
+                  <div key={`h${i}`} className="d-hunk">{h.header}</div>,
+                  ...h.lines.map((l, j) => <div key={`${i}.${j}`} className={cls(l)}>{num(l.old)}{num(l.new)}<span>{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}{l.text}</span></div>),
+                ])}
+              </pre>
+            ) : (
+              <pre className="code diff diff-split">
+                {sideBySide(f).map((r, i) => "hunk" in r
+                  ? <div key={i} className="d-hunk full">{r.hunk}</div>
+                  : <div key={i} className="pair">
+                      <div className={cls(r.left)}>{num(r.left?.old ?? null)}<span>{r.left?.text ?? ""}</span></div>
+                      <div className={cls(r.right)}>{num(r.right?.new ?? null)}<span>{r.right?.text ?? ""}</span></div>
+                    </div>)}
+              </pre>
+            )}
+        </div>
+      ))}
+    </div>
   );
 }
 

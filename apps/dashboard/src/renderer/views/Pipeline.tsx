@@ -24,6 +24,9 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
   });
 
   const spec = specs?.find((s) => s.id === selected) ?? null;
+  // The review queue: Specs waiting for a decision, oldest first, to step through.
+  const queue = (specs ?? []).filter((s) => s.status === "needs-review").reverse();
+  const at = spec ? queue.findIndex((s) => s.id === spec.id) : -1;
 
   return (
     <section className="view">
@@ -31,6 +34,13 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
         <h1>Pipeline</h1>
         <span className="dim">{project ? `Specs for ${project}` : "Specs in every project"}</span>
         <span className="spacer" />
+        {queue.length > 0 && (
+          <span className="row small">
+            <span className="dim">{at >= 0 ? `${at + 1} of ${queue.length} waiting for review` : `${queue.length} waiting for review`}</span>
+            <button className="btn" disabled={at <= 0 && at !== -1} onClick={() => setSelected(queue[at <= 0 ? 0 : at - 1].id)}>{at === -1 ? "Review" : "Prev"}</button>
+            {at !== -1 && <button className="btn" disabled={at >= queue.length - 1} onClick={() => setSelected(queue[at + 1].id)}>Next</button>}
+          </span>
+        )}
         <button className="btn" onClick={load}>Refresh</button>
       </div>
       {error && <div className="error pad">{error}</div>}
