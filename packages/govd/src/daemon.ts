@@ -1,12 +1,15 @@
 // govd: the daemon. A Unix socket in a 0700 directory, JSON-RPC 2.0 one object per line.
-// Sandboxed AI tools cannot open Unix sockets at all (docs/SANDBOX.md, invariant 5), so every
-// connection here is the user (the CLI now, apps later).
+// Sandboxed AI tools cannot connect to it: Landlock allows only the Unix sockets their
+// policy names (or, on older kernels, seccomp refuses Unix sockets altogether), so every
+// connection here is the user (the CLI now, apps later). docs/SANDBOX.md, invariant 5.
 import { createServer, type Server, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import { mkdirSync, rmSync, existsSync, statSync, chmodSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, Request, RpcError, type Method } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method } from "@governcode/protocol";
+import { gitGuard } from "./gitguard.ts";
 import { Ledger } from "./ledger.ts";
 import { runTurn } from "./claude.ts";
 
@@ -50,6 +53,19 @@ export class Daemon {
     this.server = createServer((sock) => this.serve(sock));
     await new Promise<void>((ok) => this.server!.listen(this.opts.socketPath, ok));
     chmodSync(this.opts.socketPath, 0o600);
+  }
+
+  /** A project folder becomes an AI tool's writable root, so some folders never can. */
+  private checkProjectPath(path: string): void {
+    const home = homedir();
+    const state = resolve(this.opts.ledgerPath, "..");
+    const runtime = resolve(this.opts.socketPath, "..");
+    const never = ["/", home, state, runtime, ...[".ssh", ".gnupg", ".config", ".local", ".claude", ".aws", ".kube",
+      ".docker", ".password-store"].map((d) => resolve(home, d))];
+    const inside = (a: string, b: string) => a === b || a.startsWith(b + "/");
+    if (never.some((n) => path === n) || [state, runtime, ...never.slice(3)].some((n) => inside(path, n)) || inside(state, path) || inside(runtime, path)) {
+      throw new RpcError(Errors.refused, `${path} cannot be a project: an AI tool would get write access to it`);
+    }
   }
 
   /** Home's Controller: the most recently chosen project Controller, else the default. */
@@ -107,14 +123,17 @@ export class Daemon {
       case "project.new": {
         const path = resolve(p.path);
         if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists; use project.open`);
+        this.checkProjectPath(path);
         mkdirSync(path, { recursive: true });
         if (p.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
         return { project: L.addProject(p.name, path, "project.created") };
       }
       case "project.open": {
-        const path = resolve(p.path);
-        if (!existsSync(path) || !statSync(path).isDirectory()) throw new RpcError(Errors.notFound, `${path} is not a folder`);
-        const name = p.name ?? path.split("/").pop()!.toLowerCase().replace(/[^a-z0-9._-]/g, "-");
+        if (!existsSync(resolve(p.path)) || !statSync(resolve(p.path)).isDirectory()) throw new RpcError(Errors.notFound, `${resolve(p.path)} is not a folder`);
+        const path = realpathSync(resolve(p.path));   // a symlink must not smuggle in another folder
+        this.checkProjectPath(path);
+        const name = p.name ?? path.split("/").pop()!.toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/^[^a-z0-9]+/, "");
+        if (!ProjectName.safeParse(name).success) throw new RpcError(Errors.badParams, `cannot derive a project name from ${path}; pass one`);
         return { project: L.addProject(name, path, "project.opened") };
       }
       case "controller.set":
@@ -147,6 +166,9 @@ export class Daemon {
     const actor = `controller · ${project.controller.provider}`;
     const L = this.ledger;
     L.append(project.name, "turn.started", "user", { prompt: prompt.slice(0, 2000), controller: project.controller, home: !found });
+    // A tool that can write the project can write .git; hooks and some config keys would then
+    // run later, outside the sandbox, when the user runs git. Undone after every turn.
+    const guard = found ? gitGuard(project.path) : null;
     return new Promise((done) => {
       runTurn({
         supervisor: this.opts.supervisor, policyDir: this.opts.policyDir, worktree: project.path,
@@ -162,6 +184,8 @@ export class Daemon {
             notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical });
           }),
           done: (r) => {
+            const scrubbed = guard?.restore() ?? [];
+            if (scrubbed.length) L.append(project.name, "git.scrubbed", "govd", { removed: scrubbed });
             L.append(project.name, r.ok ? "turn.completed" : "turn.failed", actor, { summary: r.summary.slice(0, 2000) });
             done(r);
           },

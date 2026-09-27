@@ -69,6 +69,7 @@ export type TraceEvent = {
     | "project.created" | "project.opened" | "controller.set"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
+    | "git.scrubbed"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;

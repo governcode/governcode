@@ -11,12 +11,17 @@ mode is not a boundary; this sandbox is.
 1. **One channel.** A sandboxed process talks to `govd` only through file descriptors
    `govern-sup` hands it (its stdin/stdout pipes and, later, one inherited socketpair for
    MCP). It cannot open new connections to `govd`.
-2. **Filesystem is an allowlist** (Landlock). Writable: the project worktree and the tool's
-   own session/cache directories. Read-only: system directories, the toolchain, the tool's
-   own configuration. Everything else, including GovernCode's state, other tools' files
-   and the user's keyrings, is invisible to writes and reads.
-3. **The tool's own permission settings are read-only**, so a run cannot widen what the
-   tool auto-allows on its next launch.
+2. **Filesystem is an allowlist** (Landlock). Writable: the project worktree (nothing, in
+   Home) and the tool's own scratch directories. Read-only: system directories, the
+   toolchain, and only the parts of the tool's configuration it needs. Everything else,
+   including GovernCode's state, the tool's transcripts of other projects, other tools'
+   files and the user's keyrings, is neither readable nor writable. Of `/dev`, only
+   `null`, `zero` and `urandom`; no device ioctls, so no typing into a terminal.
+3. **The tool's own settings, instructions and credentials are read-only**, so a run
+   cannot widen what the tool auto-allows on its next launch. The worktree's own settings
+   files are not loaded at all. After each turn `govd` removes any git hook or
+   program-running git config (`core.fsmonitor`, `core.sshCommand`, filters, aliases...)
+   the tool added, since those would run later outside the sandbox.
 4. **Network is limited** (Landlock TCP rules): outbound TCP to ports 443 (and 80 only if a
    policy asks) and nothing else; no binding.
 5. **No local IPC out, except what the policy lists.** The session bus, the keyring service
@@ -34,7 +39,12 @@ mode is not a boundary; this sandbox is.
 
 ## Known limits
 
-- UDP is not restricted (DNS needs it); TCP is.
+- The tool can read its own credentials (it needs them) and reach any address on port
+  443, so a misbehaving tool could send its own credentials away. The sandbox protects
+  everything else; it cannot make a tool trustworthy with what it must hold.
+- UDP is not restricted (DNS needs it); TCP is, by port but not by address.
+- An expired login token cannot be refreshed inside the sandbox (credentials are
+  read-only); run the tool once outside GovernCode to refresh it.
 - A binary the tool writes into its worktree can still be loaded through the dynamic loader
   (`ld.so ./file`): Landlock checks execute on `execve`, not on memory mapping.
 

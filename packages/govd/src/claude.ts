@@ -35,21 +35,33 @@ export function claudePolicy(worktree: string, sessionTmp: string, readOnly = fa
   const home = homedir();
   const cfg = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   const bin = realpathSync(which("claude"));
-  // Claude Code writes its session state under its config dir; its settings stay read-only
-  // so a run cannot widen what it auto-allows next time (docs/SANDBOX.md, invariant 3).
-  const cfgWritable = ["projects", "sessions", "session-env", "shell-snapshots", "todos", "file-history",
-    "paste-cache", "plans", "cache", "statsig", "debug", "history.jsonl", ".credentials.json"].map((p) => join(cfg, p));
+  // Only what Claude Code needs, found by testing: its settings, instructions, skills and
+  // credentials READ-ONLY (so a run cannot widen what it auto-allows next time, invariant 3;
+  // an expired token then needs one unsandboxed `claude` to refresh); scratch state writable.
+  // Not other projects' transcripts (projects/, history.jsonl): none of this run's business.
+  const cfgRead = ["settings.json", "CLAUDE.md", "skills", "plugins", "hooks", "themes", "agents", "commands",
+    ".credentials.json"].map((p) => join(cfg, p));
+  const cfgWrite = ["sessions", "session-env", "shell-snapshots", "todos", "statsig", "cache", "debug",
+    "paste-cache", "file-history", "plans"].map((p) => join(cfg, p));
   return {
     version: 1,
-    read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev", cfg, dirname(bin),
-      ...(readOnly ? [worktree] : [])],
-    write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", "/dev/tty", ...cfgWritable.filter(existsSync), join(home, ".claude.json")].filter(
-      (p) => p === worktree || p === sessionTmp || existsSync(p)),
+    read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
+      "/dev/random", dirname(bin), join(home, ".claude.json"), ...cfgRead, ...(readOnly ? [worktree] : [])].filter(
+      (p) => p === worktree || existsSync(p)),
+    write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...cfgWrite.filter(existsSync)],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin)],
     tcp_connect: [443],
     unix_connect: RESOLVER_SOCKETS.filter(existsSync),
     cwd: worktree,
   };
+}
+
+const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|CLAUDE_CONFIG_DIR|ANTHROPIC_[A-Z_]+|CLAUDE_CODE_[A-Z_]+|HTTPS?_PROXY|NO_PROXY)$/;
+
+export function toolEnv(tmp: string): Record<string, string> {
+  const env: Record<string, string> = { TMPDIR: tmp };
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && ENV_KEEP.test(k)) env[k] = v;
+  return env;
 }
 
 function which(cmd: string): string {
@@ -73,8 +85,11 @@ export function runTurn(opts: {
     // Only the user's own settings; never the worktree's, which the harness can write.
     "--setting-sources", "user", "--no-session-persistence",
     "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : [])];
+  // A clean environment: govd's own variables (and anything else in the user's shell) are
+  // none of the tool's business. Its own process group, so finishing the turn ends every
+  // process it started, not only the one that printed the result.
   const child = spawn(opts.supervisor, ["run", "--policy", policyFile, "--", which("claude"), ...args], {
-    cwd: opts.worktree, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, TMPDIR: sessionTmp },
+    cwd: opts.worktree, stdio: ["pipe", "pipe", "pipe"], env: toolEnv(sessionTmp), detached: true,
   });
   let stderr = "";
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
@@ -86,11 +101,13 @@ export function runTurn(opts: {
     if (finished) return;
     finished = true;
     child.stdin.end();
+    try { process.kill(-child.pid!, "SIGTERM"); } catch { /* already gone */ }
     rmSync(policyFile, { force: true });
     rmSync(sessionTmp, { recursive: true, force: true });
     opts.hooks.done(r);
   };
 
+  const pendingIds = new Set<string>();
   createInterface({ input: child.stdout }).on("line", async (line) => {
     let e: Record<string, any>;
     try { e = JSON.parse(line); } catch { return; }
@@ -100,10 +117,15 @@ export function runTurn(opts: {
         if (c.type === "tool_use") opts.hooks.tool(c.name, c.input ?? {});
       }
     } else if (e.type === "control_request" && e.request?.subtype === "can_use_tool") {
+      // One Gate per request id at a time: a repeated id while one is pending is ignored,
+      // so an answer can never land on a different request than the one shown.
+      if (pendingIds.has(String(e.request_id))) return;
+      pendingIds.add(String(e.request_id));
       const input = (e.request.input ?? {}) as Record<string, unknown>;
       const req: GateRequest = { id: String(e.request_id), tool: String(e.request.tool_name), input,
         canonical: canonical({ tool: e.request.tool_name, input }) };
       const answer = await opts.hooks.gate(req);
+      pendingIds.delete(String(e.request_id));
       // Allow runs exactly the input that was shown, never a variant (the #177 lesson).
       send({ type: "control_response", response: { subtype: "success", request_id: e.request_id,
         response: answer === "allow" ? { behavior: "allow", updatedInput: input }

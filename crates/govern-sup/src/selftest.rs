@@ -20,6 +20,7 @@ const CHECKS: &[(&str, bool)] = &[
     ("read a read-only file", true),
     ("run an allowed binary", true),
     ("use a stream socketpair", true),
+    ("connect to a Unix socket the policy lists", true),
     ("write the daemon's state file", false),
     ("read the keyring file", false),
     ("write the tool's settings file", false),
@@ -52,6 +53,7 @@ fn attempt(name: &str, dir: &Path, wt: &Path, port: u16) -> bool {
         "read a read-only file" => fs::read(dir.join("settings.json")).is_ok(),
         "run an allowed binary" => Command::new("/usr/bin/true").status().map(|s| s.success()).unwrap_or(false),
         "use a stream socketpair" => UnixStream::pair().is_ok(),
+        "connect to a Unix socket the policy lists" => UnixStream::connect(dir.join("listed.sock")).is_ok(),
         "write the daemon's state file" => write(&dir.join("state/trace.db")),
         "read the keyring file" => fs::read(dir.join("keyring")).is_ok(),
         "write the tool's settings file" => write(&dir.join("settings.json")),
@@ -85,6 +87,8 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
     fs::write(dir.join("settings.json"), b"{}").map_err(io)?;
     fs::copy("/usr/bin/true", dir.join("bin/not-allowed")).map_err(io)?;
     let _daemon = UnixListener::bind(dir.join("daemon.sock")).map_err(io)?;
+    // Stands for the DNS resolver's socket: listed, so it must work while daemon.sock stays out.
+    let _listed = UnixListener::bind(dir.join("listed.sock")).map_err(io)?;
     let tcp = TcpListener::bind(("127.0.0.1", 0)).map_err(io)?;
     let port = tcp.local_addr().map_err(io)?.port();
     let fifo = dir.join("input.fifo");
@@ -103,6 +107,7 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
         "write": [dir.join("worktree"), "/dev/null"],
         "exec": ["/usr/bin", "/bin", "/usr/lib", "/lib", "/lib64", exe_dir],
         "tcp_connect": [443],
+        "unix_connect": [dir.join("listed.sock")],
         "cwd": dir.join("worktree"),
     });
     let policy_file = dir.join("policy.json");

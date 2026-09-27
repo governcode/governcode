@@ -1,7 +1,7 @@
 // The Trace: an append-only event log in SQLite, plus the one projection phase 0 needs
 // (projects). Events are never updated or deleted; projections are rebuilt from them.
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ControllerChoice, Spec, SpecInput, SpecStatus, TraceEvent } from "@governcode/protocol";
 
@@ -14,8 +14,13 @@ export class Ledger {
   private listeners = new Set<(e: TraceEvent) => void>();
 
   constructor(path: string) {
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    if (path !== ":memory:") {
+      // The Trace holds prompts: owner-only, whatever the umask says.
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      chmodSync(dirname(path), 0o700);
+    }
     this.db = new DatabaseSync(path);
+    if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS events (

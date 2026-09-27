@@ -79,7 +79,9 @@ fn landlock(policy: &Resolved, abi: i32) -> Result<(), String> {
     let exec = read | AccessFs::Execute;
     // Write paths get everything except execute: a tool may build files in its worktree
     // but only run binaries the policy lists.
-    let write = handled & !AccessFs::Execute;
+    // Not IoctlDev (terminal ioctls such as TIOCSTI could type into the user's terminal) and
+    // not ResolveUnix (Unix sockets are reachable only where unix_connect names them).
+    let write = handled & !AccessFs::Execute & !AccessFs::IoctlDev & !AccessFs::ResolveUnix;
 
     let fs_err = |e: &dyn std::fmt::Display| format!("cannot enforce the filesystem allowlist: {e}");
     let mut ruleset = Ruleset::default()
