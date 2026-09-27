@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-SsxUJGkYrf7bK9C2fNcFMMIfAr2qBRCok5g5cMKRN3Y='; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>GovernCode · Govern your AI coding crew</title>
+<meta name="description" content="GovernCode governs your AI coding crew: one Controller, sandboxed Runners, Limits you set, Gates you sign. Free and open source (MIT), runs on your machine, no hosted service. Pre-alpha.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0f14">
+<link rel="canonical" href="https://governcode.com/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://governcode.com/">
+<meta property="og:site_name" content="GovernCode">
+<meta property="og:title" content="GovernCode · Govern your AI coding crew">
+<meta property="og:description" content="One Controller, sandboxed Runners, Limits you set, Gates you sign. Free and open source (MIT). Runs on your machine. Pre-alpha, phase 0.">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0f14'/%3E%3Cpath d='M40 12H26A14 14 0 0 0 12 26V38A14 14 0 0 0 26 52H38A14 14 0 0 0 52 38V31' fill='none' stroke='%23d8e0ea' stroke-width='8'/%3E%3Cpath d='M56 28H28V36H56Z' fill='%23d8e0ea'/%3E%3Cpath d='M41 22H27A5 5 0 0 0 22 27V37A5 5 0 0 0 27 42H41' fill='none' stroke='%235eead4' stroke-width='4'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#0b0f14;--panel:#11171f;--panel-2:#161e28;--line:#243040;--text:#d8e0ea;--dim:#7d8a99;
+  --accent:#5eead4;--ok:#4ade80;--warn:#fbbf24;--danger:#f87171;--info:#60a5fa;--radius:8px;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,sans-serif;
+  --mono:ui-monospace,"SFMono-Regular","JetBrains Mono",Menlo,Consolas,monospace;
+  --wrap:1160px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-underline-offset:3px}
+a:hover{color:#8ff3e2}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+code,kbd,pre,.mono{font-family:var(--mono)}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 32px}
+.skip{position:absolute;left:-9999px;top:8px;background:var(--accent);color:#06201c;padding:6px 12px;border-radius:6px;font-weight:600;z-index:10}
+.skip:focus{left:12px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* top bar */
+.top{border-bottom:1px solid var(--line);background:var(--panel)}
+.top .wrap{display:flex;align-items:center;gap:20px;height:56px}
+.brand{display:flex;align-items:center;gap:10px;color:var(--text);text-decoration:none;font-weight:600;font-size:15px}
+.brand svg{width:26px;height:26px;flex:none}
+.hero-mark{width:84px;height:84px;display:block;margin:22px 0 18px;filter:drop-shadow(0 6px 24px rgba(94,234,212,.12))}
+.top nav{margin-left:auto}
+.top nav ul{display:flex;gap:4px;list-style:none;margin:0;padding:0}
+.top nav a{display:block;color:var(--dim);text-decoration:none;font-size:13.5px;padding:6px 10px;border-radius:6px}
+.top nav a:hover{color:var(--text);background:var(--panel-2)}
+
+/* pills + buttons */
+.pill{display:inline-flex;align-items:center;gap:7px;font:500 12px/1 var(--mono);padding:5px 10px;border-radius:999px;border:1px solid var(--line);color:var(--dim);background:var(--panel-2);white-space:nowrap}
+.pill.accent{color:var(--accent);border-color:rgba(94,234,212,.35);background:rgba(94,234,212,.08)}
+.pill.warn{color:var(--warn);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08)}
+.pill.sm{font-size:11px;padding:3px 8px}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.btn{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel-2);border-radius:6px;padding:9px 16px;font:600 14px/1.2 var(--sans);color:var(--text);text-decoration:none;white-space:nowrap}
+.btn:hover{border-color:#3a4c63;color:var(--text)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#06201c}
+.btn.primary:hover{background:#86f0df;color:#06201c}
+.btn svg{width:16px;height:16px;flex:none}
+
+/* hero */
+.hero{padding:64px 0 56px;border-bottom:1px solid var(--line)}
+.hero .wrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.08fr);gap:48px;align-items:center}
+.hero h1{margin:18px 0 0;font-size:48px;line-height:1.05;letter-spacing:-.02em;font-weight:700}
+.hero h1 b{color:var(--accent);font-weight:700}
+.hero .tag{margin:14px 0 0;font-size:22px;line-height:1.35;color:var(--text);font-weight:500;letter-spacing:-.005em}
+.hero .lede{margin:16px 0 0;color:var(--dim);font-size:15.5px;max-width:34em}
+.hero .lede strong{color:var(--text);font-weight:600}
+.cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}
+.facts{display:flex;flex-wrap:wrap;gap:6px 18px;margin:22px 0 0;padding:0;list-style:none;font:12.5px var(--mono);color:var(--dim)}
+.facts li::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-right:8px;vertical-align:1px}
+
+/* terminal */
+.term{background:#070a0e;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+.term .bar{display:flex;gap:6px;align-items:center;padding:9px 12px;background:var(--panel-2);border-bottom:1px solid var(--line);font:12px var(--mono);color:var(--dim)}
+.term .bar i{width:10px;height:10px;border-radius:50%;background:var(--line);display:inline-block}
+.term .bar span{margin-left:8px}
+.term pre{margin:0;padding:16px 18px;font:13px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:break-word;color:var(--text)}
+.term .sep{display:block;border-top:1px dashed var(--line);margin:12px -18px 10px}
+.p{color:var(--accent)} .d{color:var(--dim)} .ok{color:var(--ok)} .w{color:var(--warn)} .x{color:var(--danger)} .i{color:var(--info)} .b{font-weight:700}
+.caption{margin:10px 2px 0;font-size:12.5px;color:var(--dim)}
+
+/* sections */
+section{padding:64px 0;border-bottom:1px solid var(--line)}
+.eyebrow{margin:0 0 6px;font:600 12px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+h2{margin:0;font-size:28px;line-height:1.2;letter-spacing:-.01em;font-weight:650}
+.sub{margin:10px 0 0;color:var(--dim);max-width:44em}
+
+/* feature tiles */
+.tiles{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px;margin:32px 0 0;padding:0;list-style:none}
+.tile{grid-column:span 2;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 20px 18px;display:flex;flex-direction:column}
+.tile:nth-child(4),.tile:nth-child(5){grid-column:span 3}
+.tile .hd{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.tile .ico{width:32px;height:32px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2);display:grid;place-items:center;color:var(--accent);flex:none}
+.tile .ico svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.tile h3{margin:0;font-size:16.5px;font-weight:650}
+.tile .hd .pill{margin-left:auto}
+.tile p{margin:0;color:var(--dim);font-size:14.5px}
+.tile p strong{color:var(--text);font-weight:600}
+.tile .line{margin-top:auto;padding-top:14px;font:12px/1.5 var(--mono);color:var(--dim)}
+.tile .line code{color:var(--text)}
+
+/* open source band */
+.oss{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:40px;align-items:start}
+.oss .big{margin:0;font-size:24px;line-height:1.35;font-weight:600;letter-spacing:-.01em}
+.oss .big span{color:var(--accent)}
+.oss .sub{margin-top:14px}
+.try .bar{justify-content:flex-start}
+.try pre{white-space:pre;overflow-x:auto}
+.copy{margin-left:auto;font:12px var(--mono);color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+.copy:hover{color:var(--text);border-color:#3a4c63}
+.req{margin:10px 2px 0;font-size:12.5px;color:var(--dim)}
+
+/* roadmap */
+.road{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:0;margin:32px 0 0;padding:0;list-style:none;counter-reset:ph}
+.road li{position:relative;padding:28px 16px 0 0}
+.road li::before{content:"";position:absolute;left:0;right:0;top:9px;height:2px;background:var(--line)}
+.road li::after{content:"";position:absolute;left:0;top:3px;width:14px;height:14px;border-radius:50%;background:var(--bg);border:2px solid var(--line)}
+.road li.now::after{background:var(--accent);border-color:var(--accent);box-shadow:0 0 0 4px rgba(94,234,212,.15)}
+.road .n{display:flex;align-items:center;gap:8px;height:22px;font:600 12px var(--mono);color:var(--dim)}
+.road li.now .n{color:var(--accent)}
+.road h3{margin:6px 0 4px;font-size:14.5px;font-weight:600}
+.road p{margin:0;font-size:13px;color:var(--dim)}
+
+/* footer */
+footer{padding:36px 0 48px;color:var(--dim);font-size:13.5px}
+footer .wrap{display:grid;gap:14px}
+footer p{margin:0}
+footer .credit{color:var(--text)}
+footer .row{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
+footer .row a{color:var(--dim)}
+footer .row a:hover{color:var(--text)}
+
+/* responsive */
+@media (max-width:1040px){
+  .hero .wrap{grid-template-columns:minmax(0,1fr);gap:36px}
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tile,.tile:nth-child(4),.tile:nth-child(5){grid-column:span 1}
+  .tile:nth-child(5){grid-column:1 / -1}
+  .oss{grid-template-columns:minmax(0,1fr);gap:28px}
+  .road{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:28px}
+}
+@media (max-width:640px){
+  body{font-size:15px}
+  .wrap{padding:0 18px}
+  .top nav li.opt{display:none}
+  .hero{padding:40px 0 40px}
+  .hero h1{font-size:38px}
+  .hero .tag{font-size:19px}
+  .cta .btn{flex:1 1 auto;justify-content:center}
+  section{padding:44px 0}
+  h2{font-size:23px}
+  .tiles{grid-template-columns:minmax(0,1fr)}
+  .tile:nth-child(5){grid-column:auto}
+  .term pre{font-size:11.5px;padding:14px 12px}
+  .term .sep{margin:10px -12px 8px}
+  .oss .big{font-size:20px}
+  .road{grid-template-columns:minmax(0,1fr);row-gap:0}
+  .road li{padding:0 0 22px 30px}
+  .road li::before{left:6px;right:auto;top:18px;bottom:-2px;width:2px;height:auto}
+  .road li:last-child::before{display:none}
+  .road li::after{top:2px}
+  .road h3{margin-top:2px}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="GovernCode home">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0b0f14"/><path d="M40 12H26A14 14 0 0 0 12 26V38A14 14 0 0 0 26 52H38A14 14 0 0 0 52 38V31" fill="none" stroke="#d8e0ea" stroke-width="8"/><path d="M56 28H28V36H56Z" fill="#d8e0ea"/><path d="M41 22H27A5 5 0 0 0 22 27V37A5 5 0 0 0 27 42H41" fill="none" stroke="#5eead4" stroke-width="4"/></svg>
+      GovernCode
+    </a>
+    <nav aria-label="Site">
+      <ul>
+        <li class="opt"><a href="#features">Features</a></li>
+        <li class="opt"><a href="#roadmap">Roadmap</a></li>
+        <li><a href="https://github.com/onelegdave/governcode">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<div class="hero" id="top">
+  <div class="wrap">
+    <div>
+      <span class="pill warn"><span class="dot" aria-hidden="true"></span>pre-alpha · phase 0</span>
+      <svg class="hero-mark" viewBox="0 0 64 64" role="img" aria-label="GovernCode logo"><rect width="64" height="64" rx="14" fill="#0b0f14"/><path d="M40 12H26A14 14 0 0 0 12 26V38A14 14 0 0 0 26 52H38A14 14 0 0 0 52 38V31" fill="none" stroke="#d8e0ea" stroke-width="8"/><path d="M56 28H28V36H56Z" fill="#d8e0ea"/><path d="M41 22H27A5 5 0 0 0 22 27V37A5 5 0 0 0 27 42H41" fill="none" stroke="#5eead4" stroke-width="4"/></svg>
+      <h1>Govern<b>Code</b></h1>
+      <p class="tag">Govern your AI coding crew: one Controller, sandboxed Runners, Limits you set, Gates you sign.</p>
+      <p class="lede">Appoint one AI coding tool as the <strong>Controller</strong>. It hands bounded jobs to the other tools you already use, as <strong>Runners</strong>. Every job is written down, runs in a deny-by-default sandbox in its own git worktree, and can be diffed and undone. Nothing risky runs until you allow the exact request.</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/onelegdave/governcode">
+          <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+        <a class="btn" href="https://github.com/onelegdave/governcode/blob/main/docs/SANDBOX.md">Read the sandbox spec</a>
+      </div>
+      <ul class="facts" aria-label="At a glance">
+        <li>MIT licensed</li>
+        <li>runs on your machine</li>
+        <li>no hosted service</li>
+        <li>Linux first, macOS next</li>
+      </ul>
+    </div>
+
+    <figure style="margin:0">
+      <div class="term" role="img" aria-labelledby="demo-cap demo-alt">
+        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>gov · tidepool</span></div>
+<pre aria-hidden="true"><span class="p">$</span> gov ask "Clear the stale build cache"
+<span class="d">· Bash</span>
+
+<span class="w">Gate: the Controller wants to use Bash. Exactly this will run:</span>
+{
+ "command": "rm -rf target/debug/incremental",
+ "description": "Clear stale build cache"
+}
+Allow once? [y/N] <span class="b">y</span>
+Removed target/debug/incremental (1.4 GB).
+<span class="d">— done</span>
+<span class="sep"></span><span class="d"># phase 1 preview: a Limit says no</span>
+<span class="i">●</span> delegate → Runner · Codex
+  <span class="w">held</span> Codex is inside its 10% weekly Limit
+       <span class="d">weekly 91% used · resets Tue 06:10</span>
+<span class="i">●</span> Codex is held, so I'll do it myself.</pre>
+      </div>
+      <p class="vh" id="demo-alt">Terminal: gov ask asks the Controller to clear a build cache. A Gate shows the exact request as sorted JSON, command rm -rf target/debug/incremental. The user allows it once and the turn is done. Below, a phase 1 preview: Runner Codex is held inside its 10% weekly Limit, which resets Tuesday 06:10, so the Controller does the work itself.</p>
+      <figcaption class="caption" id="demo-cap">Illustrative session with invented data. The Gate shows the canonical request: sorted keys, ASCII-escaped JSON, exactly what will run.</figcaption>
+    </figure>
+  </div>
+</div>
+
+<section id="features" aria-labelledby="features-h">
+  <div class="wrap">
+    <p class="eyebrow">What it does</p>
+    <h2 id="features-h">Your tools, your rules, one crew</h2>
+    <p class="sub">GovernCode does not replace your AI coding tools. It starts them, fences them in, and keeps the record.</p>
+    <ul class="tiles">
+      <li class="tile">
+        <div class="hd">
+          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="12" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v9M12 11l-6 6M12 11l6 6"/></svg></span>
+          <h3>Controller + Runners</h3>
+          <span class="pill sm">phase 0–1</span>
+        </div>
+        <p><strong>Bring your own AI tools.</strong> One leads the project and keeps its own subagents; the others take bounded jobs (Specs) with a brief, scope, budget and acceptance test.</p>
+        <p class="line">Controller · Claude Code<br>Runner · Codex</p>
+      </li>
+      <li class="tile">
+        <div class="hd">
+          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 21V5M19 21V5M5 9h14M9 9v12M15 9v12"/></svg></span>
+          <h3>Gates</h3>
+          <span class="pill accent sm">phase 0</span>
+        </div>
+        <p><strong>Approve the exact request</strong>, byte for byte, not a summary of it. Deny is always available. Today you answer in your own terminal; later you sign on your phone.</p>
+        <p class="line">allow runs exactly that input<br>no answer means deny</p>
+      </li>
+      <li class="tile">
+        <div class="hd">
+          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4.5-5"/><path d="M4 21h16"/></svg></span>
+          <h3>Limits</h3>
+          <span class="pill sm">phase 1</span>
+        </div>
+        <p><strong>A measured hold, never paid overage.</strong> Each provider keeps the reserve you set. Unknown or stale usage counts as held, and a hold names its reset time.</p>
+        <p class="line"><code>gov limits set codex --reserve 10%</code></p>
+      </li>
+      <li class="tile">
+        <div class="hd">
+          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+          <h3>Sandbox</h3>
+          <span class="pill accent sm">phase 0</span>
+        </div>
+        <p><strong>Deny by default, self-tested, fails closed.</strong> Landlock and seccomp fence every tool: a filesystem allowlist, outbound TCP to 443 only, and one channel to the daemon, so a tool cannot approve its own Gate. If the self-test fails on your machine, nothing starts. There is no unsandboxed switch.</p>
+        <p class="line"><code>govern-sup selftest</code> <span class="ok">· must pass</span></p>
+      </li>
+      <li class="tile">
+        <div class="hd">
+          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10H9"/><path d="M8 5L4 9l4 4"/></svg></span>
+          <h3>Checkpoints</h3>
+          <span class="pill sm">phase 1</span>
+        </div>
+        <p><strong>Undo, with guard rails.</strong> Every Spec gets a git snapshot before and after, so you can diff it and roll it back. Undo refuses if you changed those files afterwards, rather than overwrite your work. Everything lands in the Trace, an append-only history.</p>
+        <p class="line"><code>gov undo S-0412</code> <span class="d">· restored 1 file</span></p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section id="open" aria-labelledby="open-h">
+  <div class="wrap oss">
+    <div>
+      <p class="eyebrow">Open source</p>
+      <h2 id="open-h" class="vh">Free and open source</h2>
+      <p class="big">Free and open source <span>(MIT)</span>. Runs on your machine. No hosted service.</p>
+      <p class="sub">Your code, keys and history stay local. The daemon, the sandbox supervisor and the CLI are all in the repo. Nothing is usable by non-developers yet: phase 0 runs one Controller in the sandbox and asks you at every Gate.</p>
+    </div>
+    <div>
+      <div class="term try">
+        <div class="bar"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>build from source</span><button class="copy" type="button" data-copy="try-cmd" hidden>copy</button></div>
+<pre id="try-cmd" tabindex="0" aria-label="Build from source commands"><span class="p" aria-hidden="true">$ </span>git clone https://github.com/onelegdave/governcode
+<span class="p" aria-hidden="true">$ </span>cd governcode
+<span class="p" aria-hidden="true">$ </span>npm ci &amp;&amp; cargo build --release
+<span class="p" aria-hidden="true">$ </span>./target/release/govern-sup selftest</pre>
+      </div>
+      <p class="req">Developers only, for now. Needs Linux 6.12+ (Landlock ABI 6), Node 22.18+, Rust and git. The README has the rest. <span id="copy-status" class="vh" aria-live="polite"></span></p>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap" aria-labelledby="roadmap-h">
+  <div class="wrap">
+    <p class="eyebrow">Roadmap</p>
+    <h2 id="roadmap-h">Where it stands</h2>
+    <p class="sub">Built in the open, in this order. Linux and macOS are first-class; Windows is not supported yet.</p>
+    <ol class="road">
+      <li class="now" aria-current="step">
+        <div class="n">phase 0 <span class="pill accent sm">now</span></div>
+        <h3>Foundation</h3>
+        <p>Daemon, sandbox + self-test, CLI, Claude Code driver, the Trace.</p>
+      </li>
+      <li>
+        <div class="n">phase 1</div>
+        <h3>The crew</h3>
+        <p>Delegation and Specs, first measured Runner, Limits, Checkpoints + undo.</p>
+      </li>
+      <li>
+        <div class="n">phase 2</div>
+        <h3>Dashboard</h3>
+        <p>Desktop app for Linux and macOS, review queue, Gates.</p>
+      </li>
+      <li>
+        <div class="n">phase 3</div>
+        <h3>Pager</h3>
+        <p>Phone app, Android first: pairing and phone-signed Gates.</p>
+      </li>
+      <li>
+        <div class="n">phase 4</div>
+        <h3>Modules</h3>
+        <p>Plugins and the Registry that publishes them.</p>
+      </li>
+      <li>
+        <div class="n">phase 5</div>
+        <h3>Launch</h3>
+        <p>iOS, driver Modules, and a proper release.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="credit"><strong>A human holds the controls.</strong> GovernCode is owned and maintained by <strong>OneLegDave</strong>, who makes every product decision and reviews what ships:
+      <a href="https://www.onelegdave.dev/" rel="me">onelegdave.dev</a> · <a href="https://x.com/OneLegDavePDX" rel="me">X</a> · <a href="https://github.com/onelegdave" rel="me">GitHub</a>.</p>
+    <p class="credit">Built with AI assistance, openly: Claude (lead AI developer), Grok (research, red-team), Gemini (naming, design).</p>
+    <div class="row">
+      <span>GovernCode is released under the MIT License.</span>
+      <a href="https://github.com/onelegdave/governcode">github.com/onelegdave/governcode</a>
+      <a href="https://github.com/onelegdave/governcode/blob/main/LICENSE">License</a>
+    </div>
+    <p>This page has no analytics, no cookies and no third-party requests.</p>
+  </div>
+</footer>
+
+<script>
+(function(){var b=document.querySelectorAll("button.copy");if(!navigator.clipboard)return;b.forEach(function(x){x.hidden=false;x.addEventListener("click",function(){var t=document.getElementById(x.dataset.copy).textContent.replace(/^\$ /gm,""),s=document.getElementById("copy-status");navigator.clipboard.writeText(t).then(function(){x.textContent="copied";s.textContent="Commands copied to clipboard";setTimeout(function(){x.textContent="copy";s.textContent=""},1600)},function(){x.textContent="select + copy"})})})})();
+</script>
+</body>
+</html>
