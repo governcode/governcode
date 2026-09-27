@@ -100,3 +100,4 @@ test("specs: created, moved through statuses, all in the Trace", () => {
   assert.equal(L.specs("tidepool").length, 1);
   L.close();
 });
+

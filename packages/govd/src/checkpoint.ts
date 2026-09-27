@@ -4,7 +4,7 @@
 // refuses if anything changed after the Spec ended; redo reverses an undo.
 // ponytail: refs are never pruned. Upgrade when `git for-each-ref refs/governcode` gets slow.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, unlinkSync, lstatSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, unlinkSync, lstatSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -28,7 +28,14 @@ function tree(root: string): string {
   const tmp = mkdtempSync(join(tmpdir(), "governcode-index-"));
   try {
     const scratch = join(tmp, "index");
-    if (existsSync(index)) copyFileSync(index, scratch);
+    if (existsSync(index)) {
+      copyFileSync(index, scratch);
+      // Keep the index's own timestamp. Git trusts a cached entry only if the file is older
+      // than the index; a fresh copy would make a just-edited file look clean ("racy git")
+      // and the snapshot would record its old content.
+      const st = statSync(index);
+      utimesSync(scratch, st.atime, st.mtime);
+    }
     git(root, ["add", "-A"], { GIT_INDEX_FILE: scratch });
     return git(root, ["write-tree"], { GIT_INDEX_FILE: scratch });
   } finally {
