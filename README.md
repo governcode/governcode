@@ -65,7 +65,9 @@ Linux and macOS are first-class. Windows is not supported yet.
 
 GovernCode is developed with heavy AI assistance, and we say exactly how:
 
-- **OneLegDave**: owner and maintainer; every product decision.
+- **OneLegDave** ([onelegdave.dev](https://www.onelegdave.dev/) · [X](https://x.com/OneLegDavePDX) ·
+  [GitHub](https://github.com/onelegdave)): owner and maintainer. A human holds the controls:
+  he makes every product decision and reviews what ships.
 - **Claude (Anthropic)**: lead AI developer: architecture, most of the code, reviews,
   and integration.
 - **Grok (xAI)**: research on the landscape and red-team security reviews.
