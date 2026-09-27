@@ -31,7 +31,7 @@ export function canonical(value: unknown): string {
 }
 
 /** What a Claude Code process may touch. Everything not listed is denied by govern-sup. */
-export function claudePolicy(worktree: string, sessionTmp: string): Policy {
+export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false): Policy {
   const home = homedir();
   const cfg = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   const bin = realpathSync(which("claude"));
@@ -41,8 +41,9 @@ export function claudePolicy(worktree: string, sessionTmp: string): Policy {
     "paste-cache", "plans", "cache", "statsig", "debug", "history.jsonl", ".credentials.json"].map((p) => join(cfg, p));
   return {
     version: 1,
-    read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev", cfg, dirname(bin)],
-    write: [worktree, sessionTmp, "/dev/null", "/dev/tty", ...cfgWritable.filter(existsSync), join(home, ".claude.json")].filter(
+    read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev", cfg, dirname(bin),
+      ...(readOnly ? [worktree] : [])],
+    write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", "/dev/tty", ...cfgWritable.filter(existsSync), join(home, ".claude.json")].filter(
       (p) => p === worktree || p === sessionTmp || existsSync(p)),
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin)],
     tcp_connect: [443],
@@ -60,12 +61,12 @@ function which(cmd: string): string {
 }
 
 export function runTurn(opts: {
-  supervisor: string; policyDir: string; worktree: string; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
+  supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
 }): { cancel(): void } {
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
   const policyFile = join(opts.policyDir, `turn-${process.pid}-${Date.now()}.json`);
-  writeFileSync(policyFile, JSON.stringify(claudePolicy(opts.worktree, sessionTmp)), { mode: 0o600 });
+  writeFileSync(policyFile, JSON.stringify(claudePolicy(opts.worktree, sessionTmp, opts.readOnly)), { mode: 0o600 });
 
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--permission-prompt-tool", "stdio", "--permission-mode", "default",

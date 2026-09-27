@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -25,6 +25,8 @@ export const Params = {
   "controller.set": z.object({ project: ProjectName, controller: ControllerChoice }),
   "trace.list": z.object({ project: ProjectName.optional(), limit: z.number().int().min(1).max(1000).default(50) }),
   ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000) }),
+  "gate.list": z.object({}),
+  "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]) }),
 } as const;
 export type Method = keyof typeof Params;
 
@@ -44,7 +46,7 @@ export type TraceEvent = {
   kind:
     | "project.created" | "project.opened" | "controller.set"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
-    | "gate.denied" | "sandbox.refused";
+    | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
 };

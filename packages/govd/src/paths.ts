@@ -10,3 +10,4 @@ export const runtimeDir = env.GOVERNCODE_RUNTIME_DIR ?? join(env.XDG_RUNTIME_DIR
 export const socketPath = join(runtimeDir, "govd.sock");
 export const ledgerPath = join(stateDir, "trace.sqlite");
 export const policyDir = join(stateDir, "policies");
+export const homeDir = join(stateDir, "home"); // Home's read-only scratch folder

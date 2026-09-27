@@ -4,13 +4,13 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Daemon } from "./daemon.ts";
-import { ledgerPath, policyDir, socketPath } from "./paths.ts";
+import { homeDir, ledgerPath, policyDir, socketPath } from "./paths.ts";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const supervisor = process.env.GOVERN_SUP ?? [join(repo, "target/release/govern-sup"), join(repo, "target/debug/govern-sup")]
   .find(existsSync) ?? "govern-sup";
 
-const daemon = new Daemon({ socketPath, ledgerPath, policyDir, supervisor, version: "0.0.1" });
+const daemon = new Daemon({ socketPath, ledgerPath, policyDir, homeDir, supervisor, version: "0.0.1" });
 const test = daemon.selftest();
 console.log(`govd: sandbox ${test.ok ? "enforced (self-test passed)" : "NOT verified: " + test.reason}`);
 await daemon.listen();

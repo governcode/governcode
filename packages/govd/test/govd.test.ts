@@ -58,7 +58,7 @@ function client(sock: string) {
 
 function daemon(tag: string) {
   return new Daemon({ socketPath: join(root, tag, "govd.sock"), ledgerPath: join(root, tag, "trace.sqlite"),
-    policyDir: join(root, tag, "policies"), supervisor, version: "test" });
+    policyDir: join(root, tag, "policies"), homeDir: join(root, tag, "home"), supervisor, version: "test" });
 }
 
 test("canonical: sorted keys, ASCII-escaped, whole input", () => {
@@ -117,5 +117,60 @@ test("a Gate denied or abandoned is a deny", async () => {
   const r = await c.call("ask", { project: "x", prompt: "go" });
   assert.equal(r.result.summary, "gate:deny:null");
   assert.ok(d.ledger.events("x", 20).some((e) => e.kind === "gate.denied"));
+  c.end(); d.close();
+});
+
+test("a Gate can be answered from a second terminal, and is listed there", async () => {
+  const d = daemon("second");
+  d.selftest();
+  await d.listen();
+  const sock = join(root, "second", "govd.sock");
+  const asker = client(sock), other = client(sock);
+  await asker.call("project.new", { name: "two", path: join(root, "second-two"), git: false });
+  asker.onEvent = async (e) => {
+    if (e.kind !== "gate") return;
+    const listed = await other.call("gate.list");
+    assert.equal(listed.result.gates[0].id, e.id);
+    assert.equal(listed.result.gates[0].owner, undefined);             // no internals leak
+    await other.call("gate.answer", { id: e.id, answer: "allow" });
+  };
+  const r = await asker.call("ask", { project: "two", prompt: "go" });
+  assert.match(r.result.summary, /^gate:allow:/);
+  const again = await other.call("gate.answer", { id: "G-1", answer: "allow" });
+  assert.match(again.error.message, /no Gate G-1 is waiting/);          // answered once only
+  asker.end(); other.end(); d.close();
+});
+
+test("the asker leaving denies its waiting Gate", async () => {
+  const d = daemon("leave");
+  d.selftest();
+  await d.listen();
+  const sock = join(root, "leave", "govd.sock");
+  const asker = client(sock), watcher = client(sock);
+  await asker.call("project.new", { name: "gone", path: join(root, "leave-gone"), git: false });
+  let seen = false;
+  asker.onEvent = (e) => { if (e.kind === "gate") { seen = true; asker.end(); } };
+  void asker.call("ask", { project: "gone", prompt: "go" });
+  for (let i = 0; i < 100 && !d.ledger.events("gone", 20).some((e) => e.kind === "gate.denied"); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(seen);
+  assert.ok(d.ledger.events("gone", 20).some((e) => e.kind === "gate.denied" && e.data.by === "asker left"));
+  assert.equal((await watcher.call("gate.list")).result.gates.length, 0);
+  watcher.end(); d.close();
+});
+
+test("Home runs with no project, in a folder the tool may only read", async () => {
+  const d = daemon("home");
+  d.selftest();
+  await d.listen();
+  const c = client(join(root, "home", "govd.sock"));
+  c.onEvent = (e) => { if (e.kind === "gate") void c.call("gate.answer", { id: e.id, answer: "deny" }); };
+  const r = await c.call("ask", { project: null, prompt: "plan something" });
+  assert.equal(r.result.ok, true);
+  const policy = JSON.parse(readFileSync(join(root, "last-policy.json"), "utf8"));
+  const homeDir = join(root, "home", "home");
+  assert.equal(policy.cwd, homeDir);
+  assert.ok(policy.read.includes(homeDir));
+  assert.ok(!policy.write.includes(homeDir), "Home is read-only");
+  assert.equal(d.ledger.events(undefined, 50).find((e) => e.kind === "turn.started")?.data.home, true);
   c.end(); d.close();
 });

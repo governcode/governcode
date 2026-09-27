@@ -69,6 +69,7 @@ async function currentProject(api: Awaited<ReturnType<typeof open>>): Promise<st
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
+  if (cmd === "daemon") return daemon(rest[0]);
   const api = await open();
   try {
     switch (cmd) {
@@ -109,6 +110,22 @@ async function main(argv: string[]): Promise<number> {
         console.log(`Controller for ${project}: ${rest[0] ?? "claude-code"}`);
         return 0;
       }
+      case "gates": {
+        const { gates } = await api.call("gate.list");
+        if (!gates.length) console.log(dim("no Gates waiting"));
+        for (const g of gates) {
+          console.log(warn(`${g.id}  ${g.project ?? "Home"} · ${g.tool} · opened ${new Date(g.opened).toTimeString().slice(0, 8)}`));
+          console.log(g.canonical);
+        }
+        return 0;
+      }
+      case "gate": {
+        const [id, answer] = rest;
+        if (!id || (answer !== "allow" && answer !== "deny")) throw new Error("usage: gov gate G-N allow|deny");
+        await api.call("gate.answer", { id, answer });
+        console.log(`${id}: ${answer === "allow" ? "allowed once" : "denied"}`);
+        return 0;
+      }
       case "trace": {
         const project = await currentProject(api);
         const { events } = await api.call("trace.list", { project: project ?? undefined, limit: 50 });
@@ -136,7 +153,7 @@ async function main(argv: string[]): Promise<number> {
         return r.ok ? 0 : 1;
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|daemon start|install|uninstall]");
         return 2;
     }
   } finally {
@@ -145,3 +162,17 @@ async function main(argv: string[]): Promise<number> {
 }
 
 main(process.argv.slice(2)).then((code) => process.exit(code), (err) => { console.error(`gov: ${err.message}`); process.exit(1); });
+
+async function daemon(verb: string | undefined): Promise<number> {
+  const svc = await import("./service.ts");
+  switch (verb) {
+    case "install": console.log(`installed ${svc.install()} and started governcode.service`); return 0;
+    case "uninstall": svc.uninstall(); console.log("stopped and disabled governcode.service"); return 0;
+    case "start": {
+      const state = env.GOVERNCODE_STATE_DIR ?? join(env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "governcode");
+      console.log(`govd started (pid ${svc.startOnce(state)}); log: ${join(state, "govd.log")}`);
+      return 0;
+    }
+    default: console.error("usage: gov daemon start|install|uninstall"); return 2;
+  }
+}
