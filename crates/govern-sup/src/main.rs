@@ -2,6 +2,7 @@
 
 mod policy;
 mod sandbox;
+mod selftest;
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -20,7 +21,9 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         // The self-test is not built yet, so it fails: govd then refuses to start any tool.
-        Some("selftest") => Err("self-test not built yet; refusing to vouch for this machine".to_string()),
+        Some("selftest") => selftest::main(&args[1..]),
+        // Hidden: the self-test re-runs this binary inside a real sandbox to do its checks.
+        Some("check") => selftest::check(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     match result {

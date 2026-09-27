@@ -3,7 +3,6 @@
 // in the user's own terminal, which the sandboxed harness has no way to reach.
 import { connect, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import { createInterface as ask } from "node:readline/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +36,25 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
       }),
     }));
   });
+}
+
+/** Answers typed (or piped) by the user, one line each; end of input means "no". */
+function answers(): { next(prompt: string): Promise<string>; close(): void } {
+  const lines: string[] = [];
+  const waiting: Array<(l: string) => void> = [];
+  let ended = false;
+  const rl = createInterface({ input: process.stdin });
+  rl.on("line", (l) => (waiting.length ? waiting.shift()!(l) : lines.push(l)));
+  rl.on("close", () => { ended = true; while (waiting.length) waiting.shift()!(""); });
+  return {
+    next: (prompt) => {
+      process.stdout.write(prompt);
+      if (lines.length) return Promise.resolve(lines.shift()!);
+      if (ended) return Promise.resolve("");
+      return new Promise((ok) => waiting.push(ok));
+    },
+    close: () => rl.close(),
+  };
 }
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
@@ -94,20 +112,21 @@ async function main(argv: string[]): Promise<number> {
       case "trace": {
         const project = await currentProject(api);
         const { events } = await api.call("trace.list", { project: project ?? undefined, limit: 50 });
-        for (const e of events) console.log(`${e.ts.slice(11, 19)}  ${e.kind.padEnd(16)} ${(e.project ?? "-").padEnd(12)} ${dim(e.actor)}`);
+        for (const e of events) console.log(`${new Date(e.ts).toTimeString().slice(0, 8)}  ${e.kind.padEnd(16)} ${(e.project ?? "-").padEnd(12)} ${dim(e.actor)}`);
         return 0;
       }
       case "ask": {
         const project = await currentProject(api);
         const prompt = rest.join(" ");
-        const tty = ask({ input: process.stdin, output: process.stdout });
+        const tty = answers();
         api.onEvent(async (ev) => {
           if (ev.kind === "text") process.stdout.write(ev.text + "\n");
           else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
           else if (ev.kind === "gate") {
             console.log(warn(`\nGate: the Controller wants to use ${ev.tool}. Exactly this will run:`));
             console.log(ev.canonical);
-            const a = (await tty.question("Allow once? [y/N] ")).trim().toLowerCase();
+            const a = (await tty.next("Allow once? [y/N] ")).trim().toLowerCase();
+            if (!a) console.log("");
             await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "allow" : "deny" });
           }
         });
