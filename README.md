@@ -52,6 +52,8 @@ gov diff S-0001      # exactly what the Runner changed
 gov accept S-0001    # apply it to your project (or: gov discard S-0001)
 gov limits           # each Runner's measured usage against its Limit
 gov reserve codex weekly 15   # keep 15% of Codex's weekly window back (default 10)
+gov runner codex --model gpt-5.5 --effort medium   # the Runner's defaults
+gov spec-models within        # Controller keeps to them: free | within | defaults
 ```
 
 GovernCode checks Codex's measured usage against your Limit first, runs it in a workspace

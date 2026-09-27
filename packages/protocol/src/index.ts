@@ -50,6 +50,10 @@ export const ProjectProposal = z.object({
 /** What the user sets in Settings. Reserves: per Runner, per usage window, the % held back. */
 export const Settings = z.object({
   reserves: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.record(z.string().regex(/^[a-z0-9-]{1,20}$/), z.number().int().min(0).max(90))).default({}),
+  // Each Runner's default model and effort, and how far a Controller may depart from them per Spec:
+  // free (its pick), within (the default model, effort at most the default), defaults (always these).
+  runners: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.object({ model: z.string().min(1).max(80), effort: Effort.nullable() })).default({}),
+  specModels: z.enum(["free", "within", "defaults"]).default("free"),
 });
 export type SettingsValue = z.infer<typeof Settings>;
 

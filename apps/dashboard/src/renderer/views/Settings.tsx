@@ -8,33 +8,48 @@ import { Pill } from "../ui.tsx";
 import type { ProviderLimit } from "./Limits.tsx";
 
 type Reserves = Record<string, Record<string, number>>;
+type Effort = "low" | "medium" | "high" | "max" | null;
+type SettingsValue = { reserves: Reserves; runners: Record<string, { model: string; effort: Effort }>; specModels: "free" | "within" | "defaults" };
+const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free" };
+const POLICIES: Array<[SettingsValue["specModels"], string, string]> = [
+  ["free", "Controller picks", "It chooses the model and effort for each Spec."],
+  ["within", "Within the defaults", "The default model; a lower effort than the default is fine, never a higher one."],
+  ["defaults", "Always the defaults", "Every Spec uses the Runner's default model and effort."],
+];
 const WINDOWS = ["weekly", "5-hour"];      // shown before a Runner has been measured
 
 export function Settings(props: { projects: Project[]; hello: Hello | null; onChangeController: (project: string) => void }) {
   const [providers, setProviders] = useState<ProviderLimit[]>([]);
-  const [saved, setSaved] = useState<Reserves>({});
-  const [draft, setDraft] = useState<Reserves>({});
+  const [saved, setSaved] = useState<SettingsValue>(EMPTY);
+  const [draft, setDraft] = useState<SettingsValue>(EMPTY);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
       const [l, s] = await Promise.all([call<{ providers: ProviderLimit[] }>("limits.list", { measure: false }),
-        call<{ settings: { reserves: Reserves } }>("settings.get", {})]);
-      setProviders(l.providers); setSaved(s.settings.reserves); setDraft(s.settings.reserves);
+        call<{ settings: SettingsValue }>("settings.get", {})]);
+      setProviders(l.providers); setSaved(s.settings); setDraft(s.settings);
     } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  const value = (provider: string, window: string) => draft[provider]?.[window] ?? 10;
+  const value = (provider: string, window: string) => draft.reserves[provider]?.[window] ?? 10;
   const set = (provider: string, window: string, n: number) =>
-    setDraft((d) => ({ ...d, [provider]: { ...(d[provider] ?? {}), [window]: n } }));
+    setDraft((d) => ({ ...d, reserves: { ...d.reserves, [provider]: { ...(d.reserves[provider] ?? {}), [window]: n } } }));
+  const setDefault = (provider: string, model: string, effort: Effort) =>
+    setDraft((d) => {
+      const runners = { ...d.runners };
+      if (model.trim()) runners[provider] = { model: model.trim(), effort }; else delete runners[provider];
+      return { ...d, runners };
+    });
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
-  const valid = Object.values(draft).every((w) => Object.values(w).every((n) => Number.isInteger(n) && n >= 0 && n <= 90));
+  const valid = Object.values(draft.reserves).every((w) => Object.values(w).every((n) => Number.isInteger(n) && n >= 0 && n <= 90))
+    && Object.values(draft.runners).every((r) => r.model.length <= 80);
   const save = async () => {
     try {
-      const r = await call<{ settings: { reserves: Reserves } }>("settings.set", { reserves: draft });
-      setSaved(r.settings.reserves); setDraft(r.settings.reserves);
-      setMsg({ ok: true, text: "Saved. The next Limit check uses these." });
+      const r = await call<{ settings: SettingsValue }>("settings.set", draft);   // the whole object: set replaces it
+      setSaved(r.settings); setDraft(r.settings);
+      setMsg({ ok: true, text: "Saved. New Specs and Limit checks use these." });
     } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
   };
 
@@ -63,6 +78,20 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
             <div key={p.provider} className="checkpoint">
               <div className="row"><b>{p.provider}</b><span className="spacer" />{p.verdict.ok ? <Pill tone="ok">available</Pill> : <Pill tone="warn">held</Pill>}</div>
               <div className="row reserve-row">
+                <label className="field inline">
+                  <span className="dim small">default model</span>
+                  <input className="model-input" value={draft.runners[p.provider]?.model ?? ""} placeholder="(Controller picks)" aria-label={`${p.provider} default model`}
+                    onChange={(e) => setDefault(p.provider, e.target.value, draft.runners[p.provider]?.effort ?? null)} />
+                </label>
+                <label className="field inline">
+                  <span className="dim small">effort</span>
+                  <select value={draft.runners[p.provider]?.effort ?? ""} disabled={!draft.runners[p.provider]} aria-label={`${p.provider} default effort`}
+                    onChange={(e) => setDefault(p.provider, draft.runners[p.provider]?.model ?? "", (e.target.value || null) as Effort)}>
+                    <option value="">n/a</option>{["low", "medium", "high", "max"].map((x) => <option key={x} value={x}>{x}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="row reserve-row">
                 {windows.map((w) => (
                   <label key={w} className="field inline">
                     <span className="dim small">{w} · keep back</span>
@@ -75,8 +104,18 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
             </div>
           );
         })}
+        <h2>Model and effort per Spec</h2>
+        <div className="policy" role="radiogroup" aria-label="Model and effort per Spec">
+          {POLICIES.map(([id, label, help]) => (
+            <label key={id} className={`policy-option ${draft.specModels === id ? "on" : ""}`}>
+              <input type="radio" name="specModels" checked={draft.specModels === id} onChange={() => setDraft((d) => ({ ...d, specModels: id }))} />
+              <span><b>{label}</b><span className="dim small"> · {help}</span></span>
+            </label>
+          ))}
+        </div>
+        <p className="dim small">The Controller's pick is a request. When your setting changes it, the Spec says so.</p>
         <div className="row">
-          <button className="btn btn-accent" disabled={!dirty || !valid} onClick={save}>Save Limits</button>
+          <button className="btn btn-accent" disabled={!dirty || !valid} onClick={save}>Save settings</button>
           {!valid && <span className="error small">Each value must be a whole number from 0 to 90.</span>}
           {msg && <span className={msg.ok ? "ok small" : "error small"}>{msg.text}</span>}
         </div>

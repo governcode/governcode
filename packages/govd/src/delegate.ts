@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { SpecInput } from "@governcode/protocol";
+import { SpecInput, type SettingsValue } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
 import type { LimitGate, UsageSource } from "./limits.ts";
 import type { GateRequest } from "./claude.ts";
@@ -24,7 +24,29 @@ export type DelegationContext = {
   supervisor: string; policyDir: string; stateDir: string;
   gate(req: GateRequest): Promise<"allow" | "deny">;   // the user's terminal
   notify(n: unknown): void;
+  settings?: () => SettingsValue;                    // read at each call: Settings may change mid-turn
 };
+
+const EFFORT_ORDER = ["low", "medium", "high", "max"] as const;
+
+/**
+ * The model and effort a Spec actually gets: the Controller's pick is a request, and the user's
+ * Settings decide how far it may depart from the Runner's defaults. Returns why, if it changed.
+ */
+export function specModel(input: { to: string; model: string; effort: SpecInput["effort"] }, s: SettingsValue | undefined):
+    { model: string; effort: SpecInput["effort"]; note: string | null } {
+  const def = s?.runners[input.to];
+  if (!def || !s || s.specModels === "free") return { model: input.model, effort: input.effort, note: null };
+  if (s.specModels === "defaults") {
+    const same = def.model === input.model && def.effort === input.effort;
+    return { model: def.model, effort: def.effort, note: same ? null : `model and effort set by your Settings (asked ${input.model} · ${input.effort ?? "n/a"})` };
+  }
+  // within: the default model; effort no heavier than the default (lighter is fine).
+  const rank = (e: SpecInput["effort"]) => (e === null ? -1 : EFFORT_ORDER.indexOf(e));
+  const effort = def.effort !== null && (input.effort === null || rank(input.effort) > rank(def.effort)) ? def.effort : input.effort;
+  const changed = input.model !== def.model || effort !== input.effort;
+  return { model: def.model, effort, note: changed ? `kept within your Settings' defaults (asked ${input.model} · ${input.effort ?? "n/a"})` : null };
+}
 
 const POLL_MS = Number(process.env.GOVERNCODE_LIMIT_POLL_MS ?? 120_000);
 
@@ -80,9 +102,14 @@ async function crew(ctx: DelegationContext) {
   for (const provider of Object.keys(ctx.usage)) {
     await measured(ctx, provider);
     const probe = ctx.limits.check(provider);
-    out.push({ provider, available: probe.ok, ...(probe.ok ? {} : { reason: probe.reason, resetsAt: probe.resetsAt }) });
+    const def = ctx.settings?.().runners[provider];
+    out.push({ provider, available: probe.ok, ...(probe.ok ? {} : { reason: probe.reason, resetsAt: probe.resetsAt }),
+      ...(def ? { defaultModel: def.model, defaultEffort: def.effort } : {}) });
   }
-  return { runners: out };
+  const policy = ctx.settings?.().specModels ?? "free";
+  return { runners: out, modelPolicy: policy === "free" ? "pick model and effort per Spec"
+    : policy === "within" ? "use each Runner's default model; effort may be lower than its default, never higher"
+    : "each Runner always uses its default model and effort" };
 }
 
 
@@ -90,7 +117,10 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   const input = SpecInput.parse(raw);
   const L = ctx.ledger;
   if (!ctx.usage[input.to]) throw new Error(`${input.to} is not a Runner GovernCode can use (known: ${Object.keys(ctx.usage).join(", ") || "none"})`);
+  const picked = specModel(input, ctx.settings?.());
+  input.model = picked.model; input.effort = picked.effort;
   const spec = L.createSpec(ctx.project.name, input, "controller");
+  if (picked.note) L.updateSpec(spec.id, { note: picked.note }, "govd");
   ctx.notify({ kind: "spec", id: spec.id, to: spec.to, brief: spec.brief });
 
   // 1. The Limit, from a fresh measurement.

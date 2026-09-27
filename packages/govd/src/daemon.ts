@@ -286,7 +286,7 @@ export class Daemon {
       case "settings.set": {
         this.saveSettings(p);
         this.limits.setReserves(p.reserves);
-        L.append(null, "settings.changed", "user", { reserves: p.reserves });
+        L.append(null, "settings.changed", "user", { reserves: p.reserves, runners: p.runners, specModels: p.specModels });
         return { settings: p };
       }
       case "limits.list": {
@@ -408,7 +408,8 @@ export class Daemon {
       // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
       const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, ledger: L, limits: this.limits,
         usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
-        policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify })
+        policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify,
+        settings: () => this.settings() })
         : openTurnSocket(resolve(this.opts.socketPath, ".."), async (method, params) => {
           if (method !== "controller.propose_project") throw new Error(`not offered at Home: ${method}`);
           return this.propose(params, notify, actor);

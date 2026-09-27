@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { Ledger } from "../src/ledger.ts";
 import { LimitGate } from "../src/limits.ts";
 import { codexUsage } from "../src/codex.ts";
-import { openControllerSocket, accept } from "../src/delegate.ts";
+import { openControllerSocket, accept, specModel } from "../src/delegate.ts";
 
 const root = mkdtempSync(join(tmpdir(), "gc-deleg-"));
 const bin = join(root, "bin");
@@ -59,7 +59,7 @@ function project() {
   return dir;
 }
 
-function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}) {
+function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settings?: any) {
   const proj = project();
   const state = mkdtempSync(join(root, "state-"));
   mkdirSync(join(state, "codex-home"), { recursive: true });
@@ -70,7 +70,8 @@ function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}) {
   const ctx = { project: { name: "p", path: proj }, ledger, limits,
     usage: { codex: codexUsage({ supervisor, policyDir: join(state, "pol"), stateDir: state, scratch: join(state, "scratch") }) },
     runtimeDir: join(state, "run"), supervisor, policyDir: join(state, "pol"), stateDir: state,
-    gate: async (r: { canonical: string }) => { gates.push(r.canonical); return gateAnswer; }, notify: () => {} };
+    gate: async (r: { canonical: string }) => { gates.push(r.canonical); return gateAnswer; }, notify: () => {},
+    ...(settings ? { settings: () => settings } : {}) };
   const sock = openControllerSocket(ctx);
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {
     const s = connect(sock.path);
@@ -141,4 +142,29 @@ test("codex MCP approvals match exactly one in-flight GovernCode call, or are de
   const two = new Map([["c1", { tool: "delegate", args: { to: "a" } }], ["c2", { tool: "delegate", args: { to: "b" } }]]);
   assert.equal(matchMcpApproval(ask("delegate"), two), null, "two parallel calls: ambiguous, so declined");
   assert.equal(matchMcpApproval(ask("delegate"), new Map([["c1", { tool: "delegate", args: undefined }]])), null, "no arguments to show");
+});
+
+test("per-Spec models: free keeps the pick, within never goes heavier, defaults always wins", () => {
+  const base = { reserves: {}, runners: { codex: { model: "gpt-5.5", effort: "medium" as const } } };
+  const ask = { to: "codex", model: "gpt-5.5-pro", effort: "max" as const };
+  assert.deepEqual(specModel(ask, { ...base, specModels: "free" }), { model: "gpt-5.5-pro", effort: "max", note: null });
+  const within = specModel(ask, { ...base, specModels: "within" });
+  assert.deepEqual([within.model, within.effort], ["gpt-5.5", "medium"]);
+  assert.match(within.note!, /kept within your Settings/);
+  assert.deepEqual(specModel({ to: "codex", model: "gpt-5.5", effort: "low" }, { ...base, specModels: "within" }),
+    { model: "gpt-5.5", effort: "low", note: null }, "lighter is fine");
+  const forced = specModel({ to: "codex", model: "x", effort: "low" }, { ...base, specModels: "defaults" });
+  assert.deepEqual([forced.model, forced.effort], ["gpt-5.5", "medium"]);
+  assert.deepEqual(specModel(ask, { reserves: {}, runners: {}, specModels: "defaults" }).model, "gpt-5.5-pro", "no default set: the pick stands");
+});
+
+test("delegate: the Spec records the model Settings allowed, and crew tells the Controller the policy", async () => {
+  const t = setup("allow", {}, { reserves: {}, runners: { codex: { model: "gpt-5.5", effort: "low" } }, specModels: "defaults" });
+  await new Promise((r) => setTimeout(r, 50));
+  const crew = await t.call("controller.crew", {});
+  assert.equal(crew.result.runners[0].defaultModel, "gpt-5.5");
+  assert.match(crew.result.modelPolicy, /always uses its default/);
+  const r = await t.call("controller.delegate", { ...SPEC, model: "gpt-5.5-pro", effort: "high" });
+  const spec = t.ledger.spec(r.result.id)!;
+  assert.deepEqual([spec.model, spec.effort], ["gpt-5.5", "low"]);
 });

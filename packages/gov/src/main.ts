@@ -146,6 +146,27 @@ async function main(argv: string[]): Promise<number> {
         const rows = Object.entries(settings.reserves as Record<string, Record<string, number>>);
         if (!rows.length) console.log(dim("defaults: every Runner keeps 10% of each usage window back"));
         for (const [provider, windows] of rows) console.log(`${provider.padEnd(8)} ${Object.entries(windows).map(([w, n]) => `${w} ${n}%`).join(", ")}`);
+        for (const [provider, d] of Object.entries(settings.runners as Record<string, { model: string; effort: string | null }>)) console.log(`${provider.padEnd(8)} defaults to ${d.model} · ${d.effort ?? "n/a"}`);
+        console.log(`per-Spec models: ${settings.specModels}`);
+        return 0;
+      }
+      case "runner": {
+        // gov runner codex --model gpt-5.5 --effort medium: the Runner's default model and effort.
+        const provider = rest[0], flag = (f: string) => { const i = rest.indexOf(f); return i >= 0 ? rest[i + 1] : undefined; };
+        const model = flag("--model"), effort = flag("--effort");
+        if (!provider || !model) throw new Error("usage: gov runner PROVIDER --model M [--effort low|medium|high|max]");
+        const { settings } = await api.call("settings.get", {});
+        await api.call("settings.set", { ...settings, runners: { ...settings.runners, [provider]: { model, effort: effort ?? null } } });
+        console.log(`${provider}: defaults to ${model} · ${effort ?? "n/a"}`);
+        return 0;
+      }
+      case "spec-models": {
+        // gov spec-models free|within|defaults: how far a Controller may depart from the defaults per Spec.
+        const policy = rest[0];
+        if (!["free", "within", "defaults"].includes(policy)) throw new Error("usage: gov spec-models free|within|defaults");
+        const { settings } = await api.call("settings.get", {});
+        await api.call("settings.set", { ...settings, specModels: policy });
+        console.log(`per-Spec models: ${policy}`);
         return 0;
       }
       case "reserve": {
@@ -155,7 +176,7 @@ async function main(argv: string[]): Promise<number> {
         if (!provider || !window || !Number.isInteger(n)) throw new Error("usage: gov reserve PROVIDER WINDOW PERCENT   (e.g. gov reserve codex weekly 15)");
         const { settings } = await api.call("settings.get", {});
         const reserves = { ...settings.reserves, [provider]: { ...(settings.reserves[provider] ?? {}), [window]: n } };
-        await api.call("settings.set", { reserves });
+        await api.call("settings.set", { ...settings, reserves });   // the whole object: set replaces it
         console.log(`${provider}: keeps ${n}% of its ${window} window back`);
         return 0;
       }
@@ -230,7 +251,7 @@ async function main(argv: string[]): Promise<number> {
         return r.ok ? 0 : 1;
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

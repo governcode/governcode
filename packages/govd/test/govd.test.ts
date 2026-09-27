@@ -1,5 +1,5 @@
 // govd end to end with a fake supervisor and a fake Claude Code, so it runs anywhere.
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,8 +50,14 @@ rl.on("line", (l) => {
 `);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
+// Everything a test opens is closed after it, pass or fail, so a failed assertion reports
+// instead of leaving a socket open and hanging the run.
+const opened: Array<() => void> = [];
+afterEach(() => { while (opened.length) { try { opened.pop()!(); } catch { /* already closed */ } } });
+
 function client(sock: string) {
   const s = connect(sock);
+  opened.push(() => s.destroy());
   let id = 0;
   const waiting = new Map<number, (m: any) => void>();
   const events: any[] = [];
@@ -70,8 +76,10 @@ function client(sock: string) {
 }
 
 function daemon(tag: string) {
-  return new Daemon({ socketPath: join(root, tag, "govd.sock"), ledgerPath: join(root, tag, "trace.sqlite"),
+  const d = new Daemon({ socketPath: join(root, tag, "govd.sock"), ledgerPath: join(root, tag, "trace.sqlite"),
     policyDir: join(root, tag, "policies"), homeDir: join(root, tag, "home"), supervisor, version: "test" });
+  opened.push(() => d.close());
+  return d;
 }
 
 test("canonical: sorted keys, ASCII-escaped, whole input", () => {
@@ -258,7 +266,7 @@ test("settings: reserves are validated, reach the Limit gate, and survive a rest
   let c = client(join(root, "settings", "govd.sock"));
   assert.ok((await c.call("settings.set", { reserves: { codex: { weekly: 95 } } })).error, "over 90% is refused");
   assert.ok((await c.call("settings.set", { reserves: { "Bad Name": { weekly: 5 } } })).error);
-  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } } });
+  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } }, runners: {}, specModels: "free" });
   (d as any).limits.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 70, resetsAt: null }] });
   const view = (await c.call("limits.list", {})).result.providers[0];
   assert.deepEqual([view.reserves, view.verdict.ok], [{ weekly: 25 }, true]);   // 70 + 1 <= 75
