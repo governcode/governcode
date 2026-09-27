@@ -1,0 +1,39 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: TypeScript tests
+        run: npm test
+      - name: Rust build (no warnings allowed)
+        run: RUSTFLAGS="-D warnings" cargo build --release --locked
+      - name: Rust tests
+        run: cargo test --release --locked
+      - name: Sandbox self-test
+        # The self-test needs Landlock ABI 6 (kernel 6.12+). Hosted runners may be older:
+        # then govern-sup refuses to run at all (fail closed), which we report, not hide.
+        run: |
+          set +e
+          out=$(./target/release/govern-sup selftest 2>&1); code=$?
+          echo "$out"
+          if [ $code -ne 0 ] && echo "$out" | grep -q "needs Landlock ABI"; then
+            echo "::warning::runner kernel too old for the sandbox self-test; govern-sup correctly refused to start"
+            exit 0
+          fi
+          exit $code
