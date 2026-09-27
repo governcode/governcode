@@ -1,6 +1,6 @@
 // Delegation end to end with a fake Codex app-server (speaks the real JSON-RPC shapes), so CI
 // covers the whole path: Limit, workspace, Runner Gate, snapshots, scope check, diff, accept.
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -77,8 +77,15 @@ function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}) {
     createInterface({ input: s }).once("line", (l) => { ok(JSON.parse(l)); s.end(); });
     s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\n");
   });
-  return { proj, state, ledger, gates, call, close: () => { sock.close(); ledger.close(); } };
+  const t = { proj, state, ledger, gates, call, close: () => { sock.close(); ledger.close(); } };
+  opened.push(t);
+  return t;
 }
+
+// Every setup is closed after each test even when an assertion fails, so a failure reports
+// instead of hanging on an open socket.
+const opened: Array<{ close(): void }> = [];
+afterEach(() => { while (opened.length) { try { opened.pop()!.close(); } catch { /* already */ } } });
 
 const SPEC = { to: "codex", brief: "add tests/hello.txt", result: "it contains ok", scope: { read: [], write: ["tests"] },
   budgetPercent: 5, model: "gpt-5.5", effort: "low", reason: "test" };
@@ -95,7 +102,6 @@ test("delegate: Limit checked, Runner Gate shown with the change, diff returned,
   const spec = t.ledger.spec(r.result.id)!;
   assert.deepEqual(accept(t.state, t.proj, spec), ["tests/hello.txt"]);
   assert.equal(readFileSync(join(t.proj, "tests/hello.txt"), "utf8"), "ok\n");
-  t.close();
 });
 
 test("delegate: a Runner inside its Limit is held, and nothing runs", async () => {
@@ -105,7 +111,6 @@ test("delegate: a Runner inside its Limit is held, and nothing runs", async () =
   assert.equal(r.result.status, "held");
   assert.match(r.result.reason, /Limit/);
   assert.equal(t.gates.length, 0);
-  t.close();
 });
 
 test("delegate: a change outside the scope fails the Spec instead of being offered", async () => {
@@ -114,7 +119,6 @@ test("delegate: a change outside the scope fails the Spec instead of being offer
   const r = await t.call("controller.delegate", SPEC);
   assert.equal(r.result.status, "failed");
   assert.match(r.result.note, /outside its scope: src\/sneaky\.txt/);
-  t.close();
 });
 
 test("delegate: the controller socket offers nothing else (no Gate answers)", async () => {
@@ -122,5 +126,4 @@ test("delegate: the controller socket offers nothing else (no Gate answers)", as
   await new Promise((r) => setTimeout(r, 50));
   const r = await t.call("gate.answer", { id: "G-1", answer: "allow" });
   assert.match(r.error.message, /not offered to the Controller/);
-  t.close();
 });

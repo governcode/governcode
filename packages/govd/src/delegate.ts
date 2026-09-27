@@ -35,7 +35,10 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
   chmodSync(dir, 0o700);
   const path = join(dir, `${randomBytes(12).toString("hex")}.sock`);
   const server: Server = createServer((sock) => {
-    createInterface({ input: sock }).on("line", async (line) => {
+    sock.on("error", () => sock.destroy());
+    const lines = createInterface({ input: sock });
+    lines.on("error", () => {});
+    lines.on("line", async (line) => {
       let m: any;
       try { m = JSON.parse(line); } catch { return; }
       const reply = (o: object) => sock.writable && sock.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...o }) + "\n");

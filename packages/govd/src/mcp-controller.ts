@@ -29,7 +29,9 @@ let next = 1;
 const waiting = new Map<number, (m: any) => void>();
 const sock = connect(socketPath);
 sock.on("error", (e) => { process.stderr.write(`governcode: ${e.message}\n`); });
-createInterface({ input: sock }).on("line", (l) => { const m = JSON.parse(l); waiting.get(m.id)?.(m); waiting.delete(m.id); });
+const replies = createInterface({ input: sock });
+replies.on("error", () => {});
+replies.on("line", (l) => { const m = JSON.parse(l); waiting.get(m.id)?.(m); waiting.delete(m.id); });
 const call = (method: string, params: unknown) => new Promise<any>((ok) => {
   const id = next++; waiting.set(id, ok); sock.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
 });

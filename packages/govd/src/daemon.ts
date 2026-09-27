@@ -124,7 +124,12 @@ export class Daemon {
     sock.on("close", () => this.sockets.delete(sock));
     const write = (obj: unknown) => sock.writable && sock.write(JSON.stringify(obj) + "\n");
     sock.on("close", () => { for (const g of [...this.gates.values()]) if (g.owner === sock) this.settle(g.id, "deny", "asker left"); });
-    createInterface({ input: sock }).on("line", async (line) => {
+    // A client that drops mid-line (ECONNRESET) must not take govd down: the error is the
+    // client's problem, and "close" already denies its Gates.
+    sock.on("error", () => sock.destroy());
+    const lines = createInterface({ input: sock });
+    lines.on("error", () => {});
+    lines.on("line", async (line) => {
       let id: number | string | null = null;
       try {
         const req = Request.parse(JSON.parse(line));

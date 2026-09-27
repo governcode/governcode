@@ -20,7 +20,9 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
     const waiting = new Map<number, (r: Reply) => void>();
     let listener: (e: any) => void = () => {};
     sock.once("error", () => fail(new Error(`govd is not running (no socket at ${socketPath}). Start it with: npm run govd`)));
-    createInterface({ input: sock }).on("line", (line) => {
+    const lines = createInterface({ input: sock });
+    lines.on("error", () => {});   // the socket's own error handler reports it
+    lines.on("line", (line) => {
       const msg = JSON.parse(line);
       if (msg.method === "event") return listener(msg.params);
       waiting.get(msg.id)?.(msg);
