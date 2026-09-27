@@ -10,6 +10,19 @@ wait at a Gate for your approval, signed on your phone.
 
 Free and open source (MIT). Runs on your own machine; no hosted service.
 
+## What we stand for
+
+1. **You hold the controls.** 2. **Deny by default, fail closed.** 3. **Any model can lead.**
+4. **Honest about limits.** 5. **Free and open, forever.** 6. **Built with AI, openly.**
+7. **Small, boring, verifiable.** 8. **Respect, always.** What each one means:
+[docs/PHILOSOPHY.md](docs/PHILOSOPHY.md).
+
+## Release channels
+
+One repository, three channels: **Debate** (the `debate` branch, where work and new ideas
+happen), **Motion** (release candidates, tagged `vX.Y.Z-motion.N`) and **Decree** (stable
+releases, tagged `vX.Y.Z`). Nothing has reached Motion yet: GovernCode is pre-alpha.
+
 > **Status: pre-alpha, phases 1 and 2.** Developers can try it on Linux, from the CLI or
 > the early Dashboard: the sandbox, Gates, Checkpoints, Limits, and delegation from a Claude
 > Code or Codex Controller to a Codex Runner work end to end. Expect rough edges; nothing is
@@ -22,7 +35,7 @@ need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, 
 Claude Code installed and logged in.
 
 ```sh
-git clone https://github.com/onelegdave/governcode && cd governcode
+git clone https://github.com/governcode/governcode && cd governcode
 npm ci && cargo build --release
 ./target/release/govern-sup selftest        # must pass, or govd starts nothing
 node packages/gov/src/main.ts daemon start  # or: daemon install (systemd --user)

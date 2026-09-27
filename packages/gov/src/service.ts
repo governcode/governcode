@@ -12,7 +12,7 @@ export const govdEntry = join(repo, "packages/govd/src/main.ts");
 export function unitFile(node: string, entry: string): string {
   return `[Unit]
 Description=GovernCode daemon (govd)
-Documentation=https://github.com/onelegdave/governcode
+Documentation=https://github.com/governcode/governcode
 
 [Service]
 ExecStart=${node} ${entry}

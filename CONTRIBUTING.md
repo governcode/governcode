@@ -1,10 +1,13 @@
 # Contributing
 
-Thanks for looking. GovernCode is early (phase 0), so issues and design discussion are the
-most useful contributions right now.
+Thanks for looking. GovernCode is early (pre-alpha), so issues and design discussion are the
+most useful contributions right now. Pull requests go to the `debate` branch.
 
 ## Ground rules
 
+- **Respect, always.** Talk about code, designs and ideas, never about people or the tools
+  and systems they like. See the [code of conduct](https://github.com/governcode/.github/blob/main/CODE_OF_CONDUCT.md)
+  and [what we stand for](docs/PHILOSOPHY.md).
 - **Security first.** The sandbox's guarantees are in [docs/SANDBOX.md](docs/SANDBOX.md).
   A change that weakens an invariant needs a very good reason and a self-test update.
 - **Fail closed.** If something cannot be enforced, refuse and say why. No "run without

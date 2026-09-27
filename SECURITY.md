@@ -6,7 +6,7 @@ security reports are very welcome.
 ## Reporting
 
 Please report vulnerabilities privately through GitHub's
-[private vulnerability reporting](https://github.com/onelegdave/governcode/security/advisories/new),
+[private vulnerability reporting](https://github.com/governcode/governcode/security/advisories/new),
 not in a public issue. Include what you did, what you expected, and what happened.
 
 Especially interesting: any way for a sandboxed tool to reach `govd` other than its own
