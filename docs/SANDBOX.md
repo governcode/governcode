@@ -19,16 +19,24 @@ mode is not a boundary; this sandbox is.
    tool auto-allows on its next launch.
 4. **Network is limited** (Landlock TCP rules): outbound TCP to ports 443 (and 80 only if a
    policy asks) and nothing else; no binding.
-5. **No local IPC out.** seccomp denies creating `AF_UNIX` sockets (the session bus, the
-   keyring service and the daemon's socket are all Unix sockets), while inherited sockets
-   and `socketpair` keep working.
+5. **No local IPC out, except what the policy lists.** The session bus, the keyring service
+   and the daemon are all Unix sockets. From Landlock ABI 9 the kernel refuses connecting to
+   any pathname Unix socket except those in the policy's `unix_connect` list (in practice
+   only the system DNS resolver's), and scoping blocks abstract sockets. On older kernels
+   seccomp refuses creating `AF_UNIX` sockets at all. Inherited sockets and stream
+   `socketpair` keep working.
 6. **No reaching other processes.** seccomp denies `ptrace`, `process_vm_readv/writev`,
-   `pidfd_getfd`; Landlock scoping denies signals and abstract Unix sockets outside the
-   sandbox. `govd` marks itself non-dumpable so its `/proc` entries are not readable by
-   same-user processes.
+   `pidfd_getfd` and `io_uring_setup`; Landlock denies ptrace-level access to processes
+   outside the sandbox and scopes signals and abstract Unix sockets.
 7. **No privilege gain.** `no_new_privs` is set; setuid binaries do not elevate.
 8. **Fail closed.** If the kernel lacks what a rule needs, `govern-sup` refuses to start the
    tool and says which rule and why. There is no "run unsandboxed" switch.
+
+## Known limits
+
+- UDP is not restricted (DNS needs it); TCP is.
+- A binary the tool writes into its worktree can still be loaded through the dynamic loader
+  (`ld.so ./file`): Landlock checks execute on `execve`, not on memory mapping.
 
 ## Self-test
 

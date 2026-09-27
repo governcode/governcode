@@ -1,0 +1,13 @@
+[package]
+name = "govern-sup"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "GovernCode's sandbox supervisor: runs an AI tool under Landlock + seccomp"
+publish = false
+
+[dependencies]
+landlock = "0.4.7"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

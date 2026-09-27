@@ -8,7 +8,10 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import type { ControllerChoice } from "@governcode/protocol";
 
-export type Policy = { version: 1; read: string[]; write: string[]; exec: string[]; tcp_connect: number[]; cwd: string };
+export type Policy = { version: 1; read: string[]; write: string[]; exec: string[]; tcp_connect: number[]; unix_connect: string[]; cwd: string };
+
+// The one local socket a tool may reach: the system DNS resolver, where the host uses one.
+const RESOLVER_SOCKETS = ["/run/systemd/resolve/io.systemd.Resolve"];
 
 export type GateRequest = { id: string; tool: string; input: Record<string, unknown>; canonical: string };
 export type TurnHooks = {
@@ -43,6 +46,7 @@ export function claudePolicy(worktree: string, sessionTmp: string): Policy {
       (p) => p === worktree || p === sessionTmp || existsSync(p)),
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin)],
     tcp_connect: [443],
+    unix_connect: RESOLVER_SOCKETS.filter(existsSync),
     cwd: worktree,
   };
 }
