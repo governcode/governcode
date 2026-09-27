@@ -22,6 +22,10 @@ function git(gitDir: string, args: string[], input?: string | Buffer, extraEnv: 
 
 export type SpecPaths = { root: string; work: string; gitDir: string };
 
+// ponytail: files over 100 MB are left out of snapshots (not diffed, not undone). Raise, or
+// stream them, when a real project needs it.
+const MAX_SNAPSHOT_FILE = 100 * 1024 * 1024;
+
 export function specPaths(stateDir: string, specId: string): SpecPaths {
   const root = join(stateDir, "specs", specId);
   return { root, work: join(root, "work"), gitDir: join(root, "git") };
@@ -47,7 +51,9 @@ export function snapshot(p: SpecPaths, label: string, parent?: string | null, on
     if (st.isSymbolicLink()) {
       const oid = git(p.gitDir, ["hash-object", "-w", "--stdin"], readlinkSync(full)).toString().trim();
       entries.push(`120000 ${oid}\t${rel}`);
-    } else if (st.isFile()) {
+    } else if (st.isFile() && st.size <= MAX_SNAPSHOT_FILE) {
+      // Regular files only (never a FIFO or device, which could block or never end), and
+      // not huge ones, which would be read whole into memory.
       const oid = git(p.gitDir, ["hash-object", "-w", "--no-filters", "--stdin"], readFileSync(full)).toString().trim();
       entries.push(`${st.mode & 0o111 ? "100755" : "100644"} ${oid}\t${rel}`);
     }
@@ -154,7 +160,8 @@ export function applyToProject(p: SpecPaths, projectPath: string, before: string
     plan.push({ path: f, target, to });
   }
   if (conflicts.length) throw new Error(`the project changed since ${since}, so nothing was applied: ${conflicts.join(", ")}`);
-  for (const { target, to } of plan) {
+  for (const { path, target, to } of plan) {
+    safeTarget(projectPath, path);   // again, at write time: a symlink planted since the plan is refused
     if (!to) { unlinkSync(target); continue; }
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, git(p.gitDir, ["cat-file", "blob", to.oid]));
