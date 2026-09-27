@@ -26,7 +26,7 @@ export type DelegationContext = {
   notify(n: unknown): void;
 };
 
-const MEASURE_TTL = 5 * 60_000;
+const POLL_MS = Number(process.env.GOVERNCODE_LIMIT_POLL_MS ?? 120_000);
 
 /** Opens the per-turn socket; returns its path and a close(). */
 export function openControllerSocket(ctx: DelegationContext): { path: string; close(): void } {
@@ -92,6 +92,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     return { id: spec.id, status: "held", reason: `${input.to} is ${verdict.reason}`, resetsAt: verdict.resetsAt };
   }
 
+  let poll: ReturnType<typeof setInterval> | undefined;
   try {
     // 2. Its own workspace in govd's state (out of every AI tool's reach): the project's
     //    committed HEAD, exported without filters, with its own git dir for snapshots.
@@ -109,9 +110,17 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     L.updateSpec(spec.id, { status: "running", checkpoints: { before, after: null } }, "govd");
     const prompt = `${input.brief}\n\nDone means: ${input.result}\n\nYou may change only: ${input.scope.write.length ? input.scope.write.join(", ") : "anything in this workspace"}.`;
     const texts: string[] = [];
+    // While it runs, the Limit is re-measured; crossing it stops the Runner (a measured hold,
+    // so a little overshoot between readings is possible, never a free run).
+    const stop = new AbortController();
+    poll = setInterval(async () => {
+      await measured(ctx, input.to);
+      const v = ctx.limits.stillWithin(spec.id);
+      if (!v.ok) { ctx.notify({ kind: "spec.text", id: spec.id, text: `Limit: ${v.reason}; stopping.` }); stop.abort(v.reason); }
+    }, POLL_MS);
     const result = await new Promise<{ ok: boolean; summary: string }>((done) => {
       void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work,
-        writePaths, model: input.model, effort: input.effort, prompt,
+        writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal,
         hooks: {
           text: (t) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); },
           tool: (name) => ctx.notify({ kind: "spec.tool", id: spec.id, name }),
@@ -119,6 +128,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
           done,
         } });
     });
+    clearInterval(poll);
     const after = snapshot(paths, "after", before);
     const files = changedFiles(paths, before, after);
     // The sandbox should already stop it, but a change outside the scope is never offered.
@@ -136,6 +146,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     L.updateSpec(spec.id, { status: "failed", note: e instanceof Error ? e.message : String(e) }, "govd");
     throw e;
   } finally {
+    clearInterval(poll);
     ctx.limits.release(spec.id);
   }
 }

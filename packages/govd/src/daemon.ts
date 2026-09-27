@@ -10,6 +10,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
+import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
@@ -54,6 +55,17 @@ export class Daemon {
     this.sandboxOk = r.status === 0;
     this.sandboxReason = this.sandboxOk ? "self-test passed" : (r.error?.message ?? (r.stderr || r.stdout || "failed").trim().slice(-500));
     return { ok: this.sandboxOk, reason: this.sandboxReason };
+  }
+
+  /** The real Claude policy, probed on this machine (after listen, so govd's socket exists). */
+  policyCheck(): { ok: boolean; problems: string[] } {
+    if (!this.sandboxOk) return { ok: false, problems: [] };
+    const problems = checkClaudePolicy(this.opts.supervisor, this.opts.policyDir, this.opts.socketPath);
+    if (problems.length) {
+      this.sandboxOk = false;
+      this.sandboxReason = `the Claude policy does not hold here: ${problems.join("; ")}`;
+    }
+    return { ok: !problems.length, problems };
   }
 
   async listen(): Promise<void> {

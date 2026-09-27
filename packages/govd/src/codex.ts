@@ -134,7 +134,8 @@ export function codexUsage(o: { supervisor: string; policyDir: string; stateDir:
 
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
 export async function runCodexTurn(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string;
-  readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks }): Promise<void> {
+  readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks;
+  signal?: AbortSignal }): Promise<void> {
   let s: Awaited<ReturnType<typeof session>>;
   try {
     s = await session(o);
@@ -180,6 +181,8 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     }
   });
   void rpc.exited.then((err) => finish({ ok: false, summary: `codex exited: ${err.trim().split("\n").slice(-2).join(" | ")}` }));
+  // Stopped from outside (a Limit crossed mid-run): end the process, report why.
+  o.signal?.addEventListener("abort", () => finish({ ok: false, summary: `stopped: ${String(o.signal?.reason ?? "aborted")}` }), { once: true });
   try {
     const t = await rpc.request("thread/start", { cwd: o.worktree, model: o.model, ephemeral: true,
       approvalPolicy: "untrusted", sandbox: o.readOnly ? "read-only" : "workspace-write" });

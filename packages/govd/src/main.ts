@@ -15,4 +15,8 @@ const test = daemon.selftest();
 console.log(`govd: sandbox ${test.ok ? "enforced (self-test passed)" : "NOT verified: " + test.reason}`);
 await daemon.listen();
 console.log(`govd: listening on ${socketPath}`);
+if (test.ok) {
+  const pc = daemon.policyCheck();
+  console.log(pc.ok ? "govd: Claude policy verified on this machine" : `govd: Claude policy FAILED, starting nothing: ${pc.problems.join("; ")}`);
+}
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { daemon.close(); process.exit(0); });
