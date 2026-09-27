@@ -3,7 +3,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ControllerChoice, TraceEvent } from "@governcode/protocol";
+import type { ControllerChoice, Spec, SpecInput, SpecStatus, TraceEvent } from "@governcode/protocol";
 
 export type Project = { name: string; path: string; created: string; controller: ControllerChoice };
 
@@ -23,6 +23,8 @@ export class Ledger {
         ts TEXT NOT NULL, project TEXT, kind TEXT NOT NULL, actor TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (
         name TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, created TEXT NOT NULL, controller TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS specs (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, body TEXT NOT NULL);
     `);
   }
 
@@ -77,6 +79,48 @@ export class Ledger {
 
   project(name: string): Project | undefined {
     return this.projects().find((p) => p.name === name);
+  }
+
+  // --- specs (a projection of spec.* events, updated in the same transaction)
+  private tx<T>(f: () => T): T {
+    this.db.exec("BEGIN");
+    try { const r = f(); this.db.exec("COMMIT"); return r; } catch (e) { this.db.exec("ROLLBACK"); throw e; }
+  }
+
+  createSpec(project: string, input: SpecInput, actor: string): Spec {
+    return this.tx(() => {
+      const n = (this.db.prepare("SELECT COUNT(*) AS n FROM specs").get() as { n: number }).n + 1;
+      const spec: Spec = { ...input, id: `S-${String(n).padStart(4, "0")}`, project, status: "queued",
+        created: new Date().toISOString(), checkpoints: { before: null, after: null }, files: [] };
+      this.db.prepare("INSERT INTO specs (id, project, body) VALUES (?, ?, ?)").run(spec.id, project, JSON.stringify(spec));
+      this.append(project, "spec.created", actor, { spec: spec.id, to: spec.to, model: spec.model, effort: spec.effort, reason: spec.reason });
+      return spec;
+    });
+  }
+
+  updateSpec(id: string, change: Partial<Pick<Spec, "status" | "checkpoints" | "files" | "note">>, actor: string): Spec {
+    const kinds: Partial<Record<SpecStatus, TraceEvent["kind"]>> = { held: "spec.held", running: "spec.started",
+      "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", undone: "spec.undone" };
+    return this.tx(() => {
+      const spec = this.spec(id);
+      if (!spec) throw new Error(`no spec ${id}`);
+      const next: Spec = { ...spec, ...change };
+      this.db.prepare("UPDATE specs SET body = ? WHERE id = ?").run(JSON.stringify(next), id);
+      const kind = change.status && kinds[change.status];
+      if (kind) this.append(spec.project, kind, actor, { spec: id, ...(change.note ? { note: change.note } : {}), ...(change.files ? { files: change.files.length } : {}) });
+      return next;
+    });
+  }
+
+  spec(id: string): Spec | undefined {
+    const row = this.db.prepare("SELECT body FROM specs WHERE id = ?").get(id) as { body: string } | undefined;
+    return row ? JSON.parse(row.body) : undefined;
+  }
+
+  specs(project?: string): Spec[] {
+    const rows = (project ? this.db.prepare("SELECT body FROM specs WHERE project = ? ORDER BY id").all(project)
+                          : this.db.prepare("SELECT body FROM specs ORDER BY id").all()) as Array<{ body: string }>;
+    return rows.map((r) => JSON.parse(r.body));
   }
 
   close(): void {

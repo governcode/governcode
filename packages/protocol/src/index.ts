@@ -17,6 +17,28 @@ export type ControllerChoice = z.infer<typeof ControllerChoice>;
 
 export const ProjectName = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,62}$/, "lowercase letters, digits, . _ -");
 
+// A Spec: one delegated job, written down before it runs (phase 1). The Controller fills it
+// in; govd checks it against the Limit, turns `scope` into the sandbox policy, and records
+// Checkpoints before and after.
+export const SpecInput = z.object({
+  to: z.string().min(1).max(40),                        // Runner provider, e.g. "codex"
+  brief: z.string().min(1).max(20_000),
+  result: z.string().min(1).max(4_000),                  // acceptance: what "done" means
+  scope: z.object({
+    read: z.array(z.string().min(1)).max(50).default([]),
+    write: z.array(z.string().min(1)).max(50).default([]),
+  }),
+  budgetPercent: z.number().min(1).max(100),             // a request; govd clamps it
+  workspace: z.enum(["worktree", "shared"]).default("worktree"),
+  model: z.string().min(1).max(80),
+  effort: Effort.nullable(),
+  reason: z.string().min(1).max(2_000),                  // why this Runner, shown to the user
+});
+export type SpecInput = z.infer<typeof SpecInput>;
+export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "undone" | "failed";
+export type Spec = SpecInput & { id: string; project: string; status: SpecStatus; created: string;
+  checkpoints: { before: string | null; after: string | null }; files: string[]; note?: string };
+
 export const Params = {
   hello: z.object({ client: z.string().max(40), protocol: z.number().int() }),
   "project.list": z.object({}),
@@ -46,7 +68,8 @@ export type TraceEvent = {
   kind:
     | "project.created" | "project.opened" | "controller.set"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
-    | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused";
+    | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
+    | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
 };
