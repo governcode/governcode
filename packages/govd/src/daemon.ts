@@ -46,7 +46,7 @@ export class Daemon {
   private gateSeq = 0;
   // Projects a Home Controller proposed, waiting for the user's Create or Cancel.
   // ponytail: in memory; a govd restart drops them (the Controller can propose again).
-  private proposals = new Map<string, { id: string; name: string; path: string; git: boolean }>();
+  private proposals = new Map<string, { id: string; name: string; path: string; real: string; git: boolean }>();
   private proposalSeq = 0;
   /** Connections that called `watch`: each gets Trace appends and Gate changes pushed to it. */
   private watchers = new Map<Socket, { send: (n: WatchEvent) => void; stop: () => void }>();
@@ -129,7 +129,7 @@ export class Daemon {
     const { name, git, reason } = parsed.data;
     const path = this.newProjectPath(name, parsed.data.path);
     const id = `P-${++this.proposalSeq}`;
-    this.proposals.set(id, { id, name, path, git });
+    this.proposals.set(id, { id, name, path, real: realAncestor(path), git });
     this.ledger.append(null, "project.proposed", actor, { proposal: id, name, path, git });
     notify({ kind: "proposal", id, name, path, git, reason });
     return { id, status: "shown to the user with Create and Cancel; nothing exists until they choose Create" };
@@ -240,6 +240,9 @@ export class Daemon {
           return { id: p.id, created: null };
         }
         const path = this.newProjectPath(prop.name, prop.path);   // checked again: things may have changed
+        if (realAncestor(path) !== prop.real) {
+          throw new RpcError(Errors.refused, `${path} now leads somewhere else (a folder on the way became a symlink); nothing was created`);
+        }
         mkdirSync(path, { recursive: true });
         if (prop.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
         return { id: p.id, created: L.addProject(prop.name, path, "project.created") };

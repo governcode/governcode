@@ -36,7 +36,7 @@ rl.on("line", (l) => {
       out({ type: "result", is_error: false, result: "mode:" + cfg.args[2] + " " + JSON.stringify(got.map((g) => g.result ? g.result.id : g.error.message)) });
       process.exit(0);
     });
-    s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.propose_project", params: { name: "harbor", path: /propose (\\/[^ "\\\\]+)/.exec(JSON.stringify(m))[1], reason: "an AIS reader" } }) + "\\n");
+    s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.propose_project", params: (() => { const path = /propose (\\/[^ "\\\\]+)/.exec(JSON.stringify(m))[1]; return { name: path.split("/").pop(), path, reason: "an AIS reader" }; })() }) + "\\n");
     s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "controller.delegate", params: {} }) + "\\n");
   } else if (m.type === "user") {
     out({ type: "assistant", message: { content: [{ type: "text", text: "hello from fake" }] } });
@@ -229,6 +229,14 @@ test("Home: the Controller may only propose a project; govd creates it on the us
   assert.equal(made.result.created.name, "harbor");
   assert.ok(existsSync(join(target, ".git")));
   assert.match((await c.call("proposal.answer", { id: "P-1", answer: "create" })).error.message, /no proposal P-1/);
+  // A folder on the way turned into a symlink after the card was shown: Create refuses.
+  const parent = join(root, "proposed2"), elsewhere = join(root, "elsewhere");
+  mkdirSync(parent); mkdirSync(elsewhere);
+  const r2 = await c.call("ask", { project: null, prompt: `propose ${join(parent, "sub", "reef")}` });
+  assert.match(r2.result.summary, /"P-2"/);
+  symlinkSync(elsewhere, join(parent, "sub"));
+  assert.match((await c.call("proposal.answer", { id: "P-2", answer: "create" })).error.message, /leads somewhere else/);
+  assert.ok(!existsSync(join(elsewhere, "reef")));
   assert.ok(d.ledger.events(undefined, 50).some((e) => e.kind === "project.proposed"));
   c.end(); d.close();
 });
