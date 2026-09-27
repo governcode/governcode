@@ -21,6 +21,8 @@ jobs:
         run: npm run typecheck
       - name: TypeScript tests
         run: npm test
+      - name: Dashboard build and tests
+        run: npm run build -w apps/dashboard && npm test -w apps/dashboard
       - name: Rust build (no warnings allowed)
         run: RUSTFLAGS="-D warnings" cargo build --release --locked
       - name: Rust tests

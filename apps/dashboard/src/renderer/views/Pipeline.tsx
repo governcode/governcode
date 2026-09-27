@@ -1,0 +1,110 @@
+// Pipeline: the Specs, their status, and for one Spec its details, its diff, and the choice
+// to accept it into the project or discard it.
+import { useCallback, useEffect, useState } from "react";
+import { call, clock, type Spec } from "../api.ts";
+import { ConfirmButton, DiffView, Empty, SpecPill } from "../ui.tsx";
+
+// ponytail: polled every 5 s while open; upgrade when govd streams spec events to watchers.
+const POLL_MS = 5000;
+
+export function Pipeline({ project, tick }: { project: string | null; tick: number }) {
+  const [specs, setSpecs] = useState<Spec[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await call<{ specs: Spec[] }>("spec.list", project ? { project } : {});
+      setSpecs([...r.specs].reverse());
+      setError(null);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }, [project]);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(load, POLL_MS);
+    return () => clearInterval(t);
+  }, [load, tick]);
+
+  const spec = specs?.find((s) => s.id === selected) ?? null;
+
+  return (
+    <section className="view">
+      <div className="view-head">
+        <h1>Pipeline</h1>
+        <span className="dim">{project ? `Specs for ${project}` : "Specs in every project"}</span>
+        <span className="spacer" />
+        <button className="btn" onClick={load}>Refresh</button>
+      </div>
+      {error && <div className="error pad">{error}</div>}
+      {specs && !specs.length ? (
+        <Empty title="No Specs yet"><p className="dim">When the Controller delegates a job to a Runner, the Spec appears here.</p></Empty>
+      ) : (
+        <div className="split">
+          <div className="list">
+            {specs?.map((s) => (
+              <button key={s.id} className={`list-row ${s.id === selected ? "active" : ""}`} onClick={() => setSelected(s.id)}>
+                <div className="row"><b className="mono">{s.id}</b><span className="dim">{s.to}</span><span className="spacer" /><SpecPill status={s.status} /></div>
+                <div className="dim ellipsis">{s.brief}</div>
+                <div className="dim small">{s.project} · {s.model} · {s.effort ?? "n/a"} · {s.files.length} file{s.files.length === 1 ? "" : "s"} · {clock(s.created)}</div>
+              </button>
+            ))}
+          </div>
+          <div className="detail">
+            {spec ? <SpecDetail key={spec.id} spec={spec} onChanged={load} /> : <div className="dim pad">Select a Spec to see its details and diff.</div>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) {
+  const [diff, setDiff] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const reviewable = spec.status === "needs-review";
+
+  const showDiff = async () => {
+    try { setDiff((await call<{ diff: string }>("spec.diff", { id: spec.id })).diff); }
+    catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
+  useEffect(() => { if (spec.checkpoints.after) void showDiff(); }, [spec.id]);
+
+  const act = async (method: "spec.accept" | "spec.discard") => {
+    try {
+      const r = await call<{ applied?: string[] }>(method, { id: spec.id });
+      setMsg({ ok: true, text: method === "spec.accept" ? `Applied ${r.applied?.length ?? 0} file(s): ${(r.applied ?? []).join(", ")}` : "Discarded." });
+      onChanged();
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
+
+  const rows: Array<[string, string]> = [
+    ["Status", spec.status + (spec.note ? ` (${spec.note})` : "")],
+    ["Project", spec.project],
+    ["Runner", spec.to],
+    ["Model", `${spec.model} · effort ${spec.effort ?? "n/a"}`],
+    ["Limit budget", `${spec.budgetPercent}%`],
+    ["Workspace", spec.workspace],
+    ["Scope", `read ${JSON.stringify(spec.scope.read)} · write ${JSON.stringify(spec.scope.write)}`],
+    ["Checkpoints", `${spec.checkpoints.before?.slice(0, 12) ?? "-"} → ${spec.checkpoints.after?.slice(0, 12) ?? "-"}`],
+    ["Created", clock(spec.created)],
+    ["Why this Runner", spec.reason],
+    ["Done means", spec.result],
+  ];
+  return (
+    <div className="spec-detail">
+      <div className="row"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
+        <ConfirmButton label="Accept" tone="ok" disabled={!reviewable} confirm={`Apply ${spec.id}'s changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
+        <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || spec.status === "failed")} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
+      </div>
+      {msg && <div className={msg.ok ? "ok pad" : "error pad"}>{msg.text}</div>}
+      <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
+      <h3>Brief</h3>
+      <pre className="code wrap">{spec.brief}</pre>
+      <h3>Files ({spec.files.length})</h3>
+      <div className="mono small">{spec.files.length ? spec.files.join("  ") : <span className="dim">none</span>}</div>
+      <div className="row"><h3>Diff</h3><span className="spacer" /><button className="btn" onClick={showDiff}>{diff === null ? "Show diff" : "Reload diff"}</button></div>
+      {diff !== null && <DiffView diff={diff} />}
+    </div>
+  );
+}
