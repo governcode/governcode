@@ -3,21 +3,19 @@
 // projects, open Gates and the Terminal's conversations.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AskEvent, Status } from "../shared/contract.ts";
-import { api, call, controllerLabel, START_GOVD, type Gate, type Project } from "./api.ts";
+import { api, call, controllerLabel, START_GOVD, useFallbackPoll, useWatch, type Gate, type Project } from "./api.ts";
 import { Empty, Pill } from "./ui.tsx";
 import { Terminal, type Entry, type Thread } from "./views/Terminal.tsx";
 import { Pipeline } from "./views/Pipeline.tsx";
 import { Gates } from "./views/Gates.tsx";
 import { Trace } from "./views/Trace.tsx";
+import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import mark from "../../../../docs/brand/governcode-mark.svg";
 
 type View = "terminal" | "pipeline" | "gates" | "trace";
 const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["pipeline", "Pipeline"], ["gates", "Gates"], ["trace", "Trace"]];
 const HOME = "";
 
-// ponytail: Gates are polled every 2 s (govd has no subscription for them yet); upgrade when
-// the protocol grows a Gate event stream.
-const GATE_POLL_MS = 2000;
 
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -27,20 +25,21 @@ export function App() {
   const [gates, setGates] = useState<Gate[]>([]);
   const [gatesAt, setGatesAt] = useState(0);
   const [threads, setThreads] = useState<Record<string, Thread>>({});
-  const [specTick, setSpecTick] = useState(0);
+  const [dialog, setDialog] = useState<"new" | "open" | "controller" | null>(null);
   const askThread = useRef(new Map<string, string>());
 
   const up = status?.state === "up";
+  const hello = status?.state === "up" ? status.hello : null;
+  const live = !!hello?.features.includes("watch");
 
   useEffect(() => {
     void api().status().then(setStatus);
     return api().onStatus(setStatus);
   }, []);
 
-  useEffect(() => {
-    if (!up) return;
-    call<{ projects: Project[] }>("project.list").then((r) => setProjects(r.projects), () => {});
-  }, [up]);
+  const loadProjects = useCallback(async () => {
+    try { setProjects((await call<{ projects: Project[] }>("project.list")).projects); } catch { /* status shows govd down */ }
+  }, []);
 
   const refreshGates = useCallback(async () => {
     const at = Date.now();
@@ -51,12 +50,17 @@ export function App() {
     } catch { /* status handles govd going away */ }
   }, []);
 
+  // Reload whenever govd (re)connects; after that, govd's watch stream says when to.
   useEffect(() => {
     if (!up) return;
+    void loadProjects();
     void refreshGates();
-    const t = setInterval(refreshGates, GATE_POLL_MS);
-    return () => clearInterval(t);
-  }, [up, refreshGates]);
+  }, [up, status, loadProjects, refreshGates]);
+  useFallbackPoll(live || !up, refreshGates);
+  useWatch((w) => {
+    if (w.kind === "gates") void refreshGates();
+    else if (w.event.kind.startsWith("project.") || w.event.kind === "controller.set") void loadProjects();
+  });
 
   const push = useCallback((key: string, f: (t: Thread) => Thread) => {
     setThreads((all) => ({ ...all, [key]: f(all[key] ?? { entries: [], busy: false }) }));
@@ -66,9 +70,8 @@ export function App() {
     const key = askThread.current.get(askId);
     if (key === undefined) return;
     push(key, (t) => ({ ...t, entries: addEvent(t.entries, ev) }));
-    if (ev.kind === "gate") void refreshGates();
-    if (ev.kind === "spec") setSpecTick((n) => n + 1);
-  }), [push, refreshGates]);
+    if (ev.kind === "gate" && !live) void refreshGates();
+  }), [push, refreshGates, live]);
 
   const send = useCallback(async (prompt: string) => {
     const key = project;
@@ -80,7 +83,6 @@ export function App() {
     push(key, (t) => ({ busy: false, entries: [...t.entries, r.ok
       ? { t: "done", ok: r.value.ok, summary: r.value.summary }
       : { t: "error", text: r.error }] }));
-    setSpecTick((n) => n + 1);
   }, [project, push]);
 
   const markGate = useCallback((key: string, id: string, a: "allow" | "deny") => {
@@ -89,7 +91,7 @@ export function App() {
   }, [push, refreshGates]);
 
   const current = projects.find((p) => p.name === project);
-  const hello = status?.state === "up" ? status.hello : null;
+  const opened = (p: Project) => { setDialog(null); void loadProjects(); setProject(p.name); };
 
   return (
     <div className="app">
@@ -103,6 +105,10 @@ export function App() {
             {projects.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
           </select>
         </label>
+        <button className="btn btn-quiet" disabled={!up} onClick={() => setDialog("new")}>New project</button>
+        <button className="btn btn-quiet" disabled={!up} onClick={() => setDialog("open")}>Open folder</button>
+        <button className="btn btn-quiet" disabled={!up || !current} onClick={() => setDialog("controller")}
+          title={current ? controllerLabel(current.controller) : "Home uses the most recently chosen Controller"}>Controller</button>
         <span className="spacer" />
         {status === null || status.state === "connecting" ? <Pill tone="dim">govd: connecting</Pill>
           : status.state === "down" ? <Pill tone="danger" title={status.error}>govd: not running</Pill>
@@ -127,18 +133,23 @@ export function App() {
             {view === "terminal" && <Terminal key={project} project={current ?? null}
               thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
               onSend={send} onGate={(id, a) => markGate(project, id, a)} />}
-            {view === "pipeline" && <Pipeline project={current?.name ?? null} tick={specTick} />}
+            {view === "pipeline" && <Pipeline project={current?.name ?? null} live={live} />}
             {view === "gates" && <Gates gates={gates} onAnswered={() => void refreshGates()} />}
-            {view === "trace" && <Trace project={current?.name ?? null} />}
+            {view === "trace" && <Trace project={current?.name ?? null} live={live} />}
           </>
         )}
       </main>
+
+      {up && dialog === "new" && <NewProject onClose={() => setDialog(null)} onDone={opened} />}
+      {up && dialog === "open" && <OpenFolder onClose={() => setDialog(null)} onDone={opened} />}
+      {up && dialog === "controller" && current && <ControllerPicker project={current} onClose={() => setDialog(null)}
+        onDone={() => { setDialog(null); void loadProjects(); }} />}
 
       <footer className="statusbar">
         <span>{current ? `${current.name} · ${current.path}` : "Home (read-only)"}</span>
         {current && <span className="dim">Controller: {controllerLabel(current.controller)}</span>}
         <span className="spacer" />
-        {hello && <span className="dim">protocol {hello.protocol} · {hello.features.join(" ")}</span>}
+        {hello && <span className="dim">protocol {hello.protocol} · {live ? "live" : "polling"}</span>}
         <span className={gates.length ? "warn" : "dim"}>{gates.length} Gate{gates.length === 1 ? "" : "s"} waiting</span>
         <span className="dim mono">{status?.socketPath}</span>
       </footer>

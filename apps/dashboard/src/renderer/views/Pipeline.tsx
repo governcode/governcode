@@ -1,13 +1,10 @@
 // Pipeline: the Specs, their status, and for one Spec its details, its diff, and the choice
 // to accept it into the project or discard it.
 import { useCallback, useEffect, useState } from "react";
-import { call, clock, type Spec } from "../api.ts";
+import { call, clock, useFallbackPoll, useWatch, type Spec } from "../api.ts";
 import { ConfirmButton, DiffView, Empty, SpecPill } from "../ui.tsx";
 
-// ponytail: polled every 5 s while open; upgrade when govd streams spec events to watchers.
-const POLL_MS = 5000;
-
-export function Pipeline({ project, tick }: { project: string | null; tick: number }) {
+export function Pipeline({ project, live }: { project: string | null; live: boolean }) {
   const [specs, setSpecs] = useState<Spec[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -20,11 +17,11 @@ export function Pipeline({ project, tick }: { project: string | null; tick: numb
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }, [project]);
 
-  useEffect(() => {
-    void load();
-    const t = setInterval(load, POLL_MS);
-    return () => clearInterval(t);
-  }, [load, tick]);
+  useEffect(() => { void load(); }, [load]);
+  useFallbackPoll(live, load);
+  useWatch((w) => {
+    if (w.kind === "trace" && w.event.kind.startsWith("spec.") && (!project || w.event.project === project)) void load();
+  });
 
   const spec = specs?.find((s) => s.id === selected) ?? null;
 

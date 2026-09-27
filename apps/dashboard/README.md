@@ -1,7 +1,7 @@
 # GovernCode Dashboard
 
-The desktop app (v0). A thin client of `govd`: it shows what the CLI shows and answers
-Gates, nothing more. Electron shell, React renderer, bundled with Vite.
+The desktop app (v0). A thin client of `govd`: it does what the CLI does (projects, the
+Controller, asks, Gates, Specs, the Trace), nothing more. Electron shell, React renderer, bundled with Vite.
 
 ## Screens
 
@@ -13,7 +13,11 @@ Gates, nothing more. Electron shell, React renderer, bundled with Vite.
 - **Gates**: every Gate waiting, from any project, answerable here too.
 - **Trace**: the history, newest first, in local 24-hour time, with filter chips.
 
-The top bar switches project and shows govd's and the sandbox's status (from `hello`).
+The top bar switches project, creates one (**New project**: name, location, git init),
+adds an existing folder (**Open folder**), and chooses the project's **Controller**
+(provider, model, effort). It shows govd's and the sandbox's status (from `hello`).
+Everything updates live from govd's `watch` stream; against a govd without `watch`, the
+screens fall back to a slow poll.
 If govd is not running, the Dashboard says so, shows the command to start it, and keeps
 retrying.
 
@@ -43,12 +47,13 @@ renderer (React, sandboxed)  ──window.governcode──  preload  ──IPC�
 ```
 
 - **Main** (`src/main`) owns the only connection to govd: one control connection for calls
-  (reconnecting every 3 s while govd is down) and a fresh connection per `ask`, since govd
-  ties an ask's Gates to the connection that asked. It accepts only the methods the
+  and the `watch` stream (reconnecting every 3 s while govd is down), and a fresh connection
+  per `ask`, since govd ties an ask's Gates to the connection that asked. The native folder
+  picker runs here too and hands the renderer only the chosen path. It accepts only the methods the
   screens use and validates their parameters with the protocol's own schemas before
   anything reaches govd. Only the app's own page may use the bridge.
-- **Preload** (`src/preload`) exposes six functions (`call`, `ask`, `status`, `retry`,
-  `onEvent`, `onStatus`) through `contextBridge`. Nothing else crosses.
+- **Preload** (`src/preload`) exposes eight functions (`call`, `ask`, `status`, `retry`,
+  `pickFolder`, `onEvent`, `onStatus`, `onWatch`) through `contextBridge`. Nothing else crosses.
 - **Renderer** (`src/renderer`) has no Node, no sockets and no network:
   `contextIsolation` on, `nodeIntegration` off, `sandbox` on, and a Content Security Policy
   of `default-src 'self'`. Navigation, new windows, webviews and permission requests are all
@@ -60,6 +65,4 @@ No telemetry. No remote content. Nothing is loaded from the network.
 
 ## Not yet
 
-Creating or opening projects and choosing the Controller stay in the CLI. Gates, Specs and
-the Trace are polled every few seconds (govd has no watch stream yet). No packaged
-installers yet; run it from the repository.
+No packaged installers yet; run it from the repository.

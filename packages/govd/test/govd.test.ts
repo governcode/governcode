@@ -141,6 +141,36 @@ test("a Gate can be answered from a second terminal, and is listed there", async
   asker.end(); other.end(); d.close();
 });
 
+test("watch streams every Trace append and each Gate change, until the watcher leaves", async () => {
+  const d = daemon("watch");
+  d.selftest();
+  await d.listen();
+  const sock = join(root, "watch", "govd.sock");
+  const asker = client(sock), watcher = client(sock);
+  assert.ok((await watcher.call("hello", { client: "t", protocol: 1 })).result.features.includes("watch"));
+  assert.deepEqual((await watcher.call("watch")).result, { ok: true });
+  assert.deepEqual((await watcher.call("watch")).result, { ok: true });   // twice is still one watch
+  await asker.call("project.new", { name: "seen", path: join(root, "watch-seen"), git: false });
+  watcher.onEvent = async (e) => {
+    if (e.kind !== "gates") return;
+    const { gates } = (await watcher.call("gate.list")).result;
+    if (gates.length) await watcher.call("gate.answer", { id: gates[0].id, answer: "deny" });
+  };
+  const r = await asker.call("ask", { project: "seen", prompt: "go" });
+  assert.match(r.result.summary, /^gate:deny:/);
+  const kinds = watcher.events.filter((e) => e.kind === "trace").map((e) => e.event.kind);
+  for (const k of ["project.created", "turn.started", "turn.text", "gate.opened", "gate.denied", "turn.completed"]) assert.ok(kinds.includes(k), k);
+  assert.equal(watcher.events.filter((e) => e.kind === "gates").length, 2);           // opened, then settled
+  assert.equal(watcher.events.filter((e) => e.kind === "trace").length, d.ledger.events(undefined, 1000).length, "every append, once");
+  assert.equal(asker.events.some((e) => e.kind === "trace" || e.kind === "gates"), false, "only watchers get the stream");
+  watcher.end();
+  for (let i = 0; i < 50 && (d as any).watchers.size; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal((d as any).watchers.size, 0);
+  assert.equal((d.ledger as any).listeners.size, 0, "unsubscribed from the Ledger");
+  d.ledger.append("seen", "turn.started", "user", {});                              // no listener left to write to a closed socket
+  asker.end(); d.close();
+});
+
 test("the asker leaving denies its waiting Gate", async () => {
   const d = daemon("leave");
   d.selftest();

@@ -8,7 +8,7 @@ import { mkdirSync, rmSync, existsSync, statSync, chmodSync, realpathSync } from
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method, type WatchEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
@@ -37,6 +37,8 @@ export class Daemon {
   private limits = new LimitGate();
   private usage: Record<string, UsageSource> = {};
   private gateSeq = 0;
+  /** Connections that called `watch`: each gets Trace appends and Gate changes pushed to it. */
+  private watchers = new Map<Socket, { send: (n: WatchEvent) => void; stop: () => void }>();
   private sandboxOk = false;
   private sandboxReason = "self-test not run";
 
@@ -121,7 +123,7 @@ export class Daemon {
 
   private serve(sock: Socket): void {
     this.sockets.add(sock);
-    sock.on("close", () => this.sockets.delete(sock));
+    sock.on("close", () => { this.sockets.delete(sock); this.watchers.get(sock)?.stop(); this.watchers.delete(sock); });
     const write = (obj: unknown) => sock.writable && sock.write(JSON.stringify(obj) + "\n");
     sock.on("close", () => { for (const g of [...this.gates.values()]) if (g.owner === sock) this.settle(g.id, "deny", "asker left"); });
     // A client that drops mid-line (ECONNRESET) must not take govd down: the error is the
@@ -152,8 +154,22 @@ export class Daemon {
     if (!g) return false;
     this.gates.delete(id);
     this.ledger.append(g.project, answer === "allow" ? "gate.allowed" : "gate.denied", "user", { gate: id, tool: g.tool, by });
+    this.gatesChanged();
     g.answer(answer);
     return true;
+  }
+
+  private gatesChanged(): void {
+    for (const w of this.watchers.values()) w.send({ kind: "gates" });
+  }
+
+  private watch(sock: Socket, notify: (n: unknown) => void): void {
+    if (this.watchers.has(sock)) return;
+    // ponytail: a watcher that stops reading lets its socket buffer grow; add a high-water
+    // mark and drop the watcher when a real client needs it.
+    const send = (n: WatchEvent) => { if (sock.writable) notify(n); };
+    const stop = this.ledger.subscribe((event) => send({ kind: "trace", event }));
+    this.watchers.set(sock, { send, stop });
   }
 
   private async call(method: Method, p: any, notify: (n: unknown) => void, sock: Socket): Promise<unknown> {
@@ -214,6 +230,9 @@ export class Daemon {
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user")) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
+      case "watch":
+        this.watch(sock, notify);
+        return { ok: true };
     }
   }
 
@@ -243,6 +262,7 @@ export class Daemon {
             this.gates.set(id, { id, project: project.name, tool: req.tool, canonical: req.canonical,
               opened: new Date().toISOString(), owner: sock, answer });
             L.append(project.name, "gate.opened", req.actor ?? actor, { gate: id, tool: req.tool });
+            this.gatesChanged();
             notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical });
           }),
           done: (r) => {

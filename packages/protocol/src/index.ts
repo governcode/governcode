@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -53,6 +53,9 @@ export const Params = {
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]) }),
+  // After `watch`, the connection also receives `event` notifications: {kind:"trace", event}
+  // for every Trace append, and {kind:"gates"} whenever a Gate opens or is settled.
+  watch: z.object({}),
 } as const;
 export type Method = keyof typeof Params;
 
@@ -78,6 +81,9 @@ export type TraceEvent = {
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
 };
+
+/** What a watching connection receives, as the params of `event` notifications. */
+export type WatchEvent = { kind: "trace"; event: TraceEvent } | { kind: "gates" };
 
 export class RpcError extends Error {
   code: number;

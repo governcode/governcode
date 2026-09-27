@@ -1,5 +1,7 @@
 // The renderer's side of the bridge, plus the few shapes and helpers the screens share.
-import type { Callable, DashboardApi } from "../shared/contract.ts";
+import { useEffect, useRef } from "react";
+import type { Callable, DashboardApi, TraceEvent, WatchEvent } from "../shared/contract.ts";
+export type { TraceEvent, WatchEvent };
 
 declare global {
   interface Window { governcode: DashboardApi }
@@ -24,7 +26,6 @@ export type Spec = {
   effort: string | null; reason: string; checkpoints: { before: string | null; after: string | null };
   files: string[]; note?: string;
 };
-export type TraceEvent = { seq: number; ts: string; project: string | null; kind: string; actor: string; data: Record<string, unknown> };
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -40,3 +41,32 @@ export function clock(iso: string, now = new Date()): string {
 export const controllerLabel = (c: Controller) => `${c.provider} · ${c.model} · ${c.effort ?? "n/a"}`;
 
 export const START_GOVD = "node packages/gov/src/main.ts daemon start";
+
+/** When govd offers `watch`, screens update from its stream; otherwise they poll this slowly. */
+export const FALLBACK_POLL_MS = 10_000;
+
+const watchers = new Set<(w: WatchEvent) => void>();
+let bridged = false;
+
+/** Runs `f` for every event on govd's live stream while the component is mounted. */
+export function useWatch(f: (w: WatchEvent) => void): void {
+  const latest = useRef(f);
+  latest.current = f;
+  useEffect(() => {
+    if (!bridged) { bridged = true; api().onWatch((w) => { for (const g of watchers) g(w); }); }
+    const g = (w: WatchEvent) => latest.current(w);
+    watchers.add(g);
+    return () => { watchers.delete(g); };
+  }, []);
+}
+
+/** Polls `f` only when there is no live stream to update from. */
+export function useFallbackPoll(live: boolean, f: () => void): void {
+  useEffect(() => {
+    if (live) return;
+    const t = setInterval(f, FALLBACK_POLL_MS);
+    return () => clearInterval(t);
+  }, [live, f]);
+}
+
+export const PROJECT_NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;

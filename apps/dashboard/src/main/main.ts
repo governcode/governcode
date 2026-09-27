@@ -1,7 +1,7 @@
 // The Dashboard's main process: a thin Electron shell. It owns the only connection to govd
 // and answers the renderer through a handful of checked IPC channels. The renderer runs
 // sandboxed with context isolation and no Node; it cannot open sockets or files.
-import { app, BrowserWindow, ipcMain, session, shell, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Channel, type Outcome } from "../shared/contract.ts";
@@ -37,6 +37,12 @@ function handle(channel: string, f: (...args: any[]) => Promise<unknown>): void 
 
 handle(Channel.status, async () => link.status());
 handle(Channel.retry, () => link.start());
+// The native folder picker runs here, in main; the renderer gets back only the chosen path.
+handle(Channel.pickFolder, async () => {
+  const opts = { title: "Choose a folder", properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory"> };
+  const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+  return r.canceled ? null : (r.filePaths[0] ?? null);
+});
 handle(Channel.call, (method: unknown, params: unknown) => outcome(() => {
   const req = checkCall(method, params);
   return link.call(req.method, req.params);
@@ -85,6 +91,7 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   link.onStatus((s) => win?.webContents.send(Channel.statusChanged, s));
+  link.onWatch((w) => win?.webContents.send(Channel.watch, w));
   void link.start();
   createWindow();
   app.on("activate", () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });

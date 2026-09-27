@@ -1,6 +1,6 @@
 // Trace: the append-only history, newest first, in local 24-hour time, filterable by kind.
 import { useCallback, useEffect, useState } from "react";
-import { call, clock, type TraceEvent } from "../api.ts";
+import { call, clock, useFallbackPoll, useWatch, type TraceEvent } from "../api.ts";
 import { Empty } from "../ui.tsx";
 
 const FILTERS: Array<[string, (k: string) => boolean]> = [
@@ -14,8 +14,7 @@ const FILTERS: Array<[string, (k: string) => boolean]> = [
 const TONE: Record<string, string> = { "gate.opened": "warn", "gate.allowed": "ok", "gate.denied": "danger", "turn.failed": "danger",
   "sandbox.refused": "danger", "spec.failed": "danger", "spec.held": "warn", "spec.accepted": "ok", "turn.completed": "ok", "git.scrubbed": "warn" };
 
-// ponytail: polled every 4 s while open; upgrade when govd streams the Trace to watchers.
-const POLL_MS = 4000;
+const KEEP = 1000;
 
 function summary(e: TraceEvent): string {
   const d = e.data ?? {};
@@ -27,7 +26,7 @@ function summary(e: TraceEvent): string {
   return `${tag ? tag + "  " : ""}${text}`.replace(/\s+/g, " ").slice(0, 240);
 }
 
-export function Trace({ project }: { project: string | null }) {
+export function Trace({ project, live }: { project: string | null; live: boolean }) {
   const [events, setEvents] = useState<TraceEvent[] | null>(null);
   const [filter, setFilter] = useState("All");
   const [error, setError] = useState<string | null>(null);
@@ -40,11 +39,12 @@ export function Trace({ project }: { project: string | null }) {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }, [project]);
 
-  useEffect(() => {
-    void load();
-    const t = setInterval(load, POLL_MS);
-    return () => clearInterval(t);
-  }, [load]);
+  useEffect(() => { void load(); }, [load]);
+  useFallbackPoll(live, load);
+  useWatch((w) => {
+    if (w.kind !== "trace" || (project && w.event.project !== project)) return;
+    setEvents((all) => all && !all.some((e) => e.seq === w.event.seq) ? [w.event, ...all].slice(0, KEEP) : all);
+  });
 
   const test = FILTERS.find(([n]) => n === filter)![1];
   const shown = (events ?? []).filter((e) => test(e.kind));

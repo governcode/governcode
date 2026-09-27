@@ -9,17 +9,19 @@ export const Channel = {
   ask: "governcode:ask",       // invoke: an ask on its own connection, returns the final result
   status: "governcode:status", // invoke: the current connection status
   retry: "governcode:retry",   // invoke: try to reach govd now
+  pickFolder: "governcode:pick-folder", // invoke: the native folder picker; returns a path or null
   event: "governcode:event",   // main -> renderer: one streamed ask event, tagged with its askId
+  watch: "governcode:watch",   // main -> renderer: one govd watch event (Trace append, Gate change)
   statusChanged: "governcode:status-changed", // main -> renderer
 } as const;
 
 /**
  * The govd methods the renderer may call through `call`. `ask` has its own channel (it
- * streams, and it holds the connection that owns its Gates). Project creation, opening and
- * Controller choice stay in the CLI for v0.
+ * streams, and it holds the connection that owns its Gates); `watch` is the main process's
+ * own, forwarded as `onWatch`.
  */
-export const CALLABLE = ["hello", "project.list", "gate.list", "gate.answer", "spec.list", "spec.diff",
-  "spec.accept", "spec.discard", "trace.list"] as const;
+export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "controller.set", "gate.list",
+  "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "trace.list"] as const;
 export type Callable = (typeof CALLABLE)[number];
 
 export function isCallable(m: unknown): m is Callable {
@@ -47,6 +49,11 @@ export type AskEvent =
   | { kind: "spec.tool"; id: string; name: string }
   | { kind: string; [k: string]: unknown };
 
+export type TraceEvent = { seq: number; ts: string; project: string | null; kind: string; actor: string; data: Record<string, unknown> };
+
+/** Pushed by govd to a watching connection: every Trace append, and "the Gates changed". */
+export type WatchEvent = { kind: "trace"; event: TraceEvent } | { kind: "gates" };
+
 export type AskResult = { ok: boolean; summary: string; [k: string]: unknown };
 
 /** The result of any invoke: errors travel as data so the renderer gets govd's message intact. */
@@ -60,4 +67,6 @@ export type DashboardApi = {
   retry(): Promise<Status>;
   onEvent(listener: (askId: string, event: AskEvent) => void): () => void;
   onStatus(listener: (status: Status) => void): () => void;
+  onWatch(listener: (event: WatchEvent) => void): () => void;
+  pickFolder(): Promise<string | null>;
 };

@@ -23,7 +23,7 @@ test("the socket path resolves exactly as gov and govd resolve it", () => {
 });
 
 test("the renderer may call only the allowlisted methods, with valid parameters", () => {
-  for (const m of ["ask", "project.new", "project.open", "controller.set", "nope", 42]) {
+  for (const m of ["ask", "watch", "nope", 42]) {
     assert.throws(() => checkCall(m, {}), /does not call/);
   }
   assert.deepEqual(checkCall("gate.answer", { id: "G-3", answer: "allow" }), { method: "gate.answer", params: { id: "G-3", answer: "allow" } });
@@ -31,6 +31,13 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.throws(() => checkCall("spec.accept", { id: "../x" }));
   assert.deepEqual(checkCall("trace.list", undefined).params, { limit: 50 });
   assert.ok(!CALLABLE.includes("ask" as never), "ask streams on its own channel");
+  // Projects and the Controller, checked against the protocol's schemas.
+  assert.deepEqual(checkCall("project.new", { name: "demo", path: "/p/demo" }).params, { name: "demo", path: "/p/demo", git: true });
+  assert.throws(() => checkCall("project.new", { name: "Demo!", path: "/p/demo" }));
+  assert.throws(() => checkCall("project.open", { path: "" }));
+  assert.ok(checkCall("controller.set", { project: "demo", controller: { provider: "codex", model: "gpt-5.5", effort: null } }));
+  assert.throws(() => checkCall("controller.set", { project: "demo", controller: { provider: "other", model: "m", effort: null } }));
+  assert.throws(() => checkCall("controller.set", { project: "demo", controller: { provider: "codex", model: "m", effort: "huge" } }));
 });
 
 test("an ask needs a well-formed id and prompt; Home is a null project", () => {
@@ -97,6 +104,15 @@ test("against the real govd: hello reports the sandbox, and lists come back", as
       const req = checkCall(m, {});
       assert.ok(await link.call(req.method, req.params));
     }
+    // The link watches: a project made and a Controller chosen arrive as live Trace events.
+    const seen: string[] = [];
+    link.onWatch((w) => { if (w.kind === "trace") seen.push(w.event.kind); });
+    const made = checkCall("project.new", { name: "live", path: join(dir, "live"), git: false });
+    await link.call(made.method, made.params);
+    const ctl = checkCall("controller.set", { project: "live", controller: { provider: "codex", model: "gpt-5.5", effort: "low" } });
+    await link.call(ctl.method, ctl.params);
+    for (let i = 0; i < 50 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(seen, ["project.created", "controller.set"]);
     // Asks are refused while the sandbox is unverified, and the refusal reaches the Dashboard.
     await assert.rejects(link.ask({ project: null, prompt: "hi" }, () => {}), /sandbox not verified/);
   } finally {
@@ -121,8 +137,9 @@ test("the built preload needs only electron and exposes exactly the Dashboard AP
   });
   assert.deepEqual(required, ["electron"]);
   assert.deepEqual(Object.keys(exposed), ["governcode"]);
-  assert.deepEqual(Object.keys(exposed.governcode).sort(), ["ask", "call", "onEvent", "onStatus", "retry", "status"]);
+  assert.deepEqual(Object.keys(exposed.governcode).sort(), ["ask", "call", "onEvent", "onStatus", "onWatch", "pickFolder", "retry", "status"]);
   await exposed.governcode.call("gate.list");
   await exposed.governcode.ask("a1", null, "hi");
-  assert.deepEqual(JSON.parse(JSON.stringify(invoked)), [[Channel.call, "gate.list", {}], [Channel.ask, "a1", null, "hi"]]);
+  await exposed.governcode.pickFolder();
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked)), [[Channel.call, "gate.list", {}], [Channel.ask, "a1", null, "hi"], [Channel.pickFolder]]);
 });

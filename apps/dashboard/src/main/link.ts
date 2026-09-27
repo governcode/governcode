@@ -2,7 +2,7 @@
 // govd is down, and a fresh connection for every ask. An ask gets its own connection
 // because govd ties that ask's Gates to it (the asker leaving denies them) and its events
 // carry no request id.
-import type { AskEvent, AskResult, Hello, Status } from "../shared/contract.ts";
+import type { AskEvent, AskResult, Hello, Status, WatchEvent } from "../shared/contract.ts";
 import { connect, GovdError, type Connection } from "./govd-client.ts";
 
 // ponytail: fixed 3 s retry while govd is down; upgrade to backoff if it ever matters.
@@ -12,6 +12,7 @@ export class GovdLink {
   private conn: Connection | null = null;
   private current: Status;
   private listeners = new Set<(s: Status) => void>();
+  private watchListeners = new Set<(w: WatchEvent) => void>();
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private readonly path: string;
@@ -30,6 +31,12 @@ export class GovdLink {
     return () => this.listeners.delete(f);
   }
 
+  /** govd's live stream (Trace appends, Gate changes), when govd offers `watch`. */
+  onWatch(f: (w: WatchEvent) => void): () => void {
+    this.watchListeners.add(f);
+    return () => this.watchListeners.delete(f);
+  }
+
   private set(s: Status): void {
     this.current = s;
     for (const f of this.listeners) f(s);
@@ -42,6 +49,13 @@ export class GovdLink {
     try {
       const c = await connect(this.path);
       const hello = await c.call<Hello>("hello", { client: "dashboard", protocol: 1 });
+      if (hello.features.includes("watch")) {
+        c.onEvent((e) => {
+          const w = e as WatchEvent;
+          if (w && (w.kind === "gates" || (w.kind === "trace" && typeof w.event?.seq === "number"))) for (const f of this.watchListeners) f(w);
+        });
+        await c.call("watch", {});
+      }
       this.conn = c;
       c.onClose(() => {
         if (this.conn !== c) return;

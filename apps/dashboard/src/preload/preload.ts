@@ -2,7 +2,7 @@
 // below. It runs sandboxed, so it is bundled to one CommonJS file with no imports but
 // Electron's.
 import { contextBridge, ipcRenderer } from "electron";
-import { Channel, type AskEvent, type DashboardApi, type Status } from "../shared/contract.ts";
+import { Channel, type AskEvent, type DashboardApi, type Status, type WatchEvent } from "../shared/contract.ts";
 
 const api: DashboardApi = {
   call: (method, params) => ipcRenderer.invoke(Channel.call, method, params ?? {}),
@@ -19,6 +19,12 @@ const api: DashboardApi = {
     ipcRenderer.on(Channel.statusChanged, f);
     return () => { ipcRenderer.removeListener(Channel.statusChanged, f); };
   },
+  onWatch: (listener) => {
+    const f = (_e: unknown, w: WatchEvent) => listener(w);
+    ipcRenderer.on(Channel.watch, f);
+    return () => { ipcRenderer.removeListener(Channel.watch, f); };
+  },
+  pickFolder: () => ipcRenderer.invoke(Channel.pickFolder),
 };
 
 contextBridge.exposeInMainWorld("governcode", api);
