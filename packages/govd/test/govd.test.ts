@@ -1,0 +1,121 @@
+// govd end to end with a fake supervisor and a fake Claude Code, so it runs anywhere.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { connect } from "node:net";
+import { createInterface } from "node:readline";
+import { Daemon } from "../src/daemon.ts";
+import { canonical } from "../src/claude.ts";
+
+const root = mkdtempSync(join(tmpdir(), "govd-test-"));
+const bin = join(root, "bin");
+mkdirSync(bin);
+const exe = (name: string, body: string) => { const p = join(bin, name); writeFileSync(p, body); chmodSync(p, 0o755); return p; };
+
+// Fake supervisor: `selftest` obeys FAKE_SELFTEST; `run --policy F -- prog...` records the policy, then execs.
+const supervisor = exe("govern-sup", `#!/bin/sh
+if [ "$1" = selftest ]; then [ "\${FAKE_SELFTEST:-ok}" = ok ] && exit 0; echo "landlock missing" >&2; exit 1; fi
+shift; policy="$2"; shift 3; cp "$policy" "${root}/last-policy.json"; exec "$@"
+`);
+// Fake Claude Code: one text, one permission request, then a result reporting the answer.
+exe("claude", `#!/usr/bin/env node
+const rl = require("node:readline").createInterface({ input: process.stdin });
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+rl.on("line", (l) => {
+  const m = JSON.parse(l);
+  if (m.type === "user") {
+    out({ type: "assistant", message: { content: [{ type: "text", text: "hello from fake" }] } });
+    out({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: "Bash",
+      input: { command: "rm -rf dist", description: "clean \\u202e" } } });
+  } else if (m.type === "control_response") {
+    out({ type: "result", is_error: false, result: "gate:" + m.response.response.behavior + ":" + JSON.stringify(m.response.response.updatedInput ?? null) });
+    process.exit(0);
+  }
+});
+`);
+process.env.PATH = `${bin}:${process.env.PATH}`;
+
+function client(sock: string) {
+  const s = connect(sock);
+  let id = 0;
+  const waiting = new Map<number, (m: any) => void>();
+  const events: any[] = [];
+  let onEvent = (_e: any) => {};
+  createInterface({ input: s }).on("line", (l) => {
+    const m = JSON.parse(l);
+    if (m.method === "event") { events.push(m.params); return onEvent(m.params); }
+    waiting.get(m.id)?.(m); waiting.delete(m.id);
+  });
+  return {
+    events, set onEvent(f: (e: any) => void) { onEvent = f; },
+    call: (method: string, params: unknown = {}) => new Promise<any>((ok) => { const n = ++id; waiting.set(n, ok);
+      s.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n"); }),
+    end: () => s.end(),
+  };
+}
+
+function daemon(tag: string) {
+  return new Daemon({ socketPath: join(root, tag, "govd.sock"), ledgerPath: join(root, tag, "trace.sqlite"),
+    policyDir: join(root, tag, "policies"), supervisor, version: "test" });
+}
+
+test("canonical: sorted keys, ASCII-escaped, whole input", () => {
+  assert.equal(canonical({ b: 1, a: { d: "\u202e", c: 2 } }), '{\n "a": {\n  "c": 2,\n  "d": "\\u202e"\n },\n "b": 1\n}');
+});
+
+test("no AI tool starts when the sandbox self-test fails", async () => {
+  process.env.FAKE_SELFTEST = "fail";
+  const d = daemon("refuse");
+  assert.equal(d.selftest().ok, false);
+  await d.listen();
+  const c = client(join(root, "refuse", "govd.sock"));
+  await c.call("project.new", { name: "p", path: join(root, "refuse-p"), git: false });
+  const r = await c.call("ask", { project: "p", prompt: "hi" });
+  assert.match(r.error.message, /sandbox not verified/);
+  assert.equal(d.ledger.events("p", 10).at(-1)?.kind, "sandbox.refused");
+  c.end(); d.close();
+  delete process.env.FAKE_SELFTEST;
+});
+
+test("a turn streams, raises a Gate on the user's connection, and runs exactly what was shown", async () => {
+  const d = daemon("turn");
+  assert.equal(d.selftest().ok, true);
+  await d.listen();
+  const c = client(join(root, "turn", "govd.sock"));
+  const hello = await c.call("hello", { client: "test", protocol: 1 });
+  assert.equal(hello.result.sandbox.ok, true);
+  const worktree = join(root, "tidepool");
+  assert.ok((await c.call("project.new", { name: "tidepool", path: worktree, git: true })).result.project);
+  c.onEvent = (e) => { if (e.kind === "gate") void c.call("gate.answer", { id: e.id, answer: "allow" }); };
+  const r = await c.call("ask", { project: "tidepool", prompt: "clean up" });
+  assert.equal(r.result.ok, true);
+  assert.equal(r.result.summary, 'gate:allow:{"command":"rm -rf dist","description":"clean \u202e"}');
+  const gate = c.events.find((e) => e.kind === "gate");
+  assert.match(gate.canonical, /\\u202e/);                        // shown escaped, not rendered
+  assert.ok(c.events.some((e) => e.kind === "text" && e.text === "hello from fake"));
+  const policy = JSON.parse(readFileSync(join(root, "last-policy.json"), "utf8"));
+  assert.equal(policy.cwd, worktree);
+  assert.ok(policy.write.includes(worktree));
+  assert.deepEqual(policy.tcp_connect, [443]);
+  assert.ok(!policy.write.some((p: string) => p.startsWith(join(root, "turn"))), "govd's own state is never writable");
+  assert.ok(![...policy.read, ...policy.exec].some((p: string) => p.startsWith(join(root, "turn"))), "nor readable");
+  const kinds = d.ledger.events("tidepool", 20).map((e) => e.kind);
+  assert.deepEqual(kinds.filter((k) => k.startsWith("turn.") || k.startsWith("project.")),
+    ["project.created", "turn.started", "turn.text", "turn.completed"]);
+  c.end(); d.close();
+});
+
+test("a Gate denied or abandoned is a deny", async () => {
+  const d = daemon("deny");
+  d.selftest();
+  await d.listen();
+  const c = client(join(root, "deny", "govd.sock"));
+  await c.call("project.new", { name: "x", path: join(root, "deny-x"), git: false });
+  c.onEvent = (e) => { if (e.kind === "gate") void c.call("gate.answer", { id: e.id, answer: "deny" }); };
+  const r = await c.call("ask", { project: "x", prompt: "go" });
+  assert.equal(r.result.summary, "gate:deny:null");
+  assert.ok(d.ledger.events("x", 20).some((e) => e.kind === "gate.denied"));
+  c.end(); d.close();
+});

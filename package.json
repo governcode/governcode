@@ -1,0 +1,17 @@
+{
+  "name": "governcode",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test packages/*/test/*.test.ts",
+    "govd": "node packages/govd/src/main.ts",
+    "gov": "node packages/gov/src/main.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0"
+  }
+}
