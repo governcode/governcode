@@ -33,7 +33,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .mark { width: 22px; height: 22px; }
 .brand { font-weight: 600; letter-spacing: .02em; margin-right: 12px; }
 .switcher { display: flex; align-items: center; gap: 8px; }
-.switcher select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; min-width: 200px; }
+.switcher select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; width: 200px; min-width: 120px; flex-shrink: 1; }
 
 .nav { grid-area: nav; background: var(--panel); border-right: 1px solid var(--line); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
 .nav-item { display: flex; align-items: center; justify-content: space-between; background: none; border: 0; border-radius: 6px;
@@ -150,3 +150,17 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .limit .fill.inside { background: var(--warn); }
 .limit .reserve { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--danger); }
 .view-head .btn { white-space: nowrap; }
+
+/* Home: the Terminal beside a panel of every project, Specs in flight and Gates waiting. */
+.contents { display: contents; }
+.home { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; min-width: 0; }
+.home > .view { min-width: 0; }
+.home-panel { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.home-panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 10px 0 2px; font-weight: 600; }
+.home-panel h2:first-child { margin-top: 0; }
+.home-card { display: flex; flex-direction: column; gap: 4px; text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; color: var(--text); cursor: pointer; font: inherit; }
+.home-card:hover, .home-card:focus-visible { border-color: var(--accent); }
+.home-card .path { overflow-wrap: anywhere; }
+.home-line { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.topbar .btn { white-space: nowrap; }
+.switcher { min-width: 0; flex-shrink: 1; }

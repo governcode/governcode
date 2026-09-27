@@ -11,6 +11,7 @@ import { Gates } from "./views/Gates.tsx";
 import { Trace } from "./views/Trace.tsx";
 import { Checkpoints } from "./views/Checkpoints.tsx";
 import { Limits } from "./views/Limits.tsx";
+import { HomePanel } from "./views/HomePanel.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import mark from "../../../../docs/brand/governcode-mark.svg";
 
@@ -139,9 +140,14 @@ export function App() {
       <main className="main">
         {!up ? <Down status={status} /> : (
           <>
-            {view === "terminal" && <Terminal key={project} project={current ?? null}
-              thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
-              onSend={send} onGate={(id, a) => markGate(project, id, a)} />}
+            {view === "terminal" && (
+              <div className={project === HOME ? "home" : "contents"}>
+                <Terminal key={project} project={current ?? null}
+                  thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
+                  onSend={send} onGate={(id, a) => markGate(project, id, a)} />
+                {project === HOME && <HomePanel projects={projects} gates={gates} onOpen={setProject} onGates={() => setView("gates")} />}
+              </div>
+            )}
             {view === "pipeline" && <Pipeline project={current?.name ?? null} live={live} />}
             {view === "checkpoints" && <Checkpoints project={current?.name ?? null} live={live} />}
             {view === "limits" && <Limits />}
