@@ -1,6 +1,7 @@
 //! govern-sup: starts one AI tool inside a deny-by-default sandbox (see docs/SANDBOX.md).
 
 mod policy;
+mod protect;
 mod sandbox;
 mod selftest;
 
@@ -42,6 +43,16 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         [flag, file, sep, argv @ ..] if flag == "--policy" && sep == "--" && !argv.is_empty() => (file, argv),
         _ => return Err(USAGE.to_string()),
     };
+    let text = std::fs::read_to_string(policy_file).map_err(|e| format!("cannot read policy {policy_file}: {e}"))?;
+    if protect::is_protect(&text) {
+        // Protect mode: the whole machine except the listed paths (see protect.rs).
+        let p = protect::parse(&text)?;
+        std::env::set_current_dir(&p.cwd).map_err(|e| format!("cwd {}: {e}", p.cwd.display()))?;
+        sandbox::no_new_privs()?;
+        protect::apply(&p, sandbox::kernel_abi())?;
+        let err = Command::new(&argv[0]).args(&argv[1..]).exec();
+        return Err(format!("cannot execute {}: {err}", argv[0]));
+    }
     let policy = policy::load(Path::new(policy_file))?;
     for w in &policy.warnings {
         eprintln!("govern-sup: warning: {w}");

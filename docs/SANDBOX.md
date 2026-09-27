@@ -60,3 +60,20 @@ its own input channel by path, or to open a fresh connection to the daemon.
 
 Linux: Landlock (ABI 4 or newer for TCP rules, 6 or newer for scoping) + seccomp.
 macOS: a default-deny Seatbelt profile (planned for phase 2). Windows: not supported.
+
+## Protect mode (for trusted general-purpose agents)
+
+GovernCode's own tools always use the deny-by-default sandbox above. `govern-sup` also has
+a second mode for a different job: an agent that is trusted with the whole machine but
+must not touch a few control files, for example the pipe it receives approvals through.
+
+```json
+{"version": 1, "mode": "protect", "protect": ["/run/user/1000/app/control.fifo"], "cwd": "/home/user"}
+```
+
+Everything is allowed except the listed paths. Because Landlock only grants, this is built
+by granting full access to every entry beside the way from `/` down to each protected path,
+and read-only listing on the way itself; nothing new can be created directly in those
+directories, so keep protected files in a directory of their own. Verified: a protected FIFO
+is refused both by path and through `/proc/<pid>/fd/N`, while writes elsewhere work.
+`no_new_privs` is set, as the kernel requires, so `sudo` does not elevate inside.

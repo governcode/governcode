@@ -57,6 +57,10 @@ pub fn apply(policy: &Resolved) -> Result<(), String> {
     install_seccomp(&filter)
 }
 
+pub fn no_new_privs() -> Result<(), String> {
+    set_no_new_privs()
+}
+
 fn set_no_new_privs() -> Result<(), String> {
     // Without this a setuid binary inside the sandbox could regain privilege, and the kernel
     // refuses an unprivileged seccomp filter anyway.
