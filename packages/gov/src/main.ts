@@ -193,7 +193,10 @@ async function main(argv: string[]): Promise<number> {
       }
       case "trace": {
         const project = await currentProject(api);
-        const { events } = await api.call("trace.list", { project: project ?? undefined, limit: 50 });
+        // gov trace --jsonl: every event of this project (or all), one JSON object per line, for export.
+        const jsonl = rest.includes("--jsonl");
+        const { events } = await api.call("trace.list", { project: project ?? undefined, limit: jsonl ? 1000 : 50 });
+        if (jsonl) { for (const e of events) console.log(JSON.stringify(e)); return 0; }
         for (const e of events) console.log(`${new Date(e.ts).toTimeString().slice(0, 8)}  ${e.kind.padEnd(16)} ${(e.project ?? "-").padEnd(12)} ${dim(e.actor)}`);
         return 0;
       }
@@ -227,7 +230,7 @@ async function main(argv: string[]): Promise<number> {
         return r.ok ? 0 : 1;
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

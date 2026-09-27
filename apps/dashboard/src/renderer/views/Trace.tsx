@@ -8,6 +8,8 @@ const FILTERS: Array<[string, (k: string) => boolean]> = [
   ["Turns", (k) => k.startsWith("turn.")],
   ["Gates", (k) => k.startsWith("gate.")],
   ["Specs", (k) => k.startsWith("spec.")],
+  ["Limits", (k) => k === "spec.held" || k === "settings.changed"],
+  ["Checkpoints", (k) => k.startsWith("checkpoint.")],
   ["Projects", (k) => k.startsWith("project.") || k === "controller.set"],
   ["Sandbox", (k) => k === "sandbox.refused" || k === "git.scrubbed"],
 ];
@@ -29,6 +31,7 @@ function summary(e: TraceEvent): string {
 export function Trace({ project, live }: { project: string | null; live: boolean }) {
   const [events, setEvents] = useState<TraceEvent[] | null>(null);
   const [filter, setFilter] = useState("All");
+  const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -47,7 +50,10 @@ export function Trace({ project, live }: { project: string | null; live: boolean
   });
 
   const test = FILTERS.find(([n]) => n === filter)![1];
-  const shown = (events ?? []).filter((e) => test(e.kind));
+  // Text matches the actor, the kind, or anything in the event (a Spec, a Gate, a path…).
+  const needle = text.trim().toLowerCase();
+  const shown = (events ?? []).filter((e) => test(e.kind)
+    && (!needle || `${e.actor} ${e.kind} ${e.project ?? ""} ${JSON.stringify(e.data ?? {})}`.toLowerCase().includes(needle)));
 
   return (
     <section className="view">
@@ -61,6 +67,7 @@ export function Trace({ project, live }: { project: string | null; live: boolean
         {FILTERS.map(([name]) => (
           <button key={name} className={`chip ${filter === name ? "active" : ""}`} onClick={() => setFilter(name)}>{name}</button>
         ))}
+        <input className="trace-filter" placeholder="filter: actor, Spec, Gate, text…" aria-label="Filter the Trace" value={text} onChange={(e) => setText(e.target.value)} />
       </div>
       {error && <div className="error pad">{error}</div>}
       <div className="scroll">
