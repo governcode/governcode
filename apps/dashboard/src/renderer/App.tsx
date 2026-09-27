@@ -144,7 +144,7 @@ export function App() {
               <div className={project === HOME ? "home" : "contents"}>
                 <Terminal key={project} project={current ?? null}
                   thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
-                  onSend={send} onGate={(id, a) => markGate(project, id, a)} />
+                  onSend={send} onGate={(id, a) => markGate(project, id, a)} onOpenProject={setProject} />
                 {project === HOME && <HomePanel projects={projects} gates={gates} onOpen={setProject} onGates={() => setView("gates")} />}
               </div>
             )}
@@ -181,6 +181,7 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
     case "tool": return [...entries, { t: "tool", name: String(e.name) }];
     case "gate": return [...entries, { t: "gate", id: String(e.id), tool: String(e.tool), canonical: String(e.canonical), arrived: Date.now() }];
     case "spec": return [...entries, { t: "spec", id: String(e.id), to: String(e.to), brief: String(e.brief), lines: [] }];
+    case "proposal": return [...entries, { t: "proposal", id: String(e.id), name: String(e.name), path: String(e.path), git: e.git === true, reason: String(e.reason ?? "") }];
     case "spec.text":
     case "spec.tool": {
       const line = ev.kind === "spec.text" ? String(e.text) : `· ${String(e.name)}`;

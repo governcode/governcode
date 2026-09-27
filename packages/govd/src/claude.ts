@@ -41,7 +41,7 @@ export function canonical(value: unknown): string {
 }
 
 /** What a Claude Code process may touch. Everything not listed is denied by govern-sup. */
-export type McpServer = { node: string; script: string; socket: string };
+export type McpServer = { node: string; script: string; socket: string; mode?: "home" };   // home: propose_project only
 
 export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false, mcp?: McpServer): Policy {
   const home = homedir();
@@ -105,8 +105,10 @@ export function runTurn(opts: {
     "--setting-sources", "user", "--no-session-persistence",
     "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : []),
     // GovernCode's own tools for the Controller, and no other MCP servers from anywhere.
-    ...(opts.mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { governcode: { command: opts.mcp.node, args: [opts.mcp.script, opts.mcp.socket] } } }),
-      "--strict-mcp-config"] : [])];
+    ...(opts.mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { governcode: { command: opts.mcp.node, args: [opts.mcp.script, opts.mcp.socket, ...(opts.mcp.mode ? [opts.mcp.mode] : [])] } } }),
+      "--strict-mcp-config"] : []),
+    // Proposing a project creates nothing (the user's Create does), so it needs no Gate of its own.
+    ...(opts.mcp?.mode === "home" ? ["--allowedTools", "mcp__governcode__propose_project"] : [])];
   // A clean environment: govd's own variables (and anything else in the user's shell) are
   // none of the tool's business. Its own process group, so finishing the turn ends every
   // process it started, not only the one that printed the result.

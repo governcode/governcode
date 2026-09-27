@@ -25,7 +25,20 @@ const rl = require("node:readline").createInterface({ input: process.stdin });
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 rl.on("line", (l) => {
   const m = JSON.parse(l);
-  if (m.type === "user") {
+  if (m.type === "user" && JSON.stringify(m).includes("propose")) {
+    // Like the real MCP server: call propose_project on the turn socket named in --mcp-config.
+    const cfg = JSON.parse(process.argv[process.argv.indexOf("--mcp-config") + 1]).mcpServers.governcode;
+    const s = require("node:net").connect(cfg.args[1]);
+    const got = [];
+    require("node:readline").createInterface({ input: s }).on("line", (l) => {
+      got.push(JSON.parse(l));
+      if (got.length < 2) return;
+      out({ type: "result", is_error: false, result: "mode:" + cfg.args[2] + " " + JSON.stringify(got.map((g) => g.result ? g.result.id : g.error.message)) });
+      process.exit(0);
+    });
+    s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.propose_project", params: { name: "harbor", path: /propose (\\/[^ "\\\\]+)/.exec(JSON.stringify(m))[1], reason: "an AIS reader" } }) + "\\n");
+    s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "controller.delegate", params: {} }) + "\\n");
+  } else if (m.type === "user") {
     out({ type: "assistant", message: { content: [{ type: "text", text: "hello from fake" }] } });
     out({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: "Bash",
       input: { command: "rm -rf dist", description: "clean \\u202e" } } });
@@ -197,6 +210,27 @@ test("the asker leaving denies its waiting Gate", async () => {
   assert.ok(d.ledger.events("gone", 20).some((e) => e.kind === "gate.denied" && e.data.by === "asker left"));
   assert.equal((await watcher.call("gate.list")).result.gates.length, 0);
   watcher.end(); d.close();
+});
+
+test("Home: the Controller may only propose a project; govd creates it on the user's Create", async () => {
+  const d = daemon("propose");
+  d.selftest();
+  await d.listen();
+  const c = client(join(root, "propose", "govd.sock"));
+  const target = join(root, "proposed", "harbor");
+  const shown: any[] = [];
+  c.onEvent = (e) => { if (e.kind === "proposal") shown.push(e); };
+  const r = await c.call("ask", { project: null, prompt: `propose ${target}` });
+  // Home's socket offers propose_project and nothing else (delegate is refused).
+  assert.match(r.result.summary, /^mode:home \["P-1","not offered at Home: controller.delegate"\]$/);
+  assert.deepEqual(shown.map((e) => [e.id, e.name, e.path, e.git, e.reason]), [["P-1", "harbor", target, true, "an AIS reader"]]);
+  assert.ok(!existsSync(target), "nothing exists before the user chooses Create");
+  const made = await c.call("proposal.answer", { id: "P-1", answer: "create" });
+  assert.equal(made.result.created.name, "harbor");
+  assert.ok(existsSync(join(target, ".git")));
+  assert.match((await c.call("proposal.answer", { id: "P-1", answer: "create" })).error.message, /no proposal P-1/);
+  assert.ok(d.ledger.events(undefined, 50).some((e) => e.kind === "project.proposed"));
+  c.end(); d.close();
 });
 
 test("Home runs with no project, in a folder the tool may only read", async () => {

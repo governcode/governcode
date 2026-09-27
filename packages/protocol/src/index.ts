@@ -39,6 +39,14 @@ export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accep
 export type Spec = SpecInput & { id: string; project: string; status: SpecStatus; created: string;
   checkpoints: { before: string | null; after: string | null }; files: string[]; note?: string };
 
+/** What a Home Controller may propose; govd creates it only when the user chooses Create. */
+export const ProjectProposal = z.object({
+  name: ProjectName,
+  path: z.string().min(1).max(4096),     // absolute, or ~/...
+  git: z.boolean().default(true),
+  reason: z.string().max(1000).default(""),
+});
+
 export const Params = {
   hello: z.object({ client: z.string().max(40), protocol: z.number().int() }),
   "project.list": z.object({}),
@@ -57,6 +65,7 @@ export const Params = {
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]) }),
+  "proposal.answer": z.object({ id: z.string().regex(/^P-\d+$/), answer: z.enum(["create", "cancel"]) }),
   // After `watch`, the connection also receives `event` notifications: {kind:"trace", event}
   // for every Trace append, and {kind:"gates"} whenever a Gate opens or is settled.
   watch: z.object({}),
@@ -77,7 +86,7 @@ export type TraceEvent = {
   ts: string; // ISO 8601, UTC
   project: string | null;
   kind:
-    | "project.created" | "project.opened" | "controller.set"
+    | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "checkpoint.taken" | "checkpoint.undone"

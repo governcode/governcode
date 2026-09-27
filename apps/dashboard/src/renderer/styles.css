@@ -164,3 +164,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .home-line { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .topbar .btn { white-space: nowrap; }
 .switcher { min-width: 0; flex-shrink: 1; }
+
+/* A Controller's project proposal, answered with Create or Cancel. */
+.proposal { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--panel); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; margin: 6px 0; }
+.proposal .kv { display: grid; grid-template-columns: 80px 1fr; gap: 4px 10px; font-size: 13px; }

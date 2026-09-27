@@ -37,7 +37,8 @@ gov undo T-12      # put those files back, if you have not changed them since
 ```
 
 Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot
-write anything.
+write anything. It can propose a new project (name, folder, git); you get Create or Cancel,
+and only your Create makes the folder.
 
 ### Delegation (phase 1)
 

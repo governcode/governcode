@@ -1,7 +1,7 @@
 // Terminal: chat with the Controller of the selected project (or Home). Events stream in as
 // they happen; a Gate appears inline with the exact request and waits for an answer.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { controllerLabel, type Gate, type Project } from "../api.ts";
+import { call, controllerLabel, type Gate, type Project } from "../api.ts";
 import { GateCard, Pill, UndoCheckpoint, type GateState } from "../ui.tsx";
 
 export type Entry =
@@ -11,12 +11,13 @@ export type Entry =
   | { t: "gate"; id: string; tool: string; canonical: string; arrived: number; answered?: "allow" | "deny" }
   | { t: "spec"; id: string; to: string; brief: string; lines: string[] }
   | { t: "checkpoint"; id: string; files: string[]; undone?: boolean }
+  | { t: "proposal"; id: string; name: string; path: string; git: boolean; reason: string }
   | { t: "done"; ok: boolean; summary: string }
   | { t: "error"; text: string };
 export type Thread = { entries: Entry[]; busy: boolean };
 
 export function Terminal(props: { project: Project | null; thread: Thread; openGates: Gate[]; gatesAt: number;
-  onSend: (prompt: string) => void; onGate: (id: string, a: "allow" | "deny") => void }) {
+  onSend: (prompt: string) => void; onGate: (id: string, a: "allow" | "deny") => void; onOpenProject?: (name: string) => void }) {
   const [draft, setDraft] = useState("");
   const log = useRef<HTMLDivElement>(null);
   const open = new Set(props.openGates.map((g) => g.id));
@@ -65,6 +66,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
                 {e.undone ? <span className="dim">undone</span> : <UndoCheckpoint id={e.id} files={e.files} compact onUndone={() => {}} />}
               </div>
             );
+            case "proposal": return <ProposalCard key={i} {...e} onOpen={props.onOpenProject} />;
             case "done": return <div key={i} className={`done ${e.ok ? "dim" : "error"}`}>{e.ok ? "— done" : `— failed: ${e.summary}`}</div>;
             case "error": return <div key={i} className="done error">— {e.text}</div>;
           }
@@ -76,5 +78,35 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
         <button className="btn btn-accent" disabled={props.thread.busy || !draft.trim()} onClick={submit}>Send</button>
       </div>
     </section>
+  );
+}
+
+/** A project the Home Controller proposed. govd creates it only when you choose Create. */
+function ProposalCard(p: { id: string; name: string; path: string; git: boolean; reason: string; onOpen?: (name: string) => void }) {
+  const [state, setState] = useState<"waiting" | "busy" | "created" | "cancelled">("waiting");
+  const [error, setError] = useState<string | null>(null);
+  const answer = async (a: "create" | "cancel") => {
+    setState("busy");
+    try {
+      const r = await call<{ created: Project | null }>("proposal.answer", { id: p.id, answer: a });
+      setState(r.created ? "created" : "cancelled"); setError(null);
+    } catch (e) { setState("waiting"); setError(e instanceof Error ? e.message : String(e)); }
+  };
+  return (
+    <div className="proposal">
+      <div className="row"><Pill tone="accent">proposal</Pill><b>New project from the Controller</b><span className="spacer" /><span className="dim mono small">{p.id}</span></div>
+      <div className="kv"><span className="dim">name</span><b className="mono">{p.name}</b>
+        <span className="dim">location</span><span className="mono">{p.path}</span>
+        <span className="dim">git</span><span>{p.git ? "git init · branch main" : "no git"}</span></div>
+      {p.reason && <div className="small">{p.reason}</div>}
+      <div className="dim small">Created by govd after you confirm; the Controller cannot create folders itself.</div>
+      {error && <div className="error small">{error}</div>}
+      <div className="row end">
+        {state === "created" ? <><span className="ok small">Created.</span>{p.onOpen && <button className="btn btn-accent" onClick={() => p.onOpen?.(p.name)}>Open {p.name}</button>}</>
+          : state === "cancelled" ? <span className="dim small">Cancelled; nothing was created.</span>
+          : <><button className="btn" disabled={state === "busy"} onClick={() => answer("cancel")}>Cancel</button>
+              <button className="btn btn-accent" disabled={state === "busy"} onClick={() => answer("create")}>Create</button></>}
+      </div>
+    </div>
   );
 }

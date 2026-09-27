@@ -8,14 +8,14 @@ import { mkdirSync, rmSync, existsSync, statSync, chmodSync, realpathSync } from
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method, type WatchEvent } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RpcError, type Method, type WatchEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
-import { openControllerSocket, accept, discard } from "./delegate.ts";
+import { openControllerSocket, openTurnSocket, accept, discard } from "./delegate.ts";
 import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot, specPaths, turnStore } from "./specstore.ts";
 
 // ponytail: very large projects skip turn Checkpoints (hashing every file each turn).
@@ -44,6 +44,10 @@ export class Daemon {
   private turning = new Map<string, number>();
   private usage: Record<string, UsageSource> = {};
   private gateSeq = 0;
+  // Projects a Home Controller proposed, waiting for the user's Create or Cancel.
+  // ponytail: in memory; a govd restart drops them (the Controller can propose again).
+  private proposals = new Map<string, { id: string; name: string; path: string; git: boolean }>();
+  private proposalSeq = 0;
   /** Connections that called `watch`: each gets Trace appends and Gate changes pushed to it. */
   private watchers = new Map<Socket, { send: (n: WatchEvent) => void; stop: () => void }>();
   private sandboxOk = false;
@@ -106,6 +110,29 @@ export class Daemon {
     const pr = this.ledger.project(name);
     if (!pr) throw new RpcError(Errors.notFound, `no project ${name}`);
     return pr.path;
+  }
+
+  /** A folder that may become a new project: free name, nothing there yet, no denied folder. */
+  private newProjectPath(name: string, raw: string): string {
+    if (this.ledger.project(name)) throw new RpcError(Errors.refused, `a project named ${name} already exists`);
+    const path = resolve(raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw);
+    if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists; use project.open`);
+    this.checkProjectPath(path);
+    this.checkProjectPath(realAncestor(path));   // a symlinked parent must not smuggle in a denied folder
+    return path;
+  }
+
+  /** A Home Controller's proposal: checked now, shown to the user, created only on Create. */
+  private propose(raw: unknown, notify: (n: unknown) => void, actor: string): unknown {
+    const parsed = ProjectProposal.safeParse(raw);
+    if (!parsed.success) throw new Error(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+    const { name, git, reason } = parsed.data;
+    const path = this.newProjectPath(name, parsed.data.path);
+    const id = `P-${++this.proposalSeq}`;
+    this.proposals.set(id, { id, name, path, git });
+    this.ledger.append(null, "project.proposed", actor, { proposal: id, name, path, git });
+    notify({ kind: "proposal", id, name, path, git, reason });
+    return { id, status: "shown to the user with Create and Cancel; nothing exists until they choose Create" };
   }
 
   private notWhileTurning(project: string): void {
@@ -197,13 +224,23 @@ export class Daemon {
       case "project.list":
         return { projects: L.projects() };
       case "project.new": {
-        const path = resolve(p.path);
-        if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists; use project.open`);
-        this.checkProjectPath(path);
-        this.checkProjectPath(realAncestor(path));   // a symlinked parent must not smuggle in a denied folder
+        const path = this.newProjectPath(p.name, p.path);
         mkdirSync(path, { recursive: true });
         if (p.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
         return { project: L.addProject(p.name, path, "project.created") };
+      }
+      case "proposal.answer": {
+        const prop = this.proposals.get(p.id);
+        if (!prop) throw new RpcError(Errors.notFound, `no proposal ${p.id} waiting`);
+        this.proposals.delete(p.id);
+        if (p.answer === "cancel") {
+          L.append(null, "project.declined", "user", { proposal: p.id, name: prop.name });
+          return { id: p.id, created: null };
+        }
+        const path = this.newProjectPath(prop.name, prop.path);   // checked again: things may have changed
+        mkdirSync(path, { recursive: true });
+        if (prop.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
+        return { id: p.id, created: L.addProject(prop.name, path, "project.created") };
       }
       case "project.open": {
         if (!existsSync(resolve(p.path)) || !statSync(resolve(p.path)).isDirectory()) throw new RpcError(Errors.notFound, `${resolve(p.path)} is not a folder`);
@@ -340,14 +377,18 @@ export class Daemon {
         void runCodexTurn({ ...common, stateDir: resolve(this.opts.ledgerPath, ".."), model: project.controller.model, effort: project.controller.effort });
       } else {
         // In a project, the Claude Controller gets GovernCode's delegate tool on a socket that
-        // exists only for this turn. Home (read-only, no project) gets none.
+        // exists only for this turn. Home (read-only, no project) gets only propose_project.
         const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, ledger: L, limits: this.limits,
           usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
-          policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify }) : null;
+          policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify })
+          : openTurnSocket(resolve(this.opts.socketPath, ".."), async (method, params) => {
+            if (method !== "controller.propose_project") throw new Error(`not offered at Home: ${method}`);
+            return this.propose(params, notify, actor);
+          });
         const finish = hooks.done;
         hooks.done = (r) => { ctl?.close(); finish(r); };
         runTurn({ ...common, controller: project.controller,
-          mcp: ctl ? { node: process.execPath, script: MCP_SCRIPT, socket: ctl.path } : undefined });
+          mcp: { node: process.execPath, script: MCP_SCRIPT, socket: ctl.path, ...(found ? {} : { mode: "home" as const }) } });
       }
     });
   }

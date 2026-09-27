@@ -9,7 +9,7 @@ import { createInterface } from "node:readline";
 const socketPath = process.argv[2];
 if (!socketPath) { process.stderr.write("usage: mcp-controller SOCKET\n"); process.exit(2); }
 
-const TOOLS = [
+const PROJECT_TOOLS = [
   { name: "delegate", description: "Hand a bounded job (a Spec) to another AI coding tool (a Runner). GovernCode checks the Runner's usage Limit, runs it in its own git worktree inside a sandbox, records Checkpoints, and returns the result, the changed files and the diff for review. The user sees and approves each delegation.",
     inputSchema: { type: "object", additionalProperties: false, required: ["to", "brief", "result", "scope", "budgetPercent", "model", "reason"], properties: {
       to: { type: "string", description: "Runner provider, e.g. codex" },
@@ -24,6 +24,18 @@ const TOOLS = [
   { name: "spec_status", description: "Status, changed files and summary of a Spec.",
     inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" } }, additionalProperties: false } },
 ];
+
+// Home (no project) offers one tool: proposing a project. govd shows it to the user, who creates
+// it or not; the Controller itself can never create a folder.
+const HOME_TOOLS = [
+  { name: "propose_project", description: "Propose a new project to the user: its name, folder and whether to git init it. GovernCode shows the proposal with Create and Cancel; nothing is created unless the user chooses Create. Use it when the user wants to start something new.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["name", "path"], properties: {
+      name: { type: "string", description: "lowercase letters, digits, . _ -" },
+      path: { type: "string", description: "Absolute folder, or ~/..., that does not exist yet" },
+      git: { type: "boolean", description: "git init it (default true)" },
+      reason: { type: "string", description: "One or two sentences on what it is for, shown to the user" } } } },
+];
+const TOOLS = process.argv[3] === "home" ? HOME_TOOLS : PROJECT_TOOLS;
 
 let next = 1;
 const waiting = new Map<number, (m: any) => void>();

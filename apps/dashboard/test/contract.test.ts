@@ -47,6 +47,9 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   // Limits: a read; measuring is an explicit boolean.
   assert.deepEqual(checkCall("limits.list", undefined).params, { measure: false });
   assert.throws(() => checkCall("limits.list", { measure: "yes" }));
+  // Proposals: create or cancel, by id.
+  assert.deepEqual(checkCall("proposal.answer", { id: "P-2", answer: "create" }).params, { id: "P-2", answer: "create" });
+  for (const bad of [{ id: "P-2", answer: "yes" }, { id: "G-2", answer: "create" }]) assert.throws(() => checkCall("proposal.answer", bad));
 });
 
 test("an ask needs a well-formed id and prompt; Home is a null project", () => {

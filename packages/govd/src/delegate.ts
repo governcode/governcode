@@ -30,7 +30,21 @@ const POLL_MS = Number(process.env.GOVERNCODE_LIMIT_POLL_MS ?? 120_000);
 
 /** Opens the per-turn socket; returns its path and a close(). */
 export function openControllerSocket(ctx: DelegationContext): { path: string; close(): void } {
-  const dir = join(ctx.runtimeDir, "turns");
+  return openTurnSocket(ctx.runtimeDir, async (method, params) => {
+    if (method === "controller.delegate") return delegate(ctx, params);
+    if (method === "controller.crew") return crew(ctx);
+    if (method === "controller.spec_status") {
+      const s = ctx.ledger.spec(String((params as any)?.id));
+      if (!s || s.project !== ctx.project.name) throw new Error("no such Spec in this project");
+      return { id: s.id, status: s.status, files: s.files, note: s.note };
+    }
+    throw new Error(`not offered to the Controller: ${method}`);
+  });
+}
+
+/** A socket that exists for one Controller turn and answers only what `handle` offers. */
+export function openTurnSocket(runtimeDir: string, handle: (method: string, params: unknown) => Promise<unknown>): { path: string; close(): void } {
+  const dir = join(runtimeDir, "turns");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const path = join(dir, `${randomBytes(12).toString("hex")}.sock`);
@@ -43,14 +57,7 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
       try { m = JSON.parse(line); } catch { return; }
       const reply = (o: object) => sock.writable && sock.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...o }) + "\n");
       try {
-        if (m.method === "controller.delegate") return reply({ result: await delegate(ctx, m.params) });
-        if (m.method === "controller.crew") return reply({ result: await crew(ctx) });
-        if (m.method === "controller.spec_status") {
-          const s = ctx.ledger.spec(String(m.params?.id));
-          if (!s || s.project !== ctx.project.name) throw new Error("no such Spec in this project");
-          return reply({ result: { id: s.id, status: s.status, files: s.files, note: s.note } });
-        }
-        throw new Error(`not offered to the Controller: ${m.method}`);
+        reply({ result: await handle(String(m.method), m.params) });
       } catch (e) {
         reply({ error: { code: 1001, message: e instanceof Error ? e.message : String(e) } });
       }

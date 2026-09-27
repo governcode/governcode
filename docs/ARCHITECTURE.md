@@ -53,6 +53,14 @@ included): new content is staged beside each file with `O_NOFOLLOW`, every file 
 again, and only then renamed into place. Accept and undo wait while a Controller turn is
 running in that project, since a running tool could swap a folder for a symlink mid-write.
 
+## Proposing a project from Home
+
+At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the
+name and folder as it would for `project.new` (free name, nothing there yet, no denied
+folder, symlinked parents resolved), keeps the proposal, and shows it with Create and
+Cancel. Only `proposal.answer create`, from the user, makes the folder, after the same
+checks again. Proposing creates nothing, so it has no Gate of its own.
+
 ## Checkpoints of Controller turns
 
 Before each Controller turn in a git project, `govd` snapshots the project's tracked and

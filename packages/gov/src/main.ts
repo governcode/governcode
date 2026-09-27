@@ -195,6 +195,12 @@ async function main(argv: string[]): Promise<number> {
             const a = (await tty.next("Allow once? [y/N] ")).trim().toLowerCase();
             if (!a) console.log("");
             await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "allow" : "deny" });
+          } else if (ev.kind === "proposal") {
+            console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
+            if (ev.reason) console.log(dim(ev.reason));
+            const a = (await tty.next("Create it? [y/N] ")).trim().toLowerCase();
+            const r = await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" });
+            console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created"));
           }
         });
         const r = await api.call("ask", { project, prompt });
