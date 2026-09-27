@@ -10,8 +10,9 @@ wait at a Gate for your approval, signed on your phone.
 
 Free and open source (MIT). Runs on your own machine; no hosted service.
 
-> **Status: pre-alpha, phase 0.** Nothing here is usable yet. We are building the daemon
-> (`govd`), the sandboxing supervisor (`govern-sup`) and the CLI (`gov`) first.
+> **Status: pre-alpha, phase 1.** Developers can try it from the CLI on Linux: the
+> sandbox, Gates, and delegation from a Claude Code Controller to a Codex Runner work end
+> to end. Expect rough edges; nothing is released yet.
 
 ## Try it (developers, Linux)
 
@@ -35,6 +36,22 @@ gov trace          # what happened
 
 Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot
 write anything.
+
+### Delegation (phase 1)
+
+With Codex installed and logged in, the Controller can hand a job to it as a Runner:
+
+```sh
+gov ask "Use the governcode delegate tool to have codex write tests for src/tide.rs,
+         scope write [\"tests\"], budget 10%, model gpt-5.5, effort medium"
+gov specs            # the Spec: Runner, model, status, files
+gov diff S-0001      # exactly what the Runner changed
+gov accept S-0001    # apply it to your project (or: gov discard S-0001)
+```
+
+GovernCode checks Codex's measured usage against your Limit first, runs it in a workspace
+of its own inside the sandbox (it can write only the scope), shows every step that needs
+approval as a Gate, and applies nothing until you accept.
 
 ## Plan
 
