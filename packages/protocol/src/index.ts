@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -48,6 +48,10 @@ export const Params = {
   "trace.list": z.object({ project: ProjectName.optional(), limit: z.number().int().min(1).max(1000).default(50) }),
   ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000) }),
   "gate.list": z.object({}),
+  "spec.list": z.object({ project: ProjectName.optional() }),
+  "spec.diff": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
+  "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
+  "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]) }),
 } as const;
 export type Method = keyof typeof Params;

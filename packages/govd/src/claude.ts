@@ -23,7 +23,7 @@ export function resolverFiles(): string[] {
   return out;
 }
 
-export type GateRequest = { id: string; tool: string; input: Record<string, unknown>; canonical: string };
+export type GateRequest = { id: string; tool: string; input: Record<string, unknown>; canonical: string; actor?: string };
 export type TurnHooks = {
   text(chunk: string): void;
   tool(name: string, input: Record<string, unknown>): void;
@@ -41,7 +41,9 @@ export function canonical(value: unknown): string {
 }
 
 /** What a Claude Code process may touch. Everything not listed is denied by govern-sup. */
-export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false): Policy {
+export type McpServer = { node: string; script: string; socket: string };
+
+export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false, mcp?: McpServer): Policy {
   const home = homedir();
   const cfg = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   const bin = realpathSync(which("claude"));
@@ -59,11 +61,17 @@ export function claudePolicy(worktree: string, sessionTmp: string, readOnly = fa
       "/dev/random", dirname(bin), join(home, ".claude.json"), ...cfgRead, ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
       (p) => p === worktree || existsSync(p)),
     write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...cfgWrite.filter(existsSync)],
-    exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin)],
+    exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin), ...(mcp ? [dirname(mcp.node)] : [])],
     tcp_connect: [443],
-    unix_connect: RESOLVER_SOCKETS.filter(existsSync),
+    // The per-turn GovernCode socket is the one extra socket, and only while this turn runs.
+    unix_connect: [...RESOLVER_SOCKETS.filter(existsSync), ...(mcp ? [mcp.socket] : [])],
     cwd: worktree,
   };
+}
+
+/** Where the MCP server file lives, so the policy can let the tool read it. */
+export function withMcpRead(p: Policy, mcp?: McpServer): Policy {
+  return mcp ? { ...p, read: [...p.read, dirname(mcp.script), dirname(mcp.node)] } : p;
 }
 
 const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|CLAUDE_CONFIG_DIR|ANTHROPIC_[A-Z_]+|CLAUDE_CODE_[A-Z_]+|HTTPS?_PROXY|NO_PROXY)$/;
@@ -84,22 +92,28 @@ function which(cmd: string): string {
 
 export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
+  mcp?: McpServer;
 }): { cancel(): void } {
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
   const policyFile = join(opts.policyDir, `turn-${process.pid}-${Date.now()}.json`);
-  writeFileSync(policyFile, JSON.stringify(claudePolicy(opts.worktree, sessionTmp, opts.readOnly)), { mode: 0o600 });
+  writeFileSync(policyFile, JSON.stringify(withMcpRead(claudePolicy(opts.worktree, sessionTmp, opts.readOnly, opts.mcp), opts.mcp)), { mode: 0o600 });
 
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--permission-prompt-tool", "stdio", "--permission-mode", "default",
     // Only the user's own settings; never the worktree's, which the harness can write.
     "--setting-sources", "user", "--no-session-persistence",
-    "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : [])];
+    "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : []),
+    // GovernCode's own tools for the Controller, and no other MCP servers from anywhere.
+    ...(opts.mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { governcode: { command: opts.mcp.node, args: [opts.mcp.script, opts.mcp.socket] } } }),
+      "--strict-mcp-config"] : [])];
   // A clean environment: govd's own variables (and anything else in the user's shell) are
   // none of the tool's business. Its own process group, so finishing the turn ends every
   // process it started, not only the one that printed the result.
   const child = spawn(opts.supervisor, ["run", "--policy", policyFile, "--", which("claude"), ...args], {
-    cwd: opts.worktree, stdio: ["pipe", "pipe", "pipe"], env: toolEnv(sessionTmp), detached: true,
+    cwd: opts.worktree, stdio: ["pipe", "pipe", "pipe"], detached: true,
+    // A delegated Spec can run for many minutes while the Controller's tool call waits.
+    env: { ...toolEnv(sessionTmp), MCP_TOOL_TIMEOUT: String(60 * 60_000) },
   });
   let stderr = "";
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));

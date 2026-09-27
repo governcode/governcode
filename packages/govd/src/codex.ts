@@ -39,15 +39,17 @@ export function prepareCodexHome(stateDir: string): string {
   return home;
 }
 
-export function codexPolicy(worktree: string, sessionTmp: string, codexHome: string, bin: string, readOnly = false): Policy {
+export function codexPolicy(worktree: string, sessionTmp: string, codexHome: string, bin: string, readOnly = false,
+                            writePaths?: string[], gitDir?: string): Policy {
   const user = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const exists = (p: string) => existsSync(p);
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
-      "/dev/random", dirname(bin), join(user, "config.toml"), join(user, "auth.json"), ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
-      (p) => p === worktree || exists(p)),
-    write: [...(readOnly ? [] : [worktree]), sessionTmp, codexHome, "/dev/null"],
+      "/dev/random", dirname(bin), join(user, "config.toml"), join(user, "auth.json"), ...resolverFiles(),
+      // A Spec's Runner reads its whole worktree (and the repo's git data) but writes only its scope.
+      ...(readOnly || writePaths ? [worktree] : []), ...(gitDir ? [gitDir] : [])].filter((p) => p === worktree || exists(p)),
+    write: [...(readOnly ? [] : writePaths ?? [worktree]), sessionTmp, codexHome, "/dev/null"],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin)],
     tcp_connect: [443],
     unix_connect: ["/run/systemd/resolve/io.systemd.Resolve"].filter(exists),
@@ -90,13 +92,14 @@ function start(supervisor: string, policyFile: string, bin: string, env: Record<
   };
 }
 
-async function session(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string; readOnly?: boolean }) {
+async function session(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string; readOnly?: boolean;
+                           writePaths?: string[]; gitDir?: string }) {
   const bin = codexBinary();
   mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
   const tmp = mkdtempSync(join(tmpdir(), "governcode-codex-"));
   const home = prepareCodexHome(o.stateDir);
   const policyFile = join(o.policyDir, `codex-${process.pid}-${Date.now()}.json`);
-  writeFileSync(policyFile, JSON.stringify(codexPolicy(o.worktree, tmp, home, bin, o.readOnly)), { mode: 0o600 });
+  writeFileSync(policyFile, JSON.stringify(codexPolicy(o.worktree, tmp, home, bin, o.readOnly, o.writePaths, o.gitDir)), { mode: 0o600 });
   const rpc = start(o.supervisor, policyFile, bin, { ...toolEnv(tmp), CODEX_HOME: home }, o.worktree);
   await rpc.request("initialize", { clientInfo: { name: "governcode", title: "GovernCode", version: "0.0.1" } });
   const cleanup = () => { rpc.close(); rmSync(policyFile, { force: true }); rmSync(tmp, { recursive: true, force: true }); };
@@ -131,7 +134,7 @@ export function codexUsage(o: { supervisor: string; policyDir: string; stateDir:
 
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
 export async function runCodexTurn(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string;
-  readOnly?: boolean; model: string; effort: string | null; prompt: string; hooks: TurnHooks }): Promise<void> {
+  readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks }): Promise<void> {
   let s: Awaited<ReturnType<typeof session>>;
   try {
     s = await session(o);

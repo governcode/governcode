@@ -7,12 +7,18 @@ import { createInterface } from "node:readline";
 import { mkdirSync, rmSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { Errors, FEATURES, PROTOCOL, Params, ProjectName, Request, RpcError, type Method } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
-import { runCodexTurn } from "./codex.ts";
+import { runCodexTurn, codexUsage } from "./codex.ts";
+import { LimitGate, type UsageSource } from "./limits.ts";
+import { openControllerSocket, accept, discard } from "./delegate.ts";
+import * as cp from "./checkpoint.ts";
+import { fileURLToPath } from "node:url";
+
+const MCP_SCRIPT = fileURLToPath(new URL("./mcp-controller.ts", import.meta.url));
 
 export type DaemonOptions = { socketPath: string; ledgerPath: string; policyDir: string; homeDir: string; supervisor: string; version: string };
 
@@ -27,6 +33,8 @@ export class Daemon {
   private server?: Server;
   private sockets = new Set<Socket>();
   private gates = new Map<string, Gate>();
+  private limits = new LimitGate();
+  private usage: Record<string, UsageSource> = {};
   private gateSeq = 0;
   private sandboxOk = false;
   private sandboxReason = "self-test not run";
@@ -36,6 +44,8 @@ export class Daemon {
   constructor(opts: DaemonOptions) {
     this.opts = opts;
     this.ledger = new Ledger(opts.ledgerPath);
+    const stateDir = resolve(opts.ledgerPath, "..");
+    this.usage = { codex: codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") }) };
   }
 
   /** Fail closed: no AI tool starts until the sandbox self-test passes on this machine. */
@@ -54,6 +64,18 @@ export class Daemon {
     this.server = createServer((sock) => this.serve(sock));
     await new Promise<void>((ok) => this.server!.listen(this.opts.socketPath, ok));
     chmodSync(this.opts.socketPath, 0o600);
+  }
+
+  private specOr404(id: string) {
+    const s = this.ledger.spec(id);
+    if (!s) throw new RpcError(Errors.notFound, `no Spec ${id}`);
+    return s;
+  }
+
+  private projectPath(name: string): string {
+    const pr = this.ledger.project(name);
+    if (!pr) throw new RpcError(Errors.notFound, `no project ${name}`);
+    return pr.path;
   }
 
   /** A project folder becomes an AI tool's writable root, so some folders never can. */
@@ -145,6 +167,26 @@ export class Daemon {
         return { events: L.events(p.project, p.limit) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
+      case "spec.list":
+        return { specs: L.specs(p.project) };
+      case "spec.diff": {
+        const s = this.specOr404(p.id);
+        return { id: s.id, files: s.files, diff: s.checkpoints.after ? cp.diff(this.projectPath(s.project), s.id) : "" };
+      }
+      case "spec.accept": {
+        const s = this.specOr404(p.id);
+        if (s.status !== "needs-review") throw new RpcError(Errors.refused, `${s.id} is ${s.status}, not waiting for review`);
+        const files = accept(this.projectPath(s.project), s.id);
+        L.updateSpec(s.id, { status: "accepted" }, "user");
+        discard(this.projectPath(s.project), s.id);
+        return { id: s.id, applied: files };
+      }
+      case "spec.discard": {
+        const s = this.specOr404(p.id);
+        discard(this.projectPath(s.project), s.id);
+        if (s.status === "needs-review" || s.status === "failed") L.updateSpec(s.id, { status: "undone", note: "discarded by the user" }, "user");
+        return { id: s.id, discarded: true };
+      }
       case "gate.list":
         return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ...g }) => g) };
       case "gate.answer":
@@ -178,7 +220,7 @@ export class Daemon {
             const id = `G-${++this.gateSeq}`;
             this.gates.set(id, { id, project: project.name, tool: req.tool, canonical: req.canonical,
               opened: new Date().toISOString(), owner: sock, answer });
-            L.append(project.name, "gate.opened", actor, { gate: id, tool: req.tool });
+            L.append(project.name, "gate.opened", req.actor ?? actor, { gate: id, tool: req.tool });
             notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical });
           }),
           done: (r) => {
@@ -193,7 +235,15 @@ export class Daemon {
       if (project.controller.provider === "codex") {
         void runCodexTurn({ ...common, stateDir: resolve(this.opts.ledgerPath, ".."), model: project.controller.model, effort: project.controller.effort });
       } else {
-        runTurn({ ...common, controller: project.controller });
+        // In a project, the Claude Controller gets GovernCode's delegate tool on a socket that
+        // exists only for this turn. Home (read-only, no project) gets none.
+        const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, ledger: L, limits: this.limits,
+          usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
+          policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify }) : null;
+        const finish = hooks.done;
+        hooks.done = (r) => { ctl?.close(); finish(r); };
+        runTurn({ ...common, controller: project.controller,
+          mcp: ctl ? { node: process.execPath, script: MCP_SCRIPT, socket: ctl.path } : undefined });
       }
     });
   }

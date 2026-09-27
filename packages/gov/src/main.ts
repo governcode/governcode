@@ -126,6 +126,28 @@ async function main(argv: string[]): Promise<number> {
         console.log(`${id}: ${answer === "allow" ? "allowed once" : "denied"}`);
         return 0;
       }
+      case "specs": {
+        const project = await currentProject(api);
+        const { specs } = await api.call("spec.list", { project: project ?? undefined });
+        if (!specs.length) console.log(dim("no Specs yet"));
+        for (const x of specs) console.log(`${x.id}  ${x.to.padEnd(8)} ${`${x.model} · ${x.effort ?? "n/a"}`.padEnd(20)} ${x.status.padEnd(13)} ${String(x.files.length).padStart(3)} files  ${dim(x.brief.slice(0, 50))}`);
+        return 0;
+      }
+      case "diff": {
+        const r = await api.call("spec.diff", { id: rest[0] });
+        console.log(r.diff || dim("(no changes)"));
+        return 0;
+      }
+      case "accept": {
+        const r = await api.call("spec.accept", { id: rest[0] });
+        console.log(`${r.id}: applied ${r.applied.length} file(s) to the project: ${r.applied.join(", ")}`);
+        return 0;
+      }
+      case "discard": {
+        await api.call("spec.discard", { id: rest[0] });
+        console.log(`${rest[0]}: discarded`);
+        return 0;
+      }
       case "trace": {
         const project = await currentProject(api);
         const { events } = await api.call("trace.list", { project: project ?? undefined, limit: 50 });
@@ -139,6 +161,9 @@ async function main(argv: string[]): Promise<number> {
         api.onEvent(async (ev) => {
           if (ev.kind === "text") process.stdout.write(ev.text + "\n");
           else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
+          else if (ev.kind === "spec") console.log(warn(`\n${ev.id} → Runner · ${ev.to}: ${ev.brief}`));
+          else if (ev.kind === "spec.text") console.log(dim(`  ${ev.id} · ${ev.text.slice(0, 200)}`));
+          else if (ev.kind === "spec.tool") console.log(dim(`  ${ev.id} · ${ev.name}`));
           else if (ev.kind === "gate") {
             console.log(warn(`\nGate: the Controller wants to use ${ev.tool}. Exactly this will run:`));
             console.log(ev.canonical);
@@ -153,7 +178,7 @@ async function main(argv: string[]): Promise<number> {
         return r.ok ? 0 : 1;
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|daemon start|install|uninstall]");
         return 2;
     }
   } finally {
