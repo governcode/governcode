@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/governcode-icon.svg" width="112" alt="GovernCode logo"></p>
+
 # GovernCode
 
 **Govern your AI coding crew.** Pick one AI coding tool as the Controller. It keeps its own
