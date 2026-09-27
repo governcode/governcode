@@ -1,4 +1,4 @@
-// The policies govd actually hands AI tools, checked on this machine at startup (Rattle: the
+// The policies govd actually hands AI tools, checked on this machine at startup (a Grok red-team review: the
 // self-test certified its own fixture, not claudePolicy/codexPolicy). Harmless probes run under
 // the real policy for a scratch project: the tool's own settings and other projects'
 // transcripts must be out of reach, the project writable, govd's socket unreachable.

@@ -1,6 +1,6 @@
 // A Spec's workspace, history and snapshots live in govd's own state directory, which no AI
 // tool can reach: the Controller cannot plant symlinks in the Runner's workspace, edit its
-// snapshots, or set git config that govd then runs (Rattle's delegation red-team). Every git
+// snapshots, or set git config that govd then runs (a Grok red-team review of delegation). Every git
 // call here uses a git directory govd created, plumbing that never runs filters, hooks or
 // external diff drivers, and a config that turns off anything that could run a program.
 import { execFileSync } from "node:child_process";

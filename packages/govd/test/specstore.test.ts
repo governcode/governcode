@@ -95,7 +95,7 @@ test("limits: checking availability reserves nothing (crew probes left a 1% debi
 });
 
 test("apply never writes through a dangling symlink, or into a project folder swapped for one", () => {
-  // Rattle: existsSync() is false for a dangling link, so a new file was written through it.
+  // Found in a Grok red-team review: existsSync() is false for a dangling link, so a new file was written through it.
   const proj = project();
   const state = mkdtempSync(join(tmpdir(), "gc-state-"));
   const outside = mkdtempSync(join(tmpdir(), "gc-outside-"));

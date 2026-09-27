@@ -173,7 +173,7 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     if (m.method === "mcpServer/elicitation/request") return mcpApproval(p);
     const kind = m.method === "item/commandExecution/requestApproval" ? "command"
       : m.method === "item/fileChange/requestApproval" ? "fileChange" : null;
-    // Anything we do not recognise is refused, never granted by silence (Rattle).
+    // Anything we do not recognise is refused, never granted by silence (a Grok red-team review).
     if (!kind) throw new Error(`GovernCode does not answer ${m.method}`);
     const changes = kind === "fileChange" ? items.get(String(p.itemId))?.changes : undefined;
     // A Gate shows exactly what will happen. A file change whose content we have not seen
