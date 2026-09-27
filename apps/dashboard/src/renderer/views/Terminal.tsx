@@ -8,7 +8,8 @@ export type Entry =
   | { t: "you"; text: string }
   | { t: "text"; text: string }
   | { t: "tool"; name: string }
-  | { t: "gate"; id: string; tool: string; canonical: string; arrived: number; answered?: "allow" | "deny" }
+  | { t: "gate"; id: string; tool: string; canonical: string; arrived: number; answered?: "allow" | "deny"; covers?: string | null; scopes?: string[] }
+  | { t: "allowed"; tool: string; why: string }
   | { t: "spec"; id: string; to: string; brief: string; lines: string[] }
   | { t: "checkpoint"; id: string; files: string[]; undone?: boolean }
   | { t: "proposal"; id: string; name: string; path: string; git: boolean; reason: string }
@@ -52,7 +53,8 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
             case "you": return <div key={i} className="msg you"><span className="who">you</span><div className="body">{e.text}</div></div>;
             case "text": return <div key={i} className="msg ctl"><span className="who">Controller</span><div className="body">{e.text}</div></div>;
             case "tool": return <div key={i} className="tool dim mono">· {e.name}</div>;
-            case "gate": return <GateCard key={i} id={e.id} tool={e.tool} canonical={e.canonical} state={gateState(e)}
+            case "allowed": return <div key={i} className="tool dim mono">· {e.tool}: allowed without asking ({e.why}); the sandbox still applies</div>;
+            case "gate": return <GateCard key={i} id={e.id} tool={e.tool} canonical={e.canonical} covers={e.covers} scopes={e.scopes} state={gateState(e)}
               onAnswered={(a) => props.onGate(e.id, a)} />;
             case "spec": return (
               <div key={i} className="spec-card">

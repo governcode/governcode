@@ -197,3 +197,5 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .policy { display: flex; flex-direction: column; gap: 6px; }
 .policy-option { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; background: var(--panel); cursor: pointer; }
 .policy-option.on { border-color: var(--accent); }
+.gate-note { margin-top: 6px; }
+.settings .tr.rule { grid-template-columns: 60px 120px 1fr auto; }

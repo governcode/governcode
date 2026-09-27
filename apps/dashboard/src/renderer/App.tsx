@@ -181,7 +181,9 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
   switch (ev.kind) {
     case "text": return [...entries, { t: "text", text: String(e.text) }];
     case "tool": return [...entries, { t: "tool", name: String(e.name) }];
-    case "gate": return [...entries, { t: "gate", id: String(e.id), tool: String(e.tool), canonical: String(e.canonical), arrived: Date.now() }];
+    case "gate": return [...entries, { t: "gate", id: String(e.id), tool: String(e.tool), canonical: String(e.canonical), arrived: Date.now(),
+      covers: typeof e.covers === "string" ? e.covers : null, scopes: Array.isArray(e.scopes) ? e.scopes.map(String) : [] }];
+    case "allowed": return [...entries, { t: "allowed", tool: String(e.tool), why: String(e.why) }];
     case "spec": return [...entries, { t: "spec", id: String(e.id), to: String(e.to), brief: String(e.brief), lines: [] }];
     case "proposal": return [...entries, { t: "proposal", id: String(e.id), name: String(e.name), path: String(e.path), git: e.git === true, reason: String(e.reason ?? "") }];
     case "spec.text":

@@ -43,7 +43,7 @@ rl.on("line", (l) => {
     return out({ id: pending, method: "item/fileChange/requestApproval", params: { itemId: "fc1", threadId: "t1", turnId: "u1", startedAtMs: 0 } });
   }
   if (m.id === pending) {
-    if (m.result && m.result.decision === "accept") { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, "ok\\n"); }
+    if (m.result && m.result.decision === "accept") { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, cfg.content ?? "ok\\n"); }
     out({ method: "item/completed", params: { item: { id: "m1", type: "agentMessage", text: m.result && m.result.decision === "accept" ? "wrote it" : "declined" } } });
     out({ method: "turn/completed", params: { turn: { status: "completed" } } });
   }
@@ -156,7 +156,7 @@ test("per-Spec models: free keeps the pick, within never goes heavier, defaults 
     { model: "gpt-5.5", effort: "low", note: null }, "lighter is fine");
   const forced = specModel({ to: "codex", model: "x", effort: "low" }, { ...base, specModels: "defaults" });
   assert.deepEqual([forced.model, forced.effort], ["gpt-5.5", "medium"]);
-  assert.deepEqual(specModel(ask, { reserves: {}, runners: {}, specModels: "defaults" }).model, "gpt-5.5-pro", "no default set: the pick stands");
+  assert.deepEqual(specModel(ask, { runners: {}, specModels: "defaults" }).model, "gpt-5.5-pro", "no default set: the pick stands");
 });
 
 test("delegate: the Spec records the model Settings allowed, and crew tells the Controller the policy", async () => {
@@ -168,4 +168,38 @@ test("delegate: the Spec records the model Settings allowed, and crew tells the 
   const r = await t.call("controller.delegate", { ...SPEC, model: "gpt-5.5-pro", effort: "high" });
   const spec = t.ledger.spec(r.result.id)!;
   assert.deepEqual([spec.model, spec.effort], ["gpt-5.5", "low"]);
+});
+
+test("delegate: a single-file scope works for an existing file and a new one; an untouched new file leaves no trace", async () => {
+  // A demo run found this: a write scope naming a file was created as a folder and the Spec failed.
+  const existing = setup("allow", { path: "README.md" });
+  await new Promise((r) => setTimeout(r, 50));
+  const a = await existing.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["README.md"] } });
+  assert.equal(a.result.status, "needs-review", JSON.stringify(a));
+  assert.deepEqual(a.result.files, ["README.md"]);
+  const fresh = setup("allow", { path: "NOTES.md" });
+  await new Promise((r) => setTimeout(r, 50));
+  const b = await fresh.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["NOTES.md"] } });
+  assert.equal(b.result.status, "needs-review", JSON.stringify(b));
+  assert.deepEqual(b.result.files, ["NOTES.md"]);
+  const untouched = setup("allow", { path: "tests/hello.txt" });
+  await new Promise((r) => setTimeout(r, 50));
+  const c = await untouched.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["NOTES.md", "tests"] } });
+  assert.equal(c.result.status, "needs-review", JSON.stringify(c));
+  assert.deepEqual(c.result.files, ["tests/hello.txt"], "the empty placeholder for NOTES.md is not a change");
+});
+
+test("delegate: a new Dockerfile is a file, a name ending in / a folder, and an empty file the Runner wrote stays", async () => {
+  const docker = setup("allow", { path: "Dockerfile" });
+  await new Promise((r) => setTimeout(r, 50));
+  const a = await docker.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["Dockerfile"] } });
+  assert.deepEqual([a.result.status, a.result.files], ["needs-review", ["Dockerfile"]], JSON.stringify(a));
+  const folder = setup("allow", { path: "cache.v1/data.txt" });
+  await new Promise((r) => setTimeout(r, 50));
+  const b = await folder.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["cache.v1/"] } });
+  assert.deepEqual([b.result.status, b.result.files], ["needs-review", ["cache.v1/data.txt"]], JSON.stringify(b));
+  const empty = setup("allow", { path: "pkg/__init__.py", content: "" });
+  await new Promise((r) => setTimeout(r, 50));
+  const c = await empty.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["pkg/__init__.py"] } });
+  assert.deepEqual([c.result.status, c.result.files], ["needs-review", ["pkg/__init__.py"]], "an empty file written on purpose is a change");
 });

@@ -15,7 +15,7 @@ const PROJECT_TOOLS = [
       to: { type: "string", description: "Runner provider, e.g. codex" },
       brief: { type: "string", description: "The job" },
       result: { type: "string", description: "Acceptance: what done means" },
-      scope: { type: "object", properties: { read: { type: "array", items: { type: "string" } }, write: { type: "array", items: { type: "string" } } }, description: "Paths relative to the project; write paths are the only writable ones" },
+      scope: { type: "object", properties: { read: { type: "array", items: { type: "string" } }, write: { type: "array", items: { type: "string" } } }, description: "Paths relative to the project; write paths are the only writable ones. End a folder with / (a new name without / that looks like a file is treated as one file)." },
       budgetPercent: { type: "number", description: "Share of the Runner's usage window this job may take (a request; GovernCode caps it)" },
       model: { type: "string" }, effort: { type: ["string", "null"], enum: ["low", "medium", "high", "max", null] },
       reason: { type: "string", description: "Why this Runner, shown to the user" } } } },

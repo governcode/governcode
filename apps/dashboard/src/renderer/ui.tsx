@@ -18,15 +18,19 @@ export type GateState = "waiting" | "allow" | "deny" | "settled";
  * A Gate: the exact canonical request that will run if allowed, and the two answers.
  * Shown inline in the Terminal and in the Gates list.
  */
+const SCOPE_LABEL: Record<string, string> = { turn: "this turn", spec: "this Spec", project: "this project" };
+
 export function GateCard(props: { id: string; tool: string; canonical: string; project?: string | null; opened?: string;
-  state: GateState; onAnswered: (a: "allow" | "deny") => void }) {
+  covers?: string | null; scopes?: string[]; state: GateState; onAnswered: (a: "allow" | "deny") => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const answer = async (a: "allow" | "deny") => {
+  const [remembered, setRemembered] = useState<string | null>(null);
+  const answer = async (a: "allow" | "deny", remember?: string) => {
     setBusy(true);
     setError(null);
     try {
-      await call("gate.answer", { id: props.id, answer: a });
+      await call("gate.answer", { id: props.id, answer: a, ...(remember ? { remember } : {}) });
+      if (remember) setRemembered(remember);
       props.onAnswered(a);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -44,7 +48,7 @@ export function GateCard(props: { id: string; tool: string; canonical: string; p
           {props.opened && <> · opened {clock(props.opened)}</>}
         </span>
         <span className="spacer" />
-        {props.state === "allow" && <Pill tone="ok">allowed once</Pill>}
+        {props.state === "allow" && <Pill tone="ok">{remembered ? `allowed for ${SCOPE_LABEL[remembered]}` : "allowed once"}</Pill>}
         {props.state === "deny" && <Pill tone="danger">denied</Pill>}
         {props.state === "settled" && <Pill tone="dim">settled</Pill>}
         {props.state === "waiting" && <Pill tone="warn">waiting for you</Pill>}
@@ -54,8 +58,18 @@ export function GateCard(props: { id: string; tool: string; canonical: string; p
       {props.state === "waiting" && (
         <div className="row">
           <button className="btn btn-ok" disabled={busy} onClick={() => answer("allow")}>Allow once</button>
+          {(props.scopes ?? []).map((s) => (
+            <button key={s} className="btn btn-ok" disabled={busy} onClick={() => answer("allow", s)}>Allow for {SCOPE_LABEL[s] ?? s}</button>
+          ))}
           <button className="btn btn-danger" disabled={busy} onClick={() => answer("deny")}>Deny</button>
           {error && <span className="error">{error}</span>}
+        </div>
+      )}
+      {props.state === "waiting" && (
+        <div className="gate-note small dim">
+          {props.covers
+            ? <>“Allow for…” also covers {props.covers} until then. It only skips the question: the sandbox still applies to every step.</>
+            : <>This kind of step always asks.</>}
         </div>
       )}
     </div>

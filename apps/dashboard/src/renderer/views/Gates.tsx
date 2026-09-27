@@ -14,7 +14,7 @@ export function Gates({ gates, onAnswered }: { gates: Gate[]; onAnswered: () => 
       <div className="scroll">
         {!gates.length ? <Empty title="No Gates waiting"><p className="dim">When a Controller or Runner needs approval, it waits here.</p></Empty>
           : gates.map((g) => (
-            <GateCard key={g.id} id={g.id} tool={g.tool} canonical={g.canonical} project={g.project} opened={g.opened}
+            <GateCard key={g.id} id={g.id} tool={g.tool} canonical={g.canonical} project={g.project} opened={g.opened} covers={g.covers} scopes={g.scopes}
               state={answered[g.id] ?? "waiting"} onAnswered={(a) => { setAnswered((m) => ({ ...m, [g.id]: a })); onAnswered(); }} />
           ))}
       </div>

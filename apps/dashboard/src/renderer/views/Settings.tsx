@@ -9,8 +9,10 @@ import type { ProviderLimit } from "./Limits.tsx";
 
 type Reserves = Record<string, Record<string, number>>;
 type Effort = "low" | "medium" | "high" | "max" | null;
-type SettingsValue = { reserves: Reserves; runners: Record<string, { model: string; effort: Effort }>; specModels: "free" | "within" | "defaults" };
-const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free" };
+type SettingsValue = { reserves: Reserves; runners: Record<string, { model: string; effort: Effort }>; specModels: "free" | "within" | "defaults";
+  gates: { quietReads: boolean } };
+const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free", gates: { quietReads: true } };
+type AllowRule = { id: string; project: string | null; label: string; created: string };
 const POLICIES: Array<[SettingsValue["specModels"], string, string]> = [
   ["free", "Controller picks", "It chooses the model and effort for each Spec."],
   ["within", "Within the defaults", "The default model; a lower effort than the default is fine, never a higher one."],
@@ -23,6 +25,15 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
   const [saved, setSaved] = useState<SettingsValue>(EMPTY);
   const [draft, setDraft] = useState<SettingsValue>(EMPTY);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rules, setRules] = useState<AllowRule[]>([]);
+  const loadRules = useCallback(async () => {
+    try { setRules((await call<{ rules: AllowRule[] }>("allows.list", {})).rules); } catch { /* shown by the status bar */ }
+  }, []);
+  useEffect(() => { void loadRules(); }, [loadRules]);
+  const revoke = async (id: string) => {
+    try { await call("allows.revoke", { id }); await loadRules(); }
+    catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -104,6 +115,23 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
             </div>
           );
         })}
+        <h2>Gates</h2>
+        <p className="dim small">The sandbox applies to every step, always. These settings only decide which steps stop to ask you first.</p>
+        <label className="policy-option">
+          <input type="checkbox" checked={draft.gates.quietReads} onChange={(e) => setDraft((d) => ({ ...d, gates: { ...d.gates, quietReads: e.target.checked } }))} />
+          <span><b>Quiet reads</b><span className="dim small"> · plain read-only commands (ls, cat, grep, rg…) run without asking. Everything else still asks.</span></span>
+        </label>
+        <div className="small"><b>Remembered for projects</b> <span className="dim">· made with “Allow for this project” on a Gate</span></div>
+        {!rules.length && <p className="dim small">None. Turn and Spec allows end on their own and aren't listed.</p>}
+        <div className="table">
+          {rules.map((r) => (
+            <div key={r.id} className="tr rule">
+              <b className="mono">{r.id}</b><span>{r.project}</span><span className="small">{r.label}</span>
+              <button className="btn" onClick={() => revoke(r.id)}>Revoke</button>
+            </div>
+          ))}
+        </div>
+
         <h2>Model and effort per Spec</h2>
         <div className="policy" role="radiogroup" aria-label="Model and effort per Spec">
           {POLICIES.map(([id, label, help]) => (

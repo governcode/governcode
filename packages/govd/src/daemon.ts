@@ -15,6 +15,7 @@ import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
+import { Allows, isQuietRead, kindOf, scopesFor, type AllowScope, type GateContext, type Kind } from "./allows.ts";
 import { openControllerSocket, openTurnSocket, accept, discard } from "./delegate.ts";
 import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot, specPaths, turnStore } from "./specstore.ts";
 
@@ -31,7 +32,8 @@ export type DaemonOptions = { socketPath: string; ledgerPath: string; policyDir:
 // user: sandboxed tools cannot open Unix sockets); if the connection that asked goes away,
 // its Gates are denied rather than left for a Controller to wait on forever.
 type Gate = { id: string; project: string | null; tool: string; canonical: string; opened: string;
-  owner: Socket; answer: (a: "allow" | "deny") => void };
+  owner: Socket; answer: (a: "allow" | "deny") => void;
+  kind: Kind | null; scopes: AllowScope[]; ctx: GateContext };   // what a standing allow would cover
 
 export class Daemon {
   readonly ledger: Ledger;
@@ -39,6 +41,7 @@ export class Daemon {
   private sockets = new Set<Socket>();
   private gates = new Map<string, Gate>();
   private limits = new LimitGate();
+  private allows!: Allows;               // standing allows (#192): they skip questions, never the sandbox
   // Controller turns running per project: accept and undo wait for them, so a running tool
   // cannot swap a folder for a symlink while govd writes into the project.
   private turning = new Map<string, number>();
@@ -61,6 +64,7 @@ export class Daemon {
     const stateDir = resolve(opts.ledgerPath, "..");
     this.usage = { codex: codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") }) };
     this.limits.setReserves(this.settings().reserves);
+    this.allows = new Allows(join(this.stateDir(), "allows.json"));
   }
 
   /** Settings live in govd's own state, which no AI tool can reach. A broken file is ignored (defaults). */
@@ -208,10 +212,17 @@ export class Daemon {
     });
   }
 
-  private settle(id: string, answer: "allow" | "deny", by: string): boolean {
+  private settle(id: string, answer: "allow" | "deny", by: string, remember?: AllowScope): boolean {
     const g = this.gates.get(id);
     if (!g) return false;
+    if (remember && (answer !== "allow" || !g.kind || !g.scopes.includes(remember))) {
+      throw new RpcError(Errors.refused, g.kind ? `this Gate can be remembered only for: ${g.scopes.join(", ") || "nothing"}` : "this kind of step always asks");
+    }
     this.gates.delete(id);
+    if (remember && g.kind) {
+      const rule = this.allows.add(remember, g.kind, g.ctx);
+      this.ledger.append(g.project, "allow.added", "user", { rule: rule.id, scope: rule.scope, key: rule.key, label: rule.label, from: id });
+    }
     this.ledger.append(g.project, answer === "allow" ? "gate.allowed" : "gate.denied", "user", { gate: id, tool: g.tool, by });
     this.gatesChanged();
     g.answer(answer);
@@ -281,6 +292,14 @@ export class Daemon {
         return { events: L.events(p.project, p.limit) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
+      case "allows.list":
+        return { rules: this.allows.list(p.project) };
+      case "allows.revoke": {
+        const rule = this.allows.list().find((r) => r.id === p.id);
+        if (!rule || !this.allows.revoke(p.id)) throw new RpcError(Errors.notFound, `no rule ${p.id}`);
+        L.append(rule.project, "allow.revoked", "user", { rule: rule.id, key: rule.key });
+        return { revoked: p.id };
+      }
       case "settings.get":
         return { settings: this.settings() };
       case "settings.set": {
@@ -339,9 +358,9 @@ export class Daemon {
         return { id: s.id, discarded: true };
       }
       case "gate.list":
-        return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ...g }) => g) };
+        return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, kind, ...g }) => ({ ...g, covers: kind?.label ?? null })) };
       case "gate.answer":
-        if (!this.settle(p.id, p.answer, "user")) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
+        if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
       case "watch":
         this.watch(sock, notify);
@@ -380,15 +399,36 @@ export class Daemon {
           text: (t) => { notify({ kind: "text", text: t }); L.append(project.name, "turn.text", actor, { text: t.slice(0, 4000) }); },
           tool: (name, input) => { notify({ kind: "tool", name, input }); L.append(project.name, "turn.tool", actor, { name }); },
           gate: (req) => new Promise((answer) => {
+            // Before asking: a plain read-only command, or a standing allow the user made, skips
+            // the question (never the sandbox). Either way the step is in the Trace.
+            const ctx: GateContext = { project: project.name, turn: turnId, spec: req.spec };
+            const kind = kindOf(req);
+            if (this.settings().gates.quietReads && isQuietRead(req)) {
+              L.append(project.name, "gate.allowed", "govd", { tool: req.tool, by: "quiet read", request: req.canonical.slice(0, 4000), turn: turnId, spec: req.spec ?? null });
+              notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why: "a read-only command (quiet reads are on)" });
+              return answer("allow");
+            }
+            const rule = this.allows.match(kind, ctx);
+            if (rule) {
+              L.append(project.name, "gate.allowed", "govd", { tool: req.tool, by: `rule ${rule.id}`, rule: rule.id, scope: rule.scope,
+                request: req.canonical.slice(0, 4000), turn: turnId, spec: req.spec ?? null });
+              notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why: `your rule ${rule.id}: ${rule.label}, for this ${rule.scope}` });
+              return answer("allow");
+            }
             const id = `G-${++this.gateSeq}`;
+            const scopes = scopesFor(kind, ctx);
             this.gates.set(id, { id, project: project.name, tool: req.tool, canonical: req.canonical,
-              opened: new Date().toISOString(), owner: sock, answer });
+              opened: new Date().toISOString(), owner: sock, answer, kind, scopes, ctx });
             L.append(project.name, "gate.opened", req.actor ?? actor, { gate: id, tool: req.tool });
             this.gatesChanged();
-            notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical });
+            notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical, covers: kind?.label ?? null, scopes });
           }),
           done: (r) => {
             if (found) this.turning.set(found.name, (this.turning.get(found.name) ?? 1) - 1);
+            // A Gate of this turn still waiting is denied (its request is gone), and turn and
+            // Spec rules end with the turn.
+            for (const g of [...this.gates.values()]) if (g.ctx.turn === turnId) this.settle(g.id, "deny", "turn ended");
+            this.allows.endTurn(turnId);
             if (store && before) {
               try {
                 const after = snapshot(store, `turns/${turnId}/after`, before, [...new Set([...(files ?? []), ...(projectFiles(found!.path) ?? [])])]);

@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, lstatSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { canonical, resolverFiles, toolEnv, withMcpRead, type GateRequest, type McpServer, type Policy, type TurnHooks } from "./claude.ts";
+import { canonical, resolverFiles, toolEnv, withMcpRead, CONTROLLER_CONTEXT, RUNNER_CONTEXT, type GateRequest, type McpServer, type Policy, type TurnHooks } from "./claude.ts";
 import type { Measurement, UsageSource } from "./limits.ts";
 
 /** The real Codex binary: $GOVERNCODE_CODEX_BIN, else `codex` on PATH, looking through a mise shim. */
@@ -228,6 +228,8 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   try {
     const t = await rpc.request("thread/start", { cwd: o.worktree, model: o.model, ephemeral: true,
       approvalPolicy: "untrusted", sandbox: o.readOnly ? "read-only" : "workspace-write",
+      // A Runner has write paths (its Spec's scope); a Controller does not.
+      developerInstructions: o.writePaths ? RUNNER_CONTEXT : CONTROLLER_CONTEXT,
       // ponytail: servers in the user's own config.toml still load (Claude gets --strict-mcp-config);
       // their approvals are declined above. Drop them when Codex offers a strict switch.
       ...(o.mcp ? { config: { mcp_servers: { governcode: { command: o.mcp.node, args: [o.mcp.script, o.mcp.socket, ...(o.mcp.mode ? [o.mcp.mode] : [])] } } } } : {}) });

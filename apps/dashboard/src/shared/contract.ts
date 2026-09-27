@@ -21,7 +21,8 @@ export const Channel = {
  * own, forwarded as `onWatch`.
  */
 export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "controller.set", "gate.list",
-  "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "trace.list", "turn.list", "turn.undo", "limits.list", "proposal.answer", "settings.get", "settings.set"] as const;
+  "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "trace.list", "turn.list", "turn.undo", "limits.list", "proposal.answer", "settings.get", "settings.set",
+  "allows.list", "allows.revoke"] as const;
 export type Callable = (typeof CALLABLE)[number];
 
 export function isCallable(m: unknown): m is Callable {
@@ -43,7 +44,8 @@ export type Status =
 export type AskEvent =
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string; input?: unknown }
-  | { kind: "gate"; id: string; tool: string; canonical: string }
+  | { kind: "gate"; id: string; tool: string; canonical: string; covers?: string | null; scopes?: string[] }
+  | { kind: "allowed"; tool: string; canonical?: string; why: string }
   | { kind: "spec"; id: string; to: string; brief: string }
   | { kind: "spec.text"; id: string; text: string }
   | { kind: "spec.tool"; id: string; name: string }

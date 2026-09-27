@@ -30,9 +30,9 @@ releases, tagged `vX.Y.Z`). Nothing has reached Motion yet: GovernCode is pre-al
 
 ## Try it (developers, Linux)
 
-Phase 0 runs one Controller (Claude Code) in the sandbox and asks you at every Gate. You
-need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, and
-Claude Code installed and logged in.
+You need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, and
+Claude Code installed and logged in (Codex too, to see delegation). Every AI tool runs in the
+sandbox, always; there is no switch to turn it off.
 
 ```sh
 git clone https://github.com/governcode/governcode && cd governcode
@@ -41,14 +41,27 @@ npm ci && cargo build --release
 node packages/gov/src/main.ts daemon start  # or: daemon install (systemd --user)
 
 alias gov="node $PWD/packages/gov/src/main.ts"
+gov demo           # the quickest look: a sample project, one Controller turn, one Runner job, review and undo
+```
+
+Or on your own project:
+
+```sh
 gov new demo --path ~/code/demo && cd ~/code/demo
 gov controller claude-code --model sonnet --effort medium
 gov ask "Add a README with one line about this project"
 gov gates          # from another terminal: what is waiting, exactly as it will run
+gov allows         # the standing allows you remembered for projects (revocable)
 gov trace          # what happened (gov trace --jsonl to export it)
 gov turns          # Checkpoints of the Controller's turns that changed files
 gov undo T-12      # put those files back, if you have not changed them since
 ```
+
+At a Gate you can allow one step, or **allow that kind of step for the rest of this turn**
+(a Runner: this Spec) **or this project**, so you are not asked about every `npm test`. That
+only skips the question: the sandbox still applies to every step, some steps always ask
+(deleting, network, git, interpreters, handing work to another AI), and everything is in the
+Trace. Details: [docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
 
 Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot
 write anything. It can propose a new project (name, folder, git); you get Create or Cancel,

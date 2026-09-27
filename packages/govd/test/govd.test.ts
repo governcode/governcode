@@ -39,6 +39,16 @@ rl.on("line", (l) => {
     });
     s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.propose_project", params: (() => { const path = /propose (\\/[^ "\\\\]+)/.exec(JSON.stringify(m))[1]; return { name: path.split("/").pop(), path, reason: "an AIS reader" }; })() }) + "\\n");
     s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "controller.delegate", params: {} }) + "\\n");
+  } else if (m.type === "user" && JSON.stringify(m).includes("twice")) {
+    // Two steps of the same kind, then a different one: shows what a standing allow covers.
+    global.asks = ["npm test", "npm test --watch", "ls -la", "npm install"]; global.got = [];
+    out({ type: "control_request", request_id: "t0", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: global.asks[0] } } });
+  } else if (m.type === "control_response" && global.asks) {
+    global.got.push(m.response.response.behavior);
+    const n = global.got.length;
+    if (n < global.asks.length) return out({ type: "control_request", request_id: "t" + n, request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: global.asks[n] } } });
+    out({ type: "result", is_error: false, result: "answers:" + global.got.join(",") });
+    process.exit(0);
   } else if (m.type === "user") {
     out({ type: "assistant", message: { content: [{ type: "text", text: "hello from fake" }] } });
     out({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: "Bash",
@@ -267,7 +277,7 @@ test("settings: reserves are validated, reach the Limit gate, and survive a rest
   let c = client(join(root, "settings", "govd.sock"));
   assert.ok((await c.call("settings.set", { reserves: { codex: { weekly: 95 } } })).error, "over 90% is refused");
   assert.ok((await c.call("settings.set", { reserves: { "Bad Name": { weekly: 5 } } })).error);
-  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } }, runners: {}, specModels: "free" });
+  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } }, runners: {}, specModels: "free", gates: { quietReads: true } });
   (d as any).limits.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 70, resetsAt: null }] });
   const view = (await c.call("limits.list", {})).result.providers[0];
   assert.deepEqual([view.reserves, view.verdict.ok], [{ weekly: 25 }, true]);   // 70 + 1 <= 75
@@ -279,6 +289,46 @@ test("settings: reserves are validated, reach the Limit gate, and survive a rest
   await d.listen();
   c = client(join(root, "settings", "govd.sock"));
   assert.deepEqual((await c.call("settings.get", {})).result.settings.reserves, { codex: { weekly: 25 } });
+  c.end(); d.close();
+});
+
+test("standing allows: a turn rule covers the same kind for this turn only; quiet reads never ask; a project rule stays", async () => {
+  const d = daemon("allows");
+  d.selftest();
+  await d.listen();
+  const c = client(join(root, "allows", "govd.sock"));
+  await c.call("project.new", { name: "a", path: join(root, "allows-a"), git: false });
+  let shown: any[] = [];
+  const answerWith = (remember?: string) => { shown = []; c.onEvent = (e) => {
+    if (e.kind === "gate") { shown.push(e); void c.call("gate.answer", { id: e.id, answer: "allow", ...(remember && shown.length === 1 ? { remember } : {}) }); } }; };
+  answerWith("turn");
+  let r = await c.call("ask", { project: "a", prompt: "twice" });
+  assert.equal(r.result.summary, "answers:allow,allow,allow,allow");
+  // Asked twice: npm test (then remembered for the turn) and npm install; npm test --watch was
+  // covered by the rule and ls -la is a quiet read.
+  assert.deepEqual(shown.map((e) => e.canonical.match(/"command": "([^"]+)"/)[1]), ["npm test", "npm install"]);
+  assert.deepEqual(shown[0].scopes, ["turn", "project"]);
+  assert.match(shown[0].covers, /npm test/);
+  const trace = d.ledger.events("a", 100);
+  assert.ok(trace.some((e) => e.kind === "allow.added" && e.data.scope === "turn"));
+  assert.ok(trace.some((e) => e.kind === "gate.allowed" && String(e.data.by).startsWith("rule R-")));
+  assert.ok(trace.some((e) => e.kind === "gate.allowed" && e.data.by === "quiet read"));
+  answerWith();
+  r = await c.call("ask", { project: "a", prompt: "twice" });
+  assert.equal(shown.length, 3, "a new turn asks again: npm test, npm test --watch, npm install");
+  answerWith("project");
+  await c.call("ask", { project: "a", prompt: "twice" });
+  answerWith();
+  await c.call("ask", { project: "a", prompt: "twice" });
+  assert.equal(shown.length, 1, "the project rule covers npm test in later turns; only npm install asks");
+  const { rules } = (await c.call("allows.list", { project: "a" })).result;
+  assert.equal(rules.length, 1);
+  assert.ok((await c.call("allows.revoke", { id: rules[0].id })).result.revoked);
+  // A step that always asks cannot be remembered.
+  c.onEvent = (e) => { if (e.kind === "gate") void c.call("gate.answer", { id: e.id, answer: "allow", remember: "turn" }).then((x) => { shown.push(x); c.call("gate.answer", { id: e.id, answer: "deny" }); }); };
+  shown = [];
+  await c.call("ask", { project: "a", prompt: "go" });   // the fake asks for rm -rf dist
+  assert.match(shown[0].error.message, /always asks/);
   c.end(); d.close();
 });
 

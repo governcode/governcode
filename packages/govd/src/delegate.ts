@@ -5,8 +5,8 @@
 import { createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, chmodSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { SpecInput, type SettingsValue } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
@@ -33,7 +33,7 @@ const EFFORT_ORDER = ["low", "medium", "high", "max"] as const;
  * The model and effort a Spec actually gets: the Controller's pick is a request, and the user's
  * Settings decide how far it may depart from the Runner's defaults. Returns why, if it changed.
  */
-export function specModel(input: { to: string; model: string; effort: SpecInput["effort"] }, s: SettingsValue | undefined):
+export function specModel(input: { to: string; model: string; effort: SpecInput["effort"] }, s: Pick<SettingsValue, "runners" | "specModels"> | undefined):
     { model: string; effort: SpecInput["effort"]; note: string | null } {
   const def = s?.runners[input.to];
   if (!def || !s || s.specModels === "free") return { model: input.model, effort: input.effort, note: null };
@@ -142,10 +142,24 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     const paths = specPaths(ctx.stateDir, spec.id);
     createWorkspace(project, paths);
 
-    // 3. Scope: real directories inside the workspace, never through a symlink.
+    // 3. Scope: real directories or files inside the workspace, never through a symlink. A scope
+    //    entry that is an existing file stays a file (a file-level sandbox rule); a new file name
+    //    (it has an extension) gets an empty placeholder after the before-snapshot, removed again
+    //    if the Runner leaves it empty, so it never shows up as a change.
     const writePaths = input.scope.write.length ? input.scope.write.map((p) => safeTarget(paths.work, p.replace(/^\.\/+/, "").replace(/\/+$/, ""))) : [paths.work];
-    for (const p of writePaths) mkdirSync(p, { recursive: true });
+    // ponytail: a new scope entry is a file when it ends without "/" and looks like one (an
+    // extension, or a common extensionless file name); otherwise a folder. Upgrade to an explicit
+    // file/folder field in the Spec if this guesses wrong in practice.
+    const placeholders: Array<{ path: string; mtime: bigint }> = [];
+    input.scope.write.forEach((raw, i) => {
+      const p = writePaths[i];
+      if (existsSync(p)) return;
+      const isFile = !raw.endsWith("/") && (/\.[A-Za-z0-9]{1,10}$/.test(p) || /^(Dockerfile|Makefile|Justfile|Rakefile|Gemfile|Procfile|LICENSE|README|CHANGELOG|NOTICE|AUTHORS|CODEOWNERS)$/.test(basename(p)));
+      if (isFile) { mkdirSync(dirname(p), { recursive: true }); placeholders.push({ path: p, mtime: 0n }); }
+      else mkdirSync(p, { recursive: true });
+    });
     const before = snapshot(paths, "before");
+    for (const ph of placeholders) { writeFileSync(ph.path, "", { flag: "wx" }); ph.mtime = statSync(ph.path, { bigint: true }).mtimeNs; }
     L.updateSpec(spec.id, { status: "running", checkpoints: { before, after: null } }, "govd");
     const prompt = `${input.brief}\n\nDone means: ${input.result}\n\nYou may change only: ${input.scope.write.length ? input.scope.write.join(", ") : "anything in this workspace"}.`;
     const texts: string[] = [];
@@ -163,11 +177,17 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
         hooks: {
           text: (t) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); },
           tool: (name) => ctx.notify({ kind: "spec.tool", id: spec.id, name }),
-          gate: (req) => ctx.gate({ ...req, tool: `${req.tool} (Runner · ${input.to}, ${spec.id})`, actor: `runner · ${input.to} · ${spec.id}` }),
+          gate: (req) => ctx.gate({ ...req, tool: `${req.tool} (Runner · ${input.to}, ${spec.id})`, actor: `runner · ${input.to} · ${spec.id}`,
+            base: req.tool, spec: spec.id }),
           done,
         } });
     });
     clearInterval(poll);
+    // An untouched placeholder (still empty, same timestamp) was never the Runner's: remove it.
+    // An empty file the Runner wrote on purpose (__init__.py, .gitkeep) has a new timestamp and stays.
+    for (const ph of placeholders) {
+      try { const st = statSync(ph.path, { bigint: true }); if (st.size === 0n && st.mtimeNs === ph.mtime) rmSync(ph.path); } catch { /* the Runner removed it */ }
+    }
     const after = snapshot(paths, "after", before);
     const files = changedFiles(paths, before, after);
     // The sandbox should already stop it, but a change outside the scope is never offered.

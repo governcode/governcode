@@ -23,7 +23,25 @@ export function resolverFiles(): string[] {
   return out;
 }
 
-export type GateRequest = { id: string; tool: string; input: Record<string, unknown>; canonical: string; actor?: string };
+/** What every AI GovernCode runs is told about where it is, so it neither flails at the
+ *  sandbox nor follows the user's other tooling instructions that cannot work in here. */
+export const CONTROLLER_CONTEXT = [
+  "You are the Controller in GovernCode, working for the user.",
+  "You run inside a sandbox the operating system enforces: you can reach only this project (Home: read only),",
+  "and some commands will fail with permission errors by design. Do not try to work around them; say what you could not do.",
+  "To hand a job to another AI coding tool, use the governcode delegate tool. It checks that tool's usage Limit",
+  "itself, so no other quota or budget check is needed (instructions elsewhere that ask for one do not apply here).",
+  "Steps that need approval are shown to the user as Gates. If you need to ask the user something, ask in your reply.",
+].join(" ");
+export const RUNNER_CONTEXT = [
+  "You are a Runner in GovernCode: another AI handed you this job (a Spec).",
+  "You work in your own copy of the project, inside a sandbox the operating system enforces; you can write only the",
+  "files the Spec allows, and some commands will fail with permission errors by design. Do not try to work around them.",
+  "The user reviews your changes before anything reaches the real project.",
+].join(" ");
+
+export type GateRequest = { id: string; tool: string; input: Record<string, unknown>; canonical: string; actor?: string;
+  base?: string; spec?: string };   // a Runner's Gate: its own tool name and Spec (for standing allows)
 export type TurnHooks = {
   text(chunk: string): void;
   tool(name: string, input: Record<string, unknown>): void;
@@ -104,6 +122,7 @@ export function runTurn(opts: {
     // Only the user's own settings; never the worktree's, which the harness can write.
     "--setting-sources", "user", "--no-session-persistence",
     "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : []),
+    "--append-system-prompt", CONTROLLER_CONTEXT,
     // GovernCode's own tools for the Controller, and no other MCP servers from anywhere.
     ...(opts.mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { governcode: { command: opts.mcp.node, args: [opts.mcp.script, opts.mcp.socket, ...(opts.mcp.mode ? [opts.mcp.mode] : [])] } } }),
       "--strict-mcp-config"] : []),

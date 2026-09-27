@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { runDemo } from "./demo.ts";
 
 const env = process.env;
 const runtimeDir = env.GOVERNCODE_RUNTIME_DIR ?? join(env.XDG_RUNTIME_DIR ?? join(homedir(), ".local/state/governcode"), "governcode");
@@ -61,6 +62,43 @@ function answers(): { next(prompt: string): Promise<string>; close(): void } {
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
+
+/** One Controller turn in the terminal: text streams, Gates ask (with standing-allow choices). */
+export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: string | null, prompt: string,
+    tty: ReturnType<typeof answers>): Promise<{ ok: boolean; summary: string }> {
+  api.onEvent(async (ev) => {
+    if (ev.kind === "text") process.stdout.write(ev.text + "\n");
+    else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
+    else if (ev.kind === "spec") console.log(warn(`\n${ev.id} → Runner · ${ev.to}: ${ev.brief}`));
+    else if (ev.kind === "spec.text") console.log(dim(`  ${ev.id} · ${ev.text.slice(0, 200)}`));
+    else if (ev.kind === "spec.tool") console.log(dim(`  ${ev.id} · ${ev.name}`));
+    else if (ev.kind === "gate") {
+      const runner = /\(Runner · ([^,]+), (S-\d+)\)$/.exec(String(ev.tool));
+      console.log(warn(runner ? `\nGate: Runner ${runner[1]} (${runner[2]}) wants to use ${String(ev.tool).replace(runner[0], "").trim()}. Exactly this will run:`
+                              : `\nGate: the Controller wants to use ${ev.tool}. Exactly this will run:`));
+      console.log(ev.canonical);
+      // Standing allows skip the question for this kind of step; the sandbox still applies.
+      const scopes: string[] = ev.scopes ?? [];
+      const keys: Record<string, string> = { turn: "t", spec: "s", project: "p" };
+      if (scopes.length) console.log(dim(`  Also allow ${ev.covers} for: ${scopes.map((s) => `[${keys[s]}] this ${s}`).join(", ")}.` +
+        " That only skips this question; the sandbox still applies to every step."));
+      const choices = ["y", ...scopes.map((s) => keys[s])].join("/");
+      const a = (await tty.next(`Allow? [${choices}/N] `)).trim().toLowerCase();
+      if (!a) console.log("");
+      const remember = scopes.find((s) => keys[s] === a);
+      await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" || remember ? "allow" : "deny", ...(remember ? { remember } : {}) });
+    } else if (ev.kind === "allowed") {
+      console.log(dim(`· allowed without asking: ${ev.why} (the sandbox still applies)`));
+    } else if (ev.kind === "proposal") {
+      console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
+      if (ev.reason) console.log(dim(ev.reason));
+      const a = (await tty.next("Create it? [y/N] ")).trim().toLowerCase();
+      const r = await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" });
+      console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created"));
+    }
+  });
+  return await api.call("ask", { project, prompt });
+}
 
 async function currentProject(api: Awaited<ReturnType<typeof open>>): Promise<string | null> {
   const here = resolve(process.cwd());
@@ -122,10 +160,25 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "gate": {
-        const [id, answer] = rest;
-        if (!id || (answer !== "allow" && answer !== "deny")) throw new Error("usage: gov gate G-N allow|deny");
-        await api.call("gate.answer", { id, answer });
-        console.log(`${id}: ${answer === "allow" ? "allowed once" : "denied"}`);
+        const [id, answer, flag] = rest;
+        const remember = flag === "--turn" ? "turn" : flag === "--spec" ? "spec" : flag === "--project" ? "project" : undefined;
+        if (!id || (answer !== "allow" && answer !== "deny") || (flag && !remember)) throw new Error("usage: gov gate G-N allow|deny [--turn|--spec|--project]");
+        await api.call("gate.answer", { id, answer, ...(remember ? { remember } : {}) });
+        console.log(`${id}: ${answer === "deny" ? "denied" : remember ? `allowed, and this kind of step for the rest of this ${remember} (the sandbox still applies)` : "allowed once"}`);
+        return 0;
+      }
+      case "allows": {
+        // gov allows [revoke R-N]: the standing allows remembered for projects.
+        if (rest[0] === "revoke") {
+          await api.call("allows.revoke", { id: rest[1] });
+          console.log(`${rest[1]} revoked: that kind of step asks again`);
+          return 0;
+        }
+        const project = await currentProject(api);
+        const { rules } = await api.call("allows.list", project ? { project } : {});
+        if (!rules.length) console.log(dim("no standing allows remembered for projects"));
+        for (const r of rules) console.log(`${r.id}  ${(r.project ?? "").padEnd(14)} ${r.label}`);
+        if (rules.length) console.log(dim("These only skip the question. The sandbox still applies to every step. Revoke with gov allows revoke R-N."));
         return 0;
       }
       case "turns": {
@@ -223,35 +276,20 @@ async function main(argv: string[]): Promise<number> {
       }
       case "ask": {
         const project = await currentProject(api);
-        const prompt = rest.join(" ");
         const tty = answers();
-        api.onEvent(async (ev) => {
-          if (ev.kind === "text") process.stdout.write(ev.text + "\n");
-          else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
-          else if (ev.kind === "spec") console.log(warn(`\n${ev.id} → Runner · ${ev.to}: ${ev.brief}`));
-          else if (ev.kind === "spec.text") console.log(dim(`  ${ev.id} · ${ev.text.slice(0, 200)}`));
-          else if (ev.kind === "spec.tool") console.log(dim(`  ${ev.id} · ${ev.name}`));
-          else if (ev.kind === "gate") {
-            console.log(warn(`\nGate: the Controller wants to use ${ev.tool}. Exactly this will run:`));
-            console.log(ev.canonical);
-            const a = (await tty.next("Allow once? [y/N] ")).trim().toLowerCase();
-            if (!a) console.log("");
-            await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "allow" : "deny" });
-          } else if (ev.kind === "proposal") {
-            console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
-            if (ev.reason) console.log(dim(ev.reason));
-            const a = (await tty.next("Create it? [y/N] ")).trim().toLowerCase();
-            const r = await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" });
-            console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created"));
-          }
-        });
-        const r = await api.call("ask", { project, prompt });
+        const r = await runAsk(api, project, rest.join(" "), tty);
         tty.close();
         console.log(dim(r.ok ? "— done" : `— failed: ${r.summary}`));
         return r.ok ? 0 : 1;
       }
+      case "demo": {
+        const i = rest.indexOf("--path");
+        const tty = answers();
+        try { return await runDemo(api, { path: i >= 0 ? rest[i + 1] : undefined, tty, runAsk, dim, warn }); }
+        finally { tty.close(); }
+      }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

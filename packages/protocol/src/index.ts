@@ -54,6 +54,8 @@ export const Settings = z.object({
   // free (its pick), within (the default model, effort at most the default), defaults (always these).
   runners: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.object({ model: z.string().min(1).max(80), effort: Effort.nullable() })).default({}),
   specModels: z.enum(["free", "within", "defaults"]).default("free"),
+  // Plain read-only commands (ls, cat, grep...) run without a Gate. The sandbox still applies.
+  gates: z.object({ quietReads: z.boolean().default(true) }).default({ quietReads: true }),
 });
 export type SettingsValue = z.infer<typeof Settings>;
 
@@ -76,7 +78,12 @@ export const Params = {
   "spec.diff": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
-  "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]) }),
+  // remember: also allow this kind of step for the rest of this turn / Spec / project. It only
+  // skips the question; the sandbox still applies to every step.
+  "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]),
+    remember: z.enum(["turn", "spec", "project"]).optional() }),
+  "allows.list": z.object({ project: ProjectName.optional() }),
+  "allows.revoke": z.object({ id: z.string().regex(/^R-\d+$/) }),
   "proposal.answer": z.object({ id: z.string().regex(/^P-\d+$/), answer: z.enum(["create", "cancel"]) }),
   // After `watch`, the connection also receives `event` notifications: {kind:"trace", event}
   // for every Trace append, and {kind:"gates"} whenever a Gate opens or is settled.
@@ -98,7 +105,7 @@ export type TraceEvent = {
   ts: string; // ISO 8601, UTC
   project: string | null;
   kind:
-    | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed"
+    | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed" | "allow.added" | "allow.revoked"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "checkpoint.taken" | "checkpoint.undone"

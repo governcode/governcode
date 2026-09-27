@@ -37,6 +37,39 @@ mode is not a boundary; this sandbox is.
 8. **Fail closed.** If the kernel lacks what a rule needs, `govern-sup` refuses to start the
    tool and says which rule and why. There is no "run unsandboxed" switch.
 
+## Gates and standing allows: fewer questions, the same sandbox
+
+A Gate asks you before a step. To keep that from turning into a click-fest, a Gate can also be
+answered **"allow for this turn"** (the Controller's steps), **"for this Spec"** (a Runner's
+steps in its own workspace) or **"for this project"** (remembered, listed in Settings and by
+`gov allows`, revocable). **A standing allow only skips the question.** It never widens what the
+sandbox lets a tool read, write, run or reach: every step, allowed by a rule or not, runs under
+the same kernel-enforced policy, and every step is written to the Trace with the rule that let it
+through.
+
+What a standing allow can cover is deliberately narrow:
+
+- **One kind of step.** For a command, its program and subcommand (`npm test`, `cargo build`);
+  for edits, file edits (only where the sandbox already lets the tool write).
+- **Plain commands only.** A command with shell syntax that could chain, substitute, redirect or
+  hide a second command (`;` `&` `|` `$` backquotes `<` `>` quotes, globs, newlines) always asks.
+- **Some programs always ask**, whatever you allowed: deleting (`rm`), privilege (`sudo`),
+  network (`curl`, `ssh`), interpreters that run code given as an argument (`python`, `node`,
+  `bash`...), publishing, and every `git` command (git obeys settings in the project's
+  `.git/config`, which the AI can edit, and can run programs from them).
+- **A Runner's allows are its own.** Allowing a step inside a Spec's workspace never covers the
+  Controller's steps in your real project.
+- **Delegation always asks.** Handing work to another AI is never covered.
+
+Be aware of one honest limit: allowing a build or test command (`npm test`) means allowing
+whatever the project's scripts say, and the AI can edit those scripts. The sandbox still bounds
+what they can do; the Gate just no longer asks each time. Use "this turn" when in doubt.
+
+**Quiet reads** (a setting, on by default): plain read-only commands that no project file can
+steer (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `pwd`, `stat`, `du`, `df`, `which`)
+run without a Gate. They are still sandboxed and still in the Trace. Turn it off in Settings to
+be asked for everything.
+
 ## Known limits
 
 - The tool can read its own credentials (it needs them) and reach any address on port
