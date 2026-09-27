@@ -9,7 +9,7 @@ import type { InlineConfig, Plugin } from "vite";
 export const appDir = fileURLToPath(new URL("..", import.meta.url));
 
 // No remote content, ever. Dev adds only what Vite's local hot reload needs.
-const CSP_BUILD = "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
+const CSP_BUILD = "default-src 'self'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'";
 const CSP_DEV = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
   "connect-src 'self' ws://localhost:*; object-src 'none'; base-uri 'none'";
 

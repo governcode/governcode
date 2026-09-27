@@ -1,14 +1,22 @@
 // The Dashboard's main process: a thin Electron shell. It owns the only connection to govd
 // and answers the renderer through a handful of checked IPC channels. The renderer runs
 // sandboxed with context isolation and no Node; it cannot open sockets or files.
-import { app, BrowserWindow, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Channel, type Outcome } from "../shared/contract.ts";
 import { checkAsk, checkCall, GovdError, socketPath } from "./govd-client.ts";
 import { GovdLink } from "./link.ts";
 
-const devUrl = process.env.GOVERNCODE_DASHBOARD_DEV_URL; // set only by scripts/dev.ts
+// scripts/dev.ts sets this. A packaged app ignores it, and it must be local: whatever page it
+// names gets the bridge, including gate.answer.
+const devUrl = devServer(process.env.GOVERNCODE_DASHBOARD_DEV_URL);
+function devServer(raw: string | undefined): string | undefined {
+  if (!raw || app.isPackaged) return undefined;
+  const u = new URL(raw);
+  if (u.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)) throw new Error("dev URL must be a local http server");
+  return raw;
+}
 const indexFile = join(app.getAppPath(), "dist/renderer/index.html");
 const appUrl = devUrl ? new URL(devUrl).origin : pathToFileURL(indexFile).href;
 
@@ -76,20 +84,19 @@ function createWindow(): void {
 app.enableSandbox();
 app.setName("GovernCode Dashboard");
 
-// Nothing leaves the window: no navigation, no new windows (links open in the browser only
-// if they are https), no permission ever granted.
+// Nothing leaves the window: no navigation or redirect, no new windows, no downloads, no
+// permission ever granted. (No external links either: nothing needs them yet.)
 app.on("web-contents-created", (_e, contents) => {
   contents.on("will-navigate", (e) => e.preventDefault());
+  contents.on("will-redirect", (e) => e.preventDefault());
   contents.on("will-attach-webview", (e) => e.preventDefault());
-  contents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://")) void shell.openExternal(url);
-    return { action: "deny" };
-  });
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
 });
 
 app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.on("will-download", (e) => e.preventDefault());
   link.onStatus((s) => win?.webContents.send(Channel.statusChanged, s));
   link.onWatch((w) => win?.webContents.send(Channel.watch, w));
   void link.start();
