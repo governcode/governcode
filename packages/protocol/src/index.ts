@@ -47,6 +47,12 @@ export const ProjectProposal = z.object({
   reason: z.string().max(1000).default(""),
 });
 
+/** What the user sets in Settings. Reserves: per Runner, per usage window, the % held back. */
+export const Settings = z.object({
+  reserves: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.record(z.string().regex(/^[a-z0-9-]{1,20}$/), z.number().int().min(0).max(90))).default({}),
+});
+export type SettingsValue = z.infer<typeof Settings>;
+
 export const Params = {
   hello: z.object({ client: z.string().max(40), protocol: z.number().int() }),
   "project.list": z.object({}),
@@ -60,6 +66,8 @@ export const Params = {
   "turn.list": z.object({ project: ProjectName }),
   // measure: read each Runner's usage now (starts its tool briefly); otherwise the last reading.
   "limits.list": z.object({ measure: z.boolean().default(false) }),
+  "settings.get": z.object({}),
+  "settings.set": Settings,
   "turn.undo": z.object({ id: z.string().regex(/^T-\d+$/) }),
   "spec.diff": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
@@ -86,7 +94,7 @@ export type TraceEvent = {
   ts: string; // ISO 8601, UTC
   project: string | null;
   kind:
-    | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set"
+    | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "checkpoint.taken" | "checkpoint.undone"

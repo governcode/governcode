@@ -18,7 +18,7 @@ export type Verdict =
   | { ok: false; provider: string; reason: string; resetsAt: string | null };
 
 export type LimitsConfig = {
-  reservePercent: Record<string, number>; // per provider; default 10
+  reservePercent: Record<string, number | Record<string, number>>; // per provider, or per provider and window; default 10
   unmetered: string[];                    // providers the user opted in to run without a source
   ttlMs: number;                          // a measurement older than this is stale
   maxSpecPercent: number;                 // cap on what one Spec may reserve
@@ -50,8 +50,16 @@ export class LimitGate {
     this.latest.delete(provider);
   }
 
-  private reserve(provider: string): number {
-    return this.config.reservePercent[provider] ?? 10;
+  /** The share of a window held back for the user: per window if set, else per provider, else 10. */
+  private reserve(provider: string, window?: string): number {
+    const r = this.config.reservePercent[provider];
+    if (typeof r === "number") return r;
+    return (window !== undefined ? r?.[window] : undefined) ?? 10;
+  }
+
+  /** Change reserves while running (Settings); takes effect for the next check. */
+  setReserves(reservePercent: LimitsConfig["reservePercent"]): void {
+    this.config = { ...this.config, reservePercent };
   }
 
   /** May a Spec reserving `requested` percent start on `provider`? Reserves it if so. */
@@ -78,10 +86,9 @@ export class LimitGate {
       return no(`usage stale (measured ${Math.round((this.now() - m.measuredAt) / 1000)} s ago) · held`);
     }
     const pending = this.reserved(provider) + this.debitFor(provider);
-    const ceiling = 100 - this.reserve(provider);
     for (const r of m.readings) {
-      if (r.usedPercent + pending + percent > ceiling) {
-        return no(`inside its ${this.reserve(provider)}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})`, r.resetsAt);
+      if (r.usedPercent + pending + percent > 100 - this.reserve(provider, r.window)) {
+        return no(`inside its ${this.reserve(provider, r.window)}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})`, r.resetsAt);
       }
     }
     return { verdict: { ok: true, provider }, percent, baseline: Math.max(...m.readings.map((r) => r.usedPercent)) };
@@ -95,6 +102,7 @@ export class LimitGate {
   view(provider: string) {
     const m = this.latest.get(provider);
     return { provider, unmetered: this.config.unmetered.includes(provider), reservePercent: this.reserve(provider),
+      reserves: Object.fromEntries((m?.readings ?? []).map((r) => [r.window, this.reserve(provider, r.window)])),
       measuredAt: m?.measuredAt ?? null, readings: m?.readings ?? [], reservedPercent: this.reserved(provider),
       owedPercent: this.debitFor(provider), verdict: this.check(provider) };
   }
@@ -106,7 +114,7 @@ export class LimitGate {
     if (this.config.unmetered.includes(f.provider)) return { ok: true, provider: f.provider };
     const m = this.latest.get(f.provider);
     if (!m || this.now() - m.measuredAt > this.config.ttlMs) return { ok: false, provider: f.provider, reason: "usage no longer measured · stop", resetsAt: null };
-    const over = m.readings.find((r) => r.usedPercent > 100 - this.reserve(f.provider));
+    const over = m.readings.find((r) => r.usedPercent > 100 - this.reserve(f.provider, r.window));
     return over ? { ok: false, provider: f.provider, reason: `crossed its ${over.window} Limit (${over.usedPercent}% used)`, resetsAt: over.resetsAt }
                 : { ok: true, provider: f.provider };
   }

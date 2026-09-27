@@ -141,6 +141,24 @@ async function main(argv: string[]): Promise<number> {
         console.log(`${r.id}: restored ${r.restored.length} file(s): ${r.restored.join(", ")}`);
         return 0;
       }
+      case "settings": {
+        const { settings } = await api.call("settings.get", {});
+        const rows = Object.entries(settings.reserves as Record<string, Record<string, number>>);
+        if (!rows.length) console.log(dim("defaults: every Runner keeps 10% of each usage window back"));
+        for (const [provider, windows] of rows) console.log(`${provider.padEnd(8)} ${Object.entries(windows).map(([w, n]) => `${w} ${n}%`).join(", ")}`);
+        return 0;
+      }
+      case "reserve": {
+        // gov reserve codex weekly 15: keep 15% of Codex's weekly window back (0 to 90).
+        const [provider, window, value] = rest;
+        const n = Number(value);
+        if (!provider || !window || !Number.isInteger(n)) throw new Error("usage: gov reserve PROVIDER WINDOW PERCENT   (e.g. gov reserve codex weekly 15)");
+        const { settings } = await api.call("settings.get", {});
+        const reserves = { ...settings.reserves, [provider]: { ...(settings.reserves[provider] ?? {}), [window]: n } };
+        await api.call("settings.set", { reserves });
+        console.log(`${provider}: keeps ${n}% of its ${window} window back`);
+        return 0;
+      }
       case "limits": {
         const { providers } = await api.call("limits.list", { measure: true });
         if (!providers.length) console.log(dim("no measured Runners"));
@@ -209,7 +227,7 @@ async function main(argv: string[]): Promise<number> {
         return r.ok ? 0 : 1;
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

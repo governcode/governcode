@@ -252,6 +252,27 @@ test("Home uses the Controller chosen most recently, not the alphabetically last
   c.end(); d.close();
 });
 
+test("settings: reserves are validated, reach the Limit gate, and survive a restart", async () => {
+  let d = daemon("settings");
+  await d.listen();
+  let c = client(join(root, "settings", "govd.sock"));
+  assert.ok((await c.call("settings.set", { reserves: { codex: { weekly: 95 } } })).error, "over 90% is refused");
+  assert.ok((await c.call("settings.set", { reserves: { "Bad Name": { weekly: 5 } } })).error);
+  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } } });
+  (d as any).limits.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 70, resetsAt: null }] });
+  const view = (await c.call("limits.list", {})).result.providers[0];
+  assert.deepEqual([view.reserves, view.verdict.ok], [{ weekly: 25 }, true]);   // 70 + 1 <= 75
+  (d as any).limits.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 75, resetsAt: null }] });
+  assert.equal((await c.call("limits.list", {})).result.providers[0].verdict.ok, false, "75 + 1 > 75: held by the new reserve");
+  assert.ok(d.ledger.events(undefined, 20).some((e) => e.kind === "settings.changed"));
+  c.end(); d.close();
+  d = daemon("settings");
+  await d.listen();
+  c = client(join(root, "settings", "govd.sock"));
+  assert.deepEqual((await c.call("settings.get", {})).result.settings.reserves, { codex: { weekly: 25 } });
+  c.end(); d.close();
+});
+
 test("Home runs with no project, in a folder the tool may only read", async () => {
   const d = daemon("home");
   d.selftest();

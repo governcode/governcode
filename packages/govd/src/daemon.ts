@@ -4,11 +4,11 @@
 // connection here is the user (the CLI now, apps later). docs/SANDBOX.md, invariant 5.
 import { createServer, type Server, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import { mkdirSync, rmSync, rmdirSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, existsSync, statSync, chmodSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RpcError, type Method, type WatchEvent } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RpcError, Settings, type SettingsValue, type Method, type WatchEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
@@ -60,6 +60,20 @@ export class Daemon {
     this.ledger = new Ledger(opts.ledgerPath);
     const stateDir = resolve(opts.ledgerPath, "..");
     this.usage = { codex: codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") }) };
+    this.limits.setReserves(this.settings().reserves);
+  }
+
+  /** Settings live in govd's own state, which no AI tool can reach. A broken file is ignored (defaults). */
+  private settings(): SettingsValue {
+    try { return Settings.parse(JSON.parse(readFileSync(join(this.stateDir(), "settings.json"), "utf8"))); }
+    catch { return Settings.parse({}); }
+  }
+
+  private saveSettings(value: SettingsValue): void {
+    const file = join(this.stateDir(), "settings.json"), tmp = `${file}.${process.pid}.tmp`;
+    mkdirSync(this.stateDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, JSON.stringify(value, null, 1), { mode: 0o600 });
+    renameSync(tmp, file);
   }
 
   /** Fail closed: no AI tool starts until the sandbox self-test passes on this machine. */
@@ -267,6 +281,14 @@ export class Daemon {
         return { events: L.events(p.project, p.limit) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
+      case "settings.get":
+        return { settings: this.settings() };
+      case "settings.set": {
+        this.saveSettings(p);
+        this.limits.setReserves(p.reserves);
+        L.append(null, "settings.changed", "user", { reserves: p.reserves });
+        return { settings: p };
+      }
       case "limits.list": {
         if (p.measure) await Promise.all(Object.values(this.usage).map(async (src) => {
           const m = await src.read();

@@ -184,3 +184,11 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .diff.diff-split .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .diff.diff-split .pair > div { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.45em; }   /* never hide code from a review */
 .d-empty { background: color-mix(in srgb, var(--line) 25%, transparent); }
+
+/* Settings */
+.settings h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 14px 0 0; font-weight: 600; }
+.settings .table { display: flex; flex-direction: column; gap: 6px; }
+.settings .tr { display: grid; grid-template-columns: 140px 1fr 260px auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; background: var(--panel); }
+.field.inline { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
+.field.inline input { width: 64px; }
+.reserve-row { gap: 18px; flex-wrap: wrap; }

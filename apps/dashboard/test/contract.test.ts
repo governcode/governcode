@@ -50,6 +50,9 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   // Proposals: create or cancel, by id.
   assert.deepEqual(checkCall("proposal.answer", { id: "P-2", answer: "create" }).params, { id: "P-2", answer: "create" });
   for (const bad of [{ id: "P-2", answer: "yes" }, { id: "G-2", answer: "create" }]) assert.throws(() => checkCall("proposal.answer", bad));
+  // Settings: reserves are whole percents from 0 to 90, keyed by Runner and window.
+  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } } });
+  for (const bad of [{ codex: { weekly: 91 } }, { codex: { weekly: 1.5 } }, { "../x": { weekly: 5 } }]) assert.throws(() => checkCall("settings.set", { reserves: bad }));
 });
 
 test("an ask needs a well-formed id and prompt; Home is a null project", () => {

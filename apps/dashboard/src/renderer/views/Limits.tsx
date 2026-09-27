@@ -7,7 +7,7 @@ import { Empty, Pill } from "../ui.tsx";
 
 type Reading = { window: string; usedPercent: number; resetsAt: string | null };
 export type ProviderLimit = {
-  provider: string; unmetered: boolean; reservePercent: number; measuredAt: number | null; readings: Reading[];
+  provider: string; unmetered: boolean; reservePercent: number; reserves?: Record<string, number>; measuredAt: number | null; readings: Reading[];
   reservedPercent: number; owedPercent: number;
   verdict: { ok: true; note?: string } | { ok: false; reason: string; resetsAt: string | null };
 };
@@ -50,20 +50,21 @@ export function Limits() {
             <div key={p.provider} className="checkpoint limit">
               <div className="row">
                 <b>{p.provider}</b>
-                <span className="dim small">Runner · keeps {p.reservePercent}% of every window back</span>
+                <span className="dim small">Runner · keeps {Object.values(p.reserves ?? {}).every((n) => n === p.reservePercent) ? `${p.reservePercent}% of every window` : Object.entries(p.reserves ?? {}).map(([w, n]) => `${n}% of ${w}`).join(", ")} back</span>
                 <span className="spacer" />
                 {p.unmetered ? <Pill tone="info">unmetered (opt-in)</Pill>
                   : p.verdict.ok ? <Pill tone="ok">available</Pill>
                   : <Pill tone="warn" title={p.verdict.reason}>held{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt)}` : ""}</Pill>}
               </div>
               {p.readings.map((r) => {
-                const inside = r.usedPercent > 100 - p.reservePercent;
+                const keep = p.reserves?.[r.window] ?? p.reservePercent;
+                const inside = r.usedPercent > 100 - keep;
                 return (
                   <div key={r.window} className="window">
                     <span className="mono small label">{r.window}</span>
                     <div className="bar" role="meter" aria-label={`${p.provider} ${r.window}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={r.usedPercent}>
                       <div className={`fill ${inside ? "inside" : ""}`} style={{ width: `${Math.min(100, r.usedPercent)}%` }} />
-                      <div className="reserve" style={{ left: `${100 - p.reservePercent}%` }} />
+                      <div className="reserve" style={{ left: `${100 - keep}%` }} />
                     </div>
                     <span className={`mono small ${inside ? "warn" : ""}`}>{r.usedPercent}%</span>
                     <span className="dim small">{r.resetsAt ? `resets ${clock(r.resetsAt)}` : ""}</span>

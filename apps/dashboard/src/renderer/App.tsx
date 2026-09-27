@@ -12,11 +12,12 @@ import { Trace } from "./views/Trace.tsx";
 import { Checkpoints } from "./views/Checkpoints.tsx";
 import { Limits } from "./views/Limits.tsx";
 import { HomePanel } from "./views/HomePanel.tsx";
+import { Settings } from "./views/Settings.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import mark from "../../../../docs/brand/governcode-mark.svg";
 
-type View = "terminal" | "pipeline" | "checkpoints" | "gates" | "limits" | "trace";
-const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["pipeline", "Pipeline"], ["checkpoints", "Checkpoints"], ["gates", "Gates"], ["limits", "Limits"], ["trace", "Trace"]];
+type View = "terminal" | "pipeline" | "checkpoints" | "gates" | "limits" | "trace" | "settings";
+const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["pipeline", "Pipeline"], ["checkpoints", "Checkpoints"], ["gates", "Gates"], ["limits", "Limits"], ["trace", "Trace"], ["settings", "Settings"]];
 const HOME = "";
 
 
@@ -151,6 +152,7 @@ export function App() {
             {view === "pipeline" && <Pipeline project={current?.name ?? null} live={live} />}
             {view === "checkpoints" && <Checkpoints project={current?.name ?? null} live={live} />}
             {view === "limits" && <Limits />}
+            {view === "settings" && <Settings projects={projects} hello={hello} onChangeController={(name) => { setProject(name); setDialog("controller"); }} />}
             {view === "gates" && <Gates gates={gates} onAnswered={() => void refreshGates()} />}
             {view === "trace" && <Trace project={current?.name ?? null} live={live} />}
           </>

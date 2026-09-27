@@ -1,0 +1,93 @@
+// Settings: the Controller of each project, each Runner's Limits (the share of every usage
+// window held back for you), and the sandbox. Settings live in govd's state, out of every
+// AI tool's reach; the renderer only asks govd to change them.
+import { useCallback, useEffect, useState } from "react";
+import { call, controllerLabel, type Project } from "../api.ts";
+import type { Hello } from "../../shared/contract.ts";
+import { Pill } from "../ui.tsx";
+import type { ProviderLimit } from "./Limits.tsx";
+
+type Reserves = Record<string, Record<string, number>>;
+const WINDOWS = ["weekly", "5-hour"];      // shown before a Runner has been measured
+
+export function Settings(props: { projects: Project[]; hello: Hello | null; onChangeController: (project: string) => void }) {
+  const [providers, setProviders] = useState<ProviderLimit[]>([]);
+  const [saved, setSaved] = useState<Reserves>({});
+  const [draft, setDraft] = useState<Reserves>({});
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [l, s] = await Promise.all([call<{ providers: ProviderLimit[] }>("limits.list", { measure: false }),
+        call<{ settings: { reserves: Reserves } }>("settings.get", {})]);
+      setProviders(l.providers); setSaved(s.settings.reserves); setDraft(s.settings.reserves);
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const value = (provider: string, window: string) => draft[provider]?.[window] ?? 10;
+  const set = (provider: string, window: string, n: number) =>
+    setDraft((d) => ({ ...d, [provider]: { ...(d[provider] ?? {}), [window]: n } }));
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const valid = Object.values(draft).every((w) => Object.values(w).every((n) => Number.isInteger(n) && n >= 0 && n <= 90));
+  const save = async () => {
+    try {
+      const r = await call<{ settings: { reserves: Reserves } }>("settings.set", { reserves: draft });
+      setSaved(r.settings.reserves); setDraft(r.settings.reserves);
+      setMsg({ ok: true, text: "Saved. The next Limit check uses these." });
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
+
+  return (
+    <section className="view">
+      <div className="view-head"><h1>Settings</h1><span className="dim">kept by govd, where no AI tool can change them</span></div>
+      <div className="scroll settings">
+        <h2>Controller per project</h2>
+        <p className="dim small">Each project's lead model. It keeps its own subagents and gets GovernCode's delegate tool.</p>
+        {!props.projects.length && <p className="dim small">No projects yet.</p>}
+        <div className="table">
+          {props.projects.map((p) => (
+            <div key={p.name} className="tr">
+              <b>{p.name}</b><span className="mono small dim">{p.path}</span><span className="mono small">{controllerLabel(p.controller)}</span>
+              <button className="btn" onClick={() => props.onChangeController(p.name)}>Change</button>
+            </div>
+          ))}
+        </div>
+
+        <h2>Runners · Limits</h2>
+        <p className="dim small">The share of each usage window kept back for you: a Spec never starts if it would reach into it. Unknown or stale usage always holds.</p>
+        {!providers.length && <p className="dim small">No Runners with a usage source yet.</p>}
+        {providers.map((p) => {
+          const windows = p.readings.length ? p.readings.map((r) => r.window) : WINDOWS;
+          return (
+            <div key={p.provider} className="checkpoint">
+              <div className="row"><b>{p.provider}</b><span className="spacer" />{p.verdict.ok ? <Pill tone="ok">available</Pill> : <Pill tone="warn">held</Pill>}</div>
+              <div className="row reserve-row">
+                {windows.map((w) => (
+                  <label key={w} className="field inline">
+                    <span className="dim small">{w} · keep back</span>
+                    <input type="number" min={0} max={90} step={1} value={value(p.provider, w)} aria-label={`${p.provider} ${w} reserve percent`}
+                      onChange={(e) => set(p.provider, w, Math.round(Number(e.target.value)))} />
+                    <span className="dim small">%</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        <div className="row">
+          <button className="btn btn-accent" disabled={!dirty || !valid} onClick={save}>Save Limits</button>
+          {!valid && <span className="error small">Each value must be a whole number from 0 to 90.</span>}
+          {msg && <span className={msg.ok ? "ok small" : "error small"}>{msg.text}</span>}
+        </div>
+
+        <h2>Sandbox</h2>
+        <div className="row">
+          {props.hello?.sandbox.ok ? <Pill tone="ok">sandbox enforced</Pill> : <Pill tone="danger">sandbox not verified</Pill>}
+          <span className="dim small">{props.hello?.sandbox.reason ?? "govd not connected"}</span>
+        </div>
+        <p className="dim small">Always on and fails closed: there is no off switch, per project or otherwise. On Linux every AI tool runs under Landlock (files and TCP ports) and seccomp, started only by govern-sup after its self-test passes on this machine.</p>
+      </div>
+    </section>
+  );
+}

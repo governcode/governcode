@@ -51,6 +51,7 @@ gov specs            # the Spec: Runner, model, status, files
 gov diff S-0001      # exactly what the Runner changed
 gov accept S-0001    # apply it to your project (or: gov discard S-0001)
 gov limits           # each Runner's measured usage against its Limit
+gov reserve codex weekly 15   # keep 15% of Codex's weekly window back (default 10)
 ```
 
 GovernCode checks Codex's measured usage against your Limit first, runs it in a workspace
@@ -65,8 +66,8 @@ npm start -w apps/dashboard
 ```
 
 It talks to the same `govd`: chat with the Controller and answer Gates inline, review
-Specs (diff, accept, discard), undo Checkpoints, see each Runner's Limits, Gates across
-projects and the Trace. The window's page
+Specs (diff side by side, accept, discard), undo Checkpoints, see and set each Runner's
+Limits, change each project's Controller, Gates across projects and the Trace. The window's page
 has no access to your files or sockets; only the app's main process talks to `govd`.
 
 ## Plan
