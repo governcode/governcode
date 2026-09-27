@@ -117,6 +117,7 @@ export function runTurn(opts: {
   });
   let stderr = "";
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
+  child.stdin.on("error", () => {});   // a dead harness is reported by its exit, not by EPIPE
   const send = (obj: unknown) => child.stdin.write(JSON.stringify(obj) + "\n");
   send({ type: "user", message: { role: "user", content: [{ type: "text", text: opts.prompt }] } });
 

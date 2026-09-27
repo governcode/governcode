@@ -19,7 +19,7 @@ mkdirSync(bin);
 const exe = (name: string, body: string) => { const p = join(bin, name); writeFileSync(p, body); chmodSync(p, 0o755); return p; };
 
 // The fake supervisor just runs the program (the real sandbox is tested elsewhere).
-const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\nshift 3\nexec "$@"\n`);
+const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\nshift 4\nexec "$@"\n`);
 
 // Fake Codex: reads fake.json from its CODEX_HOME (the tool's environment is an allowlist, so
 // settings cannot ride in env vars): used = usage percent, path = the file it writes.

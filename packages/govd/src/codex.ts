@@ -64,6 +64,8 @@ function start(supervisor: string, policyFile: string, bin: string, env: Record<
   const child = spawn(supervisor, ["run", "--policy", policyFile, "--", bin, "app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let stderr = "";
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
+  // A Runner that dies turns our next write into EPIPE; its exit is reported below instead.
+  child.stdin.on("error", () => {});
   let next = 1;
   const waiting = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void }>();
   let onReq: (m: any) => Promise<unknown> = async () => ({});
