@@ -55,6 +55,17 @@ included): new content is staged beside each file with `O_NOFOLLOW`, every file 
 again, and only then renamed into place. Accept and undo wait while a Controller turn is
 running in that project, since a running tool could swap a folder for a symlink mid-write.
 
+## Settings: Limits and models
+
+The user's settings live in govd's own state (0600, out of every AI tool's reach) and change
+only through the user's socket (`gov reserve`, `gov runner`, `gov spec-models`, the Dashboard's
+Settings), each change written to the Trace. Per Runner and per usage window, a **reserve**
+(0-90%, default 10) is held back; the Limit gate uses it at once. Each Runner may have a
+**default model and effort**, and one policy says how far a Controller may depart from them
+per Spec: `free` (its pick), `within` (the default model, effort never heavier), or `defaults`.
+The Controller's pick is a request: the Spec records what ran and, when a setting changed it,
+why. The `crew` tool tells the Controller the defaults and the policy before it asks.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the
