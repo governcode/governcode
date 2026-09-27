@@ -13,6 +13,16 @@ export type Policy = { version: 1; read: string[]; write: string[]; exec: string
 // The one local socket a tool may reach: the system DNS resolver, where the host uses one.
 const RESOLVER_SOCKETS = ["/run/systemd/resolve/io.systemd.Resolve"];
 
+/** DNS config files, followed through symlinks: statically linked tools (Codex) read
+ *  /etc/resolv.conf themselves, and it often points into /run. */
+export function resolverFiles(): string[] {
+  const out: string[] = [];
+  for (const f of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) {
+    try { const real = realpathSync(f); if (!real.startsWith("/etc/")) out.push(real); } catch { /* absent */ }
+  }
+  return out;
+}
+
 export type GateRequest = { id: string; tool: string; input: Record<string, unknown>; canonical: string };
 export type TurnHooks = {
   text(chunk: string): void;
@@ -46,7 +56,7 @@ export function claudePolicy(worktree: string, sessionTmp: string, readOnly = fa
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
-      "/dev/random", dirname(bin), join(home, ".claude.json"), ...cfgRead, ...(readOnly ? [worktree] : [])].filter(
+      "/dev/random", dirname(bin), join(home, ".claude.json"), ...cfgRead, ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
       (p) => p === worktree || existsSync(p)),
     write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...cfgWrite.filter(existsSync)],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin)],
