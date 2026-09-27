@@ -1,0 +1,16 @@
+node_modules/
+dist/
+target/
+*.log
+.env
+.env.*
+coverage/
+# Agent instruction files and tool folders never belong in this repo.
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.claude/
+.codex/
+.gemini/
+.cursor/
+.grok/
