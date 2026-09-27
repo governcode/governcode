@@ -147,7 +147,9 @@ export function matchMcpApproval(p: any, inflight: Map<string, { tool: string; a
   if (p?.serverName !== "governcode" || p?._meta?.codex_approval_kind !== "mcp_tool_call") return null;
   const named = /^Allow the governcode MCP server to run tool "([A-Za-z0-9_]+)"\?$/.exec(String(p.message ?? ""))?.[1];
   const candidates = [...inflight.values()].filter((c) => c.tool === named);
-  return candidates.length === 1 ? candidates[0] : null;
+  // A call announced without arguments cannot be shown, so it is declined, not gated as {}.
+  const one = candidates.length === 1 ? candidates[0] : null;
+  return one && one.args !== null && typeof one.args === "object" && !Array.isArray(one.args) ? one : null;
 }
 
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
@@ -190,6 +192,8 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   // one of them, or it is declined (two parallel calls could otherwise swap their arguments).
   const inflight = new Map<string, { tool: string; args: unknown }>();
   const mcpApproval = async (p: any) => {
+    // ponytail: the Gate shows the arguments Codex announced; Codex then calls the tool with
+    // them. Binding the exact approved arguments to the call needs Codex to support it.
     const announced = o.mcp ? matchMcpApproval(p, inflight) : null;
     if (!announced) return { action: "decline" };
     const tool = announced.tool;

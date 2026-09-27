@@ -140,4 +140,5 @@ test("codex MCP approvals match exactly one in-flight GovernCode call, or are de
   assert.equal(matchMcpApproval({ ...ask("delegate"), _meta: {} }, one), null, "not a tool-call approval");
   const two = new Map([["c1", { tool: "delegate", args: { to: "a" } }], ["c2", { tool: "delegate", args: { to: "b" } }]]);
   assert.equal(matchMcpApproval(ask("delegate"), two), null, "two parallel calls: ambiguous, so declined");
+  assert.equal(matchMcpApproval(ask("delegate"), new Map([["c1", { tool: "delegate", args: undefined }]])), null, "no arguments to show");
 });

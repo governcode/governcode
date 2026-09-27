@@ -4,7 +4,7 @@
 // connection here is the user (the CLI now, apps later). docs/SANDBOX.md, invariant 5.
 import { createServer, type Server, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import { mkdirSync, rmSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs";
+import { mkdirSync, rmSync, rmdirSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
@@ -235,7 +235,7 @@ export class Daemon {
         const prop = this.proposals.get(p.id);
         if (!prop) throw new RpcError(Errors.notFound, `no proposal ${p.id} waiting`);
         this.proposals.delete(p.id);
-        if (p.answer === "cancel") {
+        if (p.answer !== "create") {
           L.append(null, "project.declined", "user", { proposal: p.id, name: prop.name });
           return { id: p.id, created: null };
         }
@@ -244,6 +244,10 @@ export class Daemon {
           throw new RpcError(Errors.refused, `${path} now leads somewhere else (a folder on the way became a symlink); nothing was created`);
         }
         mkdirSync(path, { recursive: true });
+        if (realpathSync(path) !== prop.real) {                  // swapped mid-create: undo, refuse
+          rmdirSync(path);                                         // empty: only what we just made
+          throw new RpcError(Errors.refused, `${path} led somewhere else while being created; nothing was kept`);
+        }
         if (prop.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
         return { id: p.id, created: L.addProject(prop.name, path, "project.created") };
       }
