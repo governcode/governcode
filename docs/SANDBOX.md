@@ -77,3 +77,10 @@ and read-only listing on the way itself; nothing new can be created directly in 
 directories, so keep protected files in a directory of their own. Verified: a protected FIFO
 is refused both by path and through `/proc/<pid>/fd/N`, while writes elsewhere work.
 `no_new_privs` is set, as the kernel requires, so `sudo` does not elevate inside.
+
+**Protect mode is not a boundary against a determined agent.** It stops the agent from
+touching the listed paths itself, but the agent keeps its Unix sockets and so can ask
+unsandboxed services to act for it: verified, `systemd-run --user` from inside protect mode
+writes a protected file. Terminal multiplexers and SSH are the same kind of route. Use it
+to prevent accidents, never as the thing a security claim rests on; GovernCode's own AI
+tools run in the default mode, where no Unix socket but the listed ones is reachable.
