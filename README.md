@@ -11,6 +11,29 @@ Free and open source (MIT). Runs on your own machine; no hosted service.
 > **Status: pre-alpha, phase 0.** Nothing here is usable yet. We are building the daemon
 > (`govd`), the sandboxing supervisor (`govern-sup`) and the CLI (`gov`) first.
 
+## Try it (developers, Linux)
+
+Phase 0 runs one Controller (Claude Code) in the sandbox and asks you at every Gate. You
+need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, and
+Claude Code installed and logged in.
+
+```sh
+git clone https://github.com/onelegdave/governcode && cd governcode
+npm ci && cargo build --release
+./target/release/govern-sup selftest        # must pass, or govd starts nothing
+node packages/gov/src/main.ts daemon start  # or: daemon install (systemd --user)
+
+alias gov="node $PWD/packages/gov/src/main.ts"
+gov new demo --path ~/code/demo && cd ~/code/demo
+gov controller claude-code --model sonnet --effort medium
+gov ask "Add a README with one line about this project"
+gov gates          # from another terminal: what is waiting, exactly as it will run
+gov trace          # what happened
+```
+
+Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot
+write anything.
+
 ## Plan
 
 | Phase | Delivers |
