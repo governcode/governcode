@@ -110,7 +110,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .d-hunk { color: var(--info); } .d-head { color: var(--dim); font-weight: 600; }
 
 /* Trace */
-.chips { display: flex; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
 .chip { background: none; border: 1px solid var(--line); border-radius: 12px; padding: 2px 10px; color: var(--dim); cursor: pointer; font-size: 12px; }
 .chip.active { color: var(--accent); border-color: var(--accent); }
 .trace { width: 100%; border-collapse: collapse; table-layout: auto; }
