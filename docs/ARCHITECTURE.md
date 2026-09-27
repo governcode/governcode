@@ -35,9 +35,11 @@ GovernCode runs on your own machine. There is no hosted service.
 
 ## Delegation (phase 1)
 
-In a project, the Claude Controller gets GovernCode's tools (`delegate`, `crew`,
-`spec_status`) from a small MCP server that runs inside its sandbox and can reach only a
-socket `govd` opens for that one turn. That socket offers no Gate answers and no undo.
+In a project, the Controller (Claude Code or Codex) gets GovernCode's tools (`delegate`,
+`crew`, `spec_status`) from a small MCP server that runs inside its sandbox and can reach
+only a socket `govd` opens for that one turn. That socket offers no Gate answers and no
+undo. Each call is a Gate the user answers; for Codex, govd answers only the approval for
+the GovernCode tool call Codex just announced, and declines any other server's.
 
 `delegate` measures the Runner's usage and checks the Limit (unknown means held; finished
 Specs keep counting until the provider's counter catches up), then builds the Runner's

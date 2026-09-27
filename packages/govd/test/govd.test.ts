@@ -233,6 +233,17 @@ test("Home: the Controller may only propose a project; govd creates it on the us
   c.end(); d.close();
 });
 
+test("Home uses the Controller chosen most recently, not the alphabetically last project's", async () => {
+  const d = daemon("homectl");
+  await d.listen();
+  const c = client(join(root, "homectl", "govd.sock"));
+  for (const name of ["alpha", "zulu"]) await c.call("project.new", { name, path: join(root, `homectl-${name}`), git: false });
+  await c.call("controller.set", { project: "zulu", controller: { provider: "claude-code", model: "sonnet", effort: "low" } });
+  await c.call("controller.set", { project: "alpha", controller: { provider: "codex", model: "gpt-5.5", effort: "low" } });
+  assert.deepEqual((d as any).homeController(), { provider: "codex", model: "gpt-5.5", effort: "low" });
+  c.end(); d.close();
+});
+
 test("Home runs with no project, in a folder the tool may only read", async () => {
   const d = daemon("home");
   d.selftest();

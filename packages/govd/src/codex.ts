@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, lstatSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { canonical, resolverFiles, toolEnv, type GateRequest, type Policy, type TurnHooks } from "./claude.ts";
+import { canonical, resolverFiles, toolEnv, withMcpRead, type GateRequest, type McpServer, type Policy, type TurnHooks } from "./claude.ts";
 import type { Measurement, UsageSource } from "./limits.ts";
 
 /** The real Codex binary: $GOVERNCODE_CODEX_BIN, else `codex` on PATH, looking through a mise shim. */
@@ -95,13 +95,17 @@ function start(supervisor: string, policyFile: string, bin: string, env: Record<
 }
 
 async function session(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string; readOnly?: boolean;
-                           writePaths?: string[]; gitDir?: string }) {
+                           writePaths?: string[]; gitDir?: string; mcp?: McpServer }) {
   const bin = codexBinary();
   mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
   const tmp = mkdtempSync(join(tmpdir(), "governcode-codex-"));
   const home = prepareCodexHome(o.stateDir);
   const policyFile = join(o.policyDir, `codex-${process.pid}-${Date.now()}.json`);
-  writeFileSync(policyFile, JSON.stringify(codexPolicy(o.worktree, tmp, home, bin, o.readOnly, o.writePaths, o.gitDir)), { mode: 0o600 });
+  const base = codexPolicy(o.worktree, tmp, home, bin, o.readOnly, o.writePaths, o.gitDir);
+  // GovernCode's own MCP server for a Controller: node may run its script and reach this
+  // turn's socket, nothing more (as for Claude).
+  const policy = o.mcp ? withMcpRead({ ...base, exec: [...base.exec, dirname(o.mcp.node)], unix_connect: [...base.unix_connect, o.mcp.socket] }, o.mcp) : base;
+  writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
   const rpc = start(o.supervisor, policyFile, bin, { ...toolEnv(tmp), CODEX_HOME: home }, o.worktree);
   await rpc.request("initialize", { clientInfo: { name: "governcode", title: "GovernCode", version: "0.0.1" } });
   const cleanup = () => { rpc.close(); rmSync(policyFile, { force: true }); rmSync(tmp, { recursive: true, force: true }); };
@@ -137,10 +141,10 @@ export function codexUsage(o: { supervisor: string; policyDir: string; stateDir:
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
 export async function runCodexTurn(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string;
   readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks;
-  signal?: AbortSignal }): Promise<void> {
+  signal?: AbortSignal; mcp?: McpServer }): Promise<void> {
   let s: Awaited<ReturnType<typeof session>>;
   try {
-    s = await session(o);
+    s = await session(o);   // o.mcp widens its policy for GovernCode's MCP server
   } catch (e) {
     o.hooks.done({ ok: false, summary: `codex did not start: ${e instanceof Error ? e.message : e}` });
     return;
@@ -152,6 +156,7 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   const finish = (r: { ok: boolean; summary: string }) => { if (finished) return; finished = true; cleanup(); o.hooks.done(r); };
   rpc.onRequest(async (m) => {
     const p = m.params ?? {};
+    if (m.method === "mcpServer/elicitation/request") return mcpApproval(p);
     const kind = m.method === "item/commandExecution/requestApproval" ? "command"
       : m.method === "item/fileChange/requestApproval" ? "fileChange" : null;
     // Anything we do not recognise is refused, never granted by silence (Rattle).
@@ -167,8 +172,24 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     const answer = await o.hooks.gate(req);
     return { decision: answer === "allow" ? "accept" : "decline" };   // never "for session": each one asks
   });
+  // Codex asks before each MCP tool call. Only GovernCode's own server is answered, and only
+  // for the tool call it just announced (the request names the tool only in prose).
+  let announced: { tool: string; args: unknown } | null = null;
+  const mcpApproval = async (p: any) => {
+    const tool = announced?.tool;
+    if (!o.mcp || p.serverName !== "governcode" || p._meta?.codex_approval_kind !== "mcp_tool_call" || !tool
+        || !String(p.message ?? "").includes(`"${tool}"`)) return { action: "decline" };
+    // Proposing creates nothing (the user's Create does), so it needs no Gate, as for Claude.
+    if (tool === "propose_project" && o.mcp.mode === "home") return { action: "accept", content: {} };
+    const input = (announced!.args ?? {}) as Record<string, unknown>;
+    const req: GateRequest = { id: `mcp-${Date.now()}`, tool: `governcode ${tool}`, input, canonical: canonical({ tool: `governcode ${tool}`, input }) };
+    return { action: (await o.hooks.gate(req)) === "allow" ? "accept" : "decline", content: {} };
+  };
   rpc.onNotify((m) => {
     const p = m.params ?? {};
+    if (m.method === "item/started" && p.item?.type === "mcpToolCall") {
+      announced = p.item.server === "governcode" ? { tool: String(p.item.tool), args: p.item.arguments } : null;
+    }
     if (m.method === "item/agentMessage/delta" && typeof p.delta === "string") text += p.delta;
     if (m.method === "item/completed" && p.item?.type === "agentMessage" && typeof p.item.text === "string") {
       o.hooks.text(p.item.text); text = "";
@@ -187,7 +208,10 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   o.signal?.addEventListener("abort", () => finish({ ok: false, summary: `stopped: ${String(o.signal?.reason ?? "aborted")}` }), { once: true });
   try {
     const t = await rpc.request("thread/start", { cwd: o.worktree, model: o.model, ephemeral: true,
-      approvalPolicy: "untrusted", sandbox: o.readOnly ? "read-only" : "workspace-write" });
+      approvalPolicy: "untrusted", sandbox: o.readOnly ? "read-only" : "workspace-write",
+      // ponytail: servers in the user's own config.toml still load (Claude gets --strict-mcp-config);
+      // their approvals are declined above. Drop them when Codex offers a strict switch.
+      ...(o.mcp ? { config: { mcp_servers: { governcode: { command: o.mcp.node, args: [o.mcp.script, o.mcp.socket, ...(o.mcp.mode ? [o.mcp.mode] : [])] } } } } : {}) });
     await rpc.request("turn/start", { threadId: t.thread.id, input: [{ type: "text", text: o.prompt }],
       ...(o.effort ? { effort: o.effort } : {}) });
   } catch (e) {

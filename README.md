@@ -11,8 +11,8 @@ wait at a Gate for your approval, signed on your phone.
 Free and open source (MIT). Runs on your own machine; no hosted service.
 
 > **Status: pre-alpha, phase 1.** Developers can try it from the CLI on Linux: the
-> sandbox, Gates, and delegation from a Claude Code Controller to a Codex Runner work end
-> to end. Expect rough edges; nothing is released yet.
+> sandbox, Gates, and delegation from a Claude Code or Codex Controller to a Codex Runner
+> work end to end. Expect rough edges; nothing is released yet.
 
 ## Try it (developers, Linux)
 

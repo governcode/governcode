@@ -153,9 +153,11 @@ export class Daemon {
   }
 
   /** Home's Controller: the most recently chosen project Controller, else the default. */
+  /** Home uses the Controller the user chose most recently (projects list by name, not by time). */
   private homeController() {
-    const all = this.ledger.projects();
-    return all.length ? all[all.length - 1].controller : { provider: "claude-code" as const, model: "opus", effort: "high" as const };
+    const last = this.ledger.events(undefined, 5000).filter((e) => e.kind === "controller.set").at(-1);
+    const chosen = last ? this.ledger.project(String(last.project))?.controller : undefined;
+    return chosen ?? { provider: "claude-code" as const, model: "opus", effort: "high" as const };
   }
 
   close(): void {
@@ -373,22 +375,22 @@ export class Daemon {
       };
       const common = { supervisor: this.opts.supervisor, policyDir: this.opts.policyDir, worktree: project.path,
         readOnly: "readOnly" in project, prompt, hooks };
+      // Either Controller gets GovernCode's tools on a socket that exists only for this turn:
+      // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
+      const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, ledger: L, limits: this.limits,
+        usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
+        policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify })
+        : openTurnSocket(resolve(this.opts.socketPath, ".."), async (method, params) => {
+          if (method !== "controller.propose_project") throw new Error(`not offered at Home: ${method}`);
+          return this.propose(params, notify, actor);
+        });
+      const finish = hooks.done;
+      hooks.done = (r) => { ctl.close(); finish(r); };
+      const mcp = { node: process.execPath, script: MCP_SCRIPT, socket: ctl.path, ...(found ? {} : { mode: "home" as const }) };
       if (project.controller.provider === "codex") {
-        void runCodexTurn({ ...common, stateDir: resolve(this.opts.ledgerPath, ".."), model: project.controller.model, effort: project.controller.effort });
+        void runCodexTurn({ ...common, stateDir: resolve(this.opts.ledgerPath, ".."), model: project.controller.model, effort: project.controller.effort, mcp });
       } else {
-        // In a project, the Claude Controller gets GovernCode's delegate tool on a socket that
-        // exists only for this turn. Home (read-only, no project) gets only propose_project.
-        const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, ledger: L, limits: this.limits,
-          usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
-          policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify })
-          : openTurnSocket(resolve(this.opts.socketPath, ".."), async (method, params) => {
-            if (method !== "controller.propose_project") throw new Error(`not offered at Home: ${method}`);
-            return this.propose(params, notify, actor);
-          });
-        const finish = hooks.done;
-        hooks.done = (r) => { ctl?.close(); finish(r); };
-        runTurn({ ...common, controller: project.controller,
-          mcp: { node: process.execPath, script: MCP_SCRIPT, socket: ctl.path, ...(found ? {} : { mode: "home" as const }) } });
+        runTurn({ ...common, controller: project.controller, mcp });
       }
     });
   }
