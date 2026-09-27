@@ -122,6 +122,8 @@ h2{margin:0;font-size:28px;line-height:1.2;letter-spacing:-.01em;font-weight:650
 .road li.now::after{background:var(--accent);border-color:var(--accent);box-shadow:0 0 0 4px rgba(94,234,212,.15)}
 .road .n{display:flex;align-items:center;gap:8px;height:22px;font:600 12px var(--mono);color:var(--dim)}
 .road li.now .n{color:var(--accent)}
+.road li.done::after{background:var(--accent);border-color:var(--accent);opacity:.55}
+.road li.done::before{background:var(--accent);opacity:.4}
 .road h3{margin:6px 0 4px;font-size:14.5px;font-weight:600}
 .road p{margin:0;font-size:13px;color:var(--dim)}
 
@@ -190,7 +192,7 @@ footer .row a:hover{color:var(--text)}
 <div class="hero" id="top">
   <div class="wrap">
     <div>
-      <span class="pill warn"><span class="dot" aria-hidden="true"></span>pre-alpha · phase 0</span>
+      <span class="pill warn"><span class="dot" aria-hidden="true"></span>pre-alpha · phase 1</span>
       <svg class="hero-mark" viewBox="0 0 64 64" role="img" aria-label="GovernCode logo"><rect width="64" height="64" rx="14" fill="#0b0f14"/><path d="M40 12H26A14 14 0 0 0 12 26V38A14 14 0 0 0 26 52H38A14 14 0 0 0 52 38V31" fill="none" stroke="#d8e0ea" stroke-width="8"/><path d="M56 28H28V36H56Z" fill="#d8e0ea"/><path d="M41 22H27A5 5 0 0 0 22 27V37A5 5 0 0 0 27 42H41" fill="none" stroke="#5eead4" stroke-width="4"/></svg>
       <h1>Govern<b>Code</b></h1>
       <p class="tag">Govern your AI coding crew: one Controller, sandboxed Runners, Limits you set, Gates you sign.</p>
@@ -297,7 +299,7 @@ Removed target/debug/incremental (1.4 GB).
       <p class="eyebrow">Open source</p>
       <h2 id="open-h" class="vh">Free and open source</h2>
       <p class="big">Free and open source <span>(MIT)</span>. Runs on your machine. No hosted service.</p>
-      <p class="sub">Your code, keys and history stay local. The daemon, the sandbox supervisor and the CLI are all in the repo. Nothing is usable by non-developers yet: phase 0 runs one Controller in the sandbox and asks you at every Gate.</p>
+      <p class="sub">Your code, keys and history stay local. The daemon, the sandbox supervisor and the CLI are all in the repo. Nothing is usable by non-developers yet: phase 1 runs a Controller in the sandbox, lets it hand jobs to a Runner, and asks you at every Gate.</p>
     </div>
     <div>
       <div class="term try">
@@ -318,13 +320,13 @@ Removed target/debug/incremental (1.4 GB).
     <h2 id="roadmap-h">Where it stands</h2>
     <p class="sub">Built in the open, in this order. Linux and macOS are first-class; Windows is not supported yet.</p>
     <ol class="road">
-      <li class="now" aria-current="step">
-        <div class="n">phase 0 <span class="pill accent sm">now</span></div>
+      <li class="done">
+        <div class="n">phase 0 <span class="pill sm">done</span></div>
         <h3>Foundation</h3>
         <p>Daemon, sandbox + self-test, CLI, Claude Code driver, the Trace.</p>
       </li>
-      <li>
-        <div class="n">phase 1</div>
+      <li class="now" aria-current="step">
+        <div class="n">phase 1 <span class="pill accent sm">now</span></div>
         <h3>The crew</h3>
         <p>Delegation and Specs, first measured Runner, Limits, Checkpoints + undo.</p>
       </li>
