@@ -1,11 +1,11 @@
 // The Dashboard's two boundaries: the main process's checks on what the renderer may send,
 // and the govd socket client (against a scripted govd and against the real Daemon). The
 // preload is checked in its built form, the way Electron's sandbox loads it.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import { CALLABLE, Channel } from "../src/shared/contract.ts";
 import { Daemon } from "../../../packages/govd/src/daemon.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "dashboard-test-"));
+after(() => rmSync(dir, { recursive: true, force: true }));   // leave nothing in /tmp
 
 test("the socket path resolves exactly as gov and govd resolve it", () => {
   assert.equal(socketPath({ GOVERNCODE_RUNTIME_DIR: "/r" }), "/r/govd.sock");

@@ -8,9 +8,10 @@ import { join } from "node:path";
 import * as cp from "../src/checkpoint.ts";
 import { LimitGate } from "../src/limits.ts";
 import { Ledger } from "../src/ledger.ts";
+import { scratch } from "./scratch.ts";
 
 function repo() {
-  const dir = mkdtempSync(join(tmpdir(), "gc-cp-"));
+  const dir = scratch("gc-cp-");
   const g = (...a: string[]) => execFileSync("git", ["-C", dir, ...a], { stdio: "pipe" });
   g("init", "-q", "-b", "main");
   g("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "root");
@@ -54,7 +55,7 @@ test("checkpoints: undo refuses after later edits, and nothing changes", () => {
 });
 
 test("checkpoints: outside git is a quiet null", () => {
-  assert.equal(cp.take(mkdtempSync(join(tmpdir(), "gc-nogit-")), "S-0003", "before"), null);
+  assert.equal(cp.take(scratch("gc-nogit-"), "S-0003", "before"), null);
 });
 
 test("limits: unknown and stale hold; a measured window admits and reserves", () => {

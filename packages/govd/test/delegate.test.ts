@@ -12,8 +12,9 @@ import { Ledger } from "../src/ledger.ts";
 import { LimitGate } from "../src/limits.ts";
 import { codexUsage } from "../src/codex.ts";
 import { openControllerSocket, accept, specModel } from "../src/delegate.ts";
+import { scratch } from "./scratch.ts";
 
-const root = mkdtempSync(join(tmpdir(), "gc-deleg-"));
+const root = scratch("gc-deleg-");
 const bin = join(root, "bin");
 mkdirSync(bin);
 const exe = (name: string, body: string) => { const p = join(bin, name); writeFileSync(p, body); chmodSync(p, 0o755); return p; };

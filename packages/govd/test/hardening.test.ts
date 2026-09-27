@@ -8,11 +8,12 @@ import { join } from "node:path";
 import { gitGuard } from "../src/gitguard.ts";
 import { toolEnv, claudePolicy } from "../src/claude.ts";
 import { Daemon } from "../src/daemon.ts";
+import { scratch } from "./scratch.ts";
 
 const git = (dir: string, ...a: string[]) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" }).trim();
 
 test("git guard: new hooks and dangerous config are removed after a turn; the user's own stay", () => {
-  const dir = mkdtempSync(join(tmpdir(), "gc-guard-"));
+  const dir = scratch("gc-guard-");
   git(dir, "init", "-q");
   git(dir, "config", "core.pager", "less");                 // the user's own, before the turn
   writeFileSync(join(dir, ".git/hooks/pre-commit"), "#!/bin/sh\necho mine\n");
@@ -33,7 +34,7 @@ test("git guard: new hooks and dangerous config are removed after a turn; the us
 });
 
 test("project paths: home, dot-folders, govd's own dirs and symlinks to them are refused", async () => {
-  const root = mkdtempSync(join(tmpdir(), "gc-paths-"));
+  const root = scratch("gc-paths-");
   const d = new Daemon({ socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
     policyDir: join(root, "state/p"), homeDir: join(root, "state/home"), supervisor: "/bin/false", version: "t" });
   const call = (d as any).call.bind(d);
@@ -69,7 +70,7 @@ test("the tool gets a clean environment and a narrow view of its own config", ()
 });
 
 test("git guard: config.worktree, core.worktree and remote upload-pack are scrubbed too", () => {
-  const dir = mkdtempSync(join(tmpdir(), "gc-guard2-"));
+  const dir = scratch("gc-guard2-");
   git(dir, "init", "-q");
   const guard = gitGuard(dir)!;
   git(dir, "config", "extensions.worktreeConfig", "true");

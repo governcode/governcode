@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as ss from "../src/specstore.ts";
 import { LimitGate } from "../src/limits.ts";
+import { scratch } from "./scratch.ts";
 
 function project() {
-  const dir = mkdtempSync(join(tmpdir(), "gc-proj-"));
+  const dir = scratch("gc-proj-");
   const g = (...a: string[]) => execFileSync("git", ["-C", dir, ...a], { stdio: "pipe" });
   g("init", "-q", "-b", "main");
   writeFileSync(join(dir, "a.txt"), "one\n");
@@ -25,7 +26,7 @@ function project() {
 
 test("workspace, snapshots, diff and apply run no repo filter and apply exactly the after-state", () => {
   const proj = project();
-  const state = mkdtempSync(join(tmpdir(), "gc-state-"));
+  const state = scratch("gc-state-");
   execFileSync("rm", ["-f", join(proj, "PWNED")]);          // the setup commit itself ran it once
   const p = ss.specPaths(state, "S-0001");
   ss.createWorkspace(proj, p);
@@ -44,7 +45,7 @@ test("workspace, snapshots, diff and apply run no repo filter and apply exactly 
 
 test("apply refuses when the project changed since the Spec started, and changes nothing", () => {
   const proj = project();
-  const p = ss.specPaths(mkdtempSync(join(tmpdir(), "gc-state-")), "S-0002");
+  const p = ss.specPaths(scratch("gc-state-"), "S-0002");
   ss.createWorkspace(proj, p);
   const before = ss.snapshot(p, "before");
   writeFileSync(join(p.work, "a.txt"), "runner\n");
@@ -57,7 +58,7 @@ test("apply refuses when the project changed since the Spec started, and changes
 
 test("paths through symlinks are refused for scope and for apply", () => {
   const proj = project();
-  const outside = mkdtempSync(join(tmpdir(), "gc-outside-"));
+  const outside = scratch("gc-outside-");
   symlinkSync(outside, join(proj, "escape"));
   assert.throws(() => ss.safeTarget(proj, "escape/owned"), /symlink/);
   assert.throws(() => ss.safeTarget(proj, "../x"), /unsafe/);
@@ -97,8 +98,8 @@ test("limits: checking availability reserves nothing (crew probes left a 1% debi
 test("apply never writes through a dangling symlink, or into a project folder swapped for one", () => {
   // Found in a Grok red-team review: existsSync() is false for a dangling link, so a new file was written through it.
   const proj = project();
-  const state = mkdtempSync(join(tmpdir(), "gc-state-"));
-  const outside = mkdtempSync(join(tmpdir(), "gc-outside-"));
+  const state = scratch("gc-state-");
+  const outside = scratch("gc-outside-");
   const p = ss.specPaths(state, "S-0002");
   ss.createWorkspace(proj, p);
   const before = ss.snapshot(p, "before");
@@ -117,7 +118,7 @@ test("apply never writes through a dangling symlink, or into a project folder sw
 
 test("a refused apply leaves no staged files behind", () => {
   const proj = project();
-  const state = mkdtempSync(join(tmpdir(), "gc-state-"));
+  const state = scratch("gc-state-");
   const p = ss.specPaths(state, "S-0003");
   ss.createWorkspace(proj, p);
   const before = ss.snapshot(p, "before");

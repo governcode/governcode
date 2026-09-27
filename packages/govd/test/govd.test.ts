@@ -8,8 +8,9 @@ import { connect } from "node:net";
 import { createInterface } from "node:readline";
 import { Daemon } from "../src/daemon.ts";
 import { canonical } from "../src/claude.ts";
+import { scratch } from "./scratch.ts";
 
-const root = mkdtempSync(join(tmpdir(), "govd-test-"));
+const root = scratch("govd-test-");
 const bin = join(root, "bin");
 mkdirSync(bin);
 const exe = (name: string, body: string) => { const p = join(bin, name); writeFileSync(p, body); chmodSync(p, 0o755); return p; };
