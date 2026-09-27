@@ -16,7 +16,11 @@ import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
 import { openControllerSocket, accept, discard } from "./delegate.ts";
-import { diff as specDiff, specPaths } from "./specstore.ts";
+import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot, specPaths, turnStore } from "./specstore.ts";
+
+// ponytail: very large projects skip turn Checkpoints (hashing every file each turn).
+// Raise or make it incremental when a real project hits it.
+const MAX_CHECKPOINT_FILES = 20_000;
 import { fileURLToPath } from "node:url";
 
 const MCP_SCRIPT = fileURLToPath(new URL("./mcp-controller.ts", import.meta.url));
@@ -206,6 +210,21 @@ export class Daemon {
         return this.ask(p.project, p.prompt, notify, sock);
       case "spec.list":
         return { specs: L.specs(p.project) };
+      case "turn.list":
+        return { turns: L.events(p.project, 1000).filter((e) => e.kind === "checkpoint.taken")
+          .map((e) => ({ id: e.data.turn, at: e.ts, files: e.data.files })) };
+      case "turn.undo": {
+        const ev = L.events(undefined, 5000).find((e) => e.kind === "checkpoint.taken" && e.data.turn === p.id);
+        if (!ev || !ev.project) throw new RpcError(Errors.notFound, `no Checkpoint ${p.id}`);
+        if (L.events(ev.project, 5000).some((e) => e.kind === "checkpoint.undone" && e.data.turn === p.id)) {
+          throw new RpcError(Errors.refused, `${p.id} was already undone`);
+        }
+        const path = this.projectPath(ev.project);
+        // Restore the before-state, only where the project still holds exactly the after-state.
+        const files = applyToProject(turnStore(this.stateDir(), ev.project, path), path, String(ev.data.after), String(ev.data.before));
+        L.append(ev.project, "checkpoint.undone", "user", { turn: p.id, files });
+        return { id: p.id, restored: files };
+      }
       case "spec.diff": {
         const s = this.specOr404(p.id);
         const { before, after } = s.checkpoints;
@@ -253,6 +272,14 @@ export class Daemon {
     // A tool that can write the project can write .git; hooks and some config keys would then
     // run later, outside the sandbox, when the user runs git. Undone after every turn.
     const guard = found ? gitGuard(project.path) : null;
+    // A Checkpoint of the project before the Controller's turn, in govd's own store, so the
+    // user can undo the whole turn (gov undo T-n). Git projects only; ignored files excluded.
+    const started = L.events(project.name ?? undefined, 1).at(-1);
+    const turnId = `T-${started?.seq ?? Date.now()}`;
+    const files = found ? projectFiles(found.path) : null;
+    const store = found && files && files.length <= MAX_CHECKPOINT_FILES ? turnStore(this.stateDir(), found.name, found.path) : null;
+    let before: string | null = null;
+    try { if (store && files) before = snapshot(store, `turns/${turnId}/before`, null, files); } catch { before = null; }
     return new Promise((done) => {
       const hooks: TurnHooks = {
           text: (t) => { notify({ kind: "text", text: t }); L.append(project.name, "turn.text", actor, { text: t.slice(0, 4000) }); },
@@ -266,6 +293,13 @@ export class Daemon {
             notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical });
           }),
           done: (r) => {
+            if (store && before) {
+              try {
+                const after = snapshot(store, `turns/${turnId}/after`, before, [...new Set([...(files ?? []), ...(projectFiles(found!.path) ?? [])])]);
+                const changed = changedFiles(store, before, after);
+                if (changed.length) L.append(project.name, "checkpoint.taken", "govd", { turn: turnId, before, after, files: changed });
+              } catch { /* a Checkpoint is a convenience; its failure never fails the turn */ }
+            }
             const scrubbed = guard?.restore() ?? [];
             if (scrubbed.length) L.append(project.name, "git.scrubbed", "govd", { removed: scrubbed });
             L.append(project.name, r.ok ? "turn.completed" : "turn.failed", actor, { summary: r.summary.slice(0, 2000) });

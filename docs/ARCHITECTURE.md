@@ -50,6 +50,14 @@ filter, hook or diff driver ever executes. A change outside the scope is never o
 snapshot ids stored on the Spec, and only if the project still holds the before-state;
 otherwise nothing is applied.
 
+## Checkpoints of Controller turns
+
+Before each Controller turn in a git project, `govd` snapshots the project's tracked and
+unignored files into a store of its own (the same plumbing-only git as Specs), and again
+after. A turn that changed files records a Checkpoint; `gov undo T-n` restores the
+before-state of exactly those files, all or nothing, only where the project still holds the
+after-state, and only once.
+
 ## Protocol
 
 JSON-RPC 2.0, one object per line. `hello` returns the protocol number, a feature list and

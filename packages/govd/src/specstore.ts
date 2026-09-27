@@ -39,25 +39,30 @@ export function createWorkspace(projectPath: string, p: SpecPaths): void {
 }
 
 /** Snapshot a directory as a commit in the spec's own git dir, hashing raw bytes (no filters). */
-export function snapshot(p: SpecPaths, label: "before" | "after", parent?: string | null): string {
+export function snapshot(p: SpecPaths, label: string, parent?: string | null, only?: string[]): string {
   const entries: string[] = [];
-  const walk = (dir: string) => {
+  const add = (full: string) => {
+    const rel = relative(p.work, full).split(sep).join("/");
+    const st = lstatSync(full);
+    if (st.isSymbolicLink()) {
+      const oid = git(p.gitDir, ["hash-object", "-w", "--stdin"], readlinkSync(full)).toString().trim();
+      entries.push(`120000 ${oid}\t${rel}`);
+    } else if (st.isFile()) {
+      const oid = git(p.gitDir, ["hash-object", "-w", "--no-filters", "--stdin"], readFileSync(full)).toString().trim();
+      entries.push(`${st.mode & 0o111 ? "100755" : "100644"} ${oid}\t${rel}`);
+    }
+  };
+  if (only) {
+    for (const rel of only) { const full = join(p.work, rel); if (lstatExists(full)) add(full); }
+  }
+  const walk = (dir: string): void => {
     for (const name of readdirSync(dir)) {
       if (name === ".git") continue;
       const full = join(dir, name);
-      const rel = relative(p.work, full).split(sep).join("/");
-      const st = lstatSync(full);
-      if (st.isDirectory()) walk(full);
-      else if (st.isSymbolicLink()) {
-        const oid = git(p.gitDir, ["hash-object", "-w", "--stdin"], readlinkSync(full)).toString().trim();
-        entries.push(`120000 ${oid}\t${rel}`);
-      } else if (st.isFile()) {
-        const oid = git(p.gitDir, ["hash-object", "-w", "--no-filters", "--stdin"], readFileSync(full)).toString().trim();
-        entries.push(`${st.mode & 0o111 ? "100755" : "100644"} ${oid}\t${rel}`);
-      }
+      if (lstatSync(full).isDirectory()) walk(full); else add(full);
     }
   };
-  walk(p.work);
+  if (!only) walk(p.work);
   const tmp = mkdtempSync(join(tmpdir(), "governcode-idx-"));
   try {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
@@ -70,6 +75,35 @@ export function snapshot(p: SpecPaths, label: "before" | "after", parent?: strin
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+function lstatExists(p: string): boolean {
+  try { lstatSync(p); return true; } catch { return false; }
+}
+
+/**
+ * The files of a project worth snapshotting: what git tracks plus untracked files it does not
+ * ignore, listed by git with every program-running option off. Null if not a git project.
+ */
+export function projectFiles(projectPath: string): string[] | null {
+  try {
+    const out = execFileSync("git", [...SAFE, "-C", projectPath, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      { env: { ...process.env, ...ENV }, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).toString();
+    return [...new Set(out.split("\0").filter(Boolean))];
+  } catch {
+    return null;
+  }
+}
+
+/** The per-project store for Controller turn Checkpoints (in govd's state, like Specs). */
+export function turnStore(stateDir: string, project: string, projectPath: string): SpecPaths {
+  const root = join(stateDir, "turns", project);
+  const gitDir = join(root, "git");
+  if (!existsSync(gitDir)) {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    execFileSync("git", ["init", "-q", "--bare", gitDir], { env: { ...process.env, ...ENV }, stdio: "ignore" });
+  }
+  return { root, work: projectPath, gitDir };
 }
 
 export function changedFiles(p: SpecPaths, before: string, after: string): string[] {

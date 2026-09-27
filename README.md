@@ -32,6 +32,8 @@ gov controller claude-code --model sonnet --effort medium
 gov ask "Add a README with one line about this project"
 gov gates          # from another terminal: what is waiting, exactly as it will run
 gov trace          # what happened
+gov turns          # Checkpoints of the Controller's turns that changed files
+gov undo T-12      # put those files back, if you have not changed them since
 ```
 
 Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot

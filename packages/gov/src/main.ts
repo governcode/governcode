@@ -128,6 +128,19 @@ async function main(argv: string[]): Promise<number> {
         console.log(`${id}: ${answer === "allow" ? "allowed once" : "denied"}`);
         return 0;
       }
+      case "turns": {
+        const project = await currentProject(api);
+        if (!project) throw new Error("run this inside a project folder");
+        const { turns } = await api.call("turn.list", { project });
+        if (!turns.length) console.log(dim("no Checkpoints yet (a turn that changed nothing records none)"));
+        for (const t of turns) console.log(`${t.id.padEnd(8)} ${new Date(t.at).toTimeString().slice(0, 8)}  ${t.files.length} file(s)  ${dim(t.files.slice(0, 4).join(", "))}`);
+        return 0;
+      }
+      case "undo": {
+        const r = await api.call("turn.undo", { id: rest[0] });
+        console.log(`${r.id}: restored ${r.restored.length} file(s): ${r.restored.join(", ")}`);
+        return 0;
+      }
       case "specs": {
         const project = await currentProject(api);
         const { specs } = await api.call("spec.list", { project: project ?? undefined });
@@ -180,7 +193,7 @@ async function main(argv: string[]): Promise<number> {
         return r.ok ? 0 : 1;
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace|ask PROMPT|gates|gate ID allow|deny|specs|diff S|accept S|discard S|turns|undo T|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

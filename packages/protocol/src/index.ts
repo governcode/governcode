@@ -49,6 +49,8 @@ export const Params = {
   ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000) }),
   "gate.list": z.object({}),
   "spec.list": z.object({ project: ProjectName.optional() }),
+  "turn.list": z.object({ project: ProjectName }),
+  "turn.undo": z.object({ id: z.string().regex(/^T-\d+$/) }),
   "spec.diff": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
@@ -76,7 +78,7 @@ export type TraceEvent = {
     | "project.created" | "project.opened" | "controller.set"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
-    | "git.scrubbed"
+    | "git.scrubbed" | "checkpoint.taken" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
