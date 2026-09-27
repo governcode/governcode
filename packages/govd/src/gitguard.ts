@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync,
 import { join } from "node:path";
 
 // Local config keys that make git run a program, or point it somewhere that does.
-const DANGEROUS = /^(core\.(hookspath|fsmonitor|sshcommand|pager|editor|askpass|gitproxy)|diff\..+\.(textconv|command)|diff\.external|merge\..+\.driver|filter\..+\.(clean|smudge|process)|gpg\.(program|.+\.program)|credential\..*helper|sequence\.editor|uploadpack\..*|receivepack\..*|include\.path|includeif\..+\.path|alias\..+)$/i;
+const DANGEROUS = /^(core\.(hookspath|fsmonitor|sshcommand|pager|editor|askpass|gitproxy|worktree)|extensions\.worktreeconfig|diff\..+\.(textconv|command)|diff\.external|merge\..+\.driver|filter\..+\.(clean|smudge|process)|gpg\.(program|.+\.program)|credential\..*helper|sequence\.editor|(.+\.)?uploadpack(\..+)?|(.+\.)?receivepack(\..+)?|include\.path|includeif\..+\.path|alias\..+)$/i;
 
 function gitDir(project: string): string | null {
   try {
@@ -16,9 +16,13 @@ function gitDir(project: string): string | null {
   } catch { return null; }
 }
 
-function localConfig(dir: string): Array<[string, string]> {
+// Both the repo config and, when a run turned worktreeConfig on, config.worktree.
+const FILES = ["config", "config.worktree"];
+
+function localConfig(dir: string, file = "config"): Array<[string, string]> {
+  if (!existsSync(join(dir, file))) return [];
   try {
-    return execFileSync("git", ["config", "--file", join(dir, "config"), "--list"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+    return execFileSync("git", ["config", "--file", join(dir, file), "--list"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
       .split("\n").filter(Boolean).map((l) => { const i = l.indexOf("="); return [l.slice(0, i), l.slice(i + 1)] as [string, string]; });
   } catch { return []; }
 }
@@ -38,8 +42,7 @@ export function gitGuard(project: string): { restore(): string[] } | null {
   const dir = gitDir(project);
   if (!dir) return null;
   const beforeHooks = hooks(dir);
-  const beforePairs = localConfig(dir).filter(([k]) => DANGEROUS.test(k));
-  const beforeConfig = new Set(beforePairs.map(([k, v]) => `${k}=${v}`));
+  const beforeByFile = new Map(FILES.map((f) => [f, localConfig(dir, f).filter(([k]) => DANGEROUS.test(k))]));
   return {
     restore(): string[] {
       const removed: string[] = [];
@@ -50,13 +53,17 @@ export function gitGuard(project: string): { restore(): string[] } | null {
         if (was) { writeFileSync(p, was); chmodSync(p, 0o755); } else rmSync(p, { force: true });
         removed.push(`hook ${name}`);
       }
-      const file = join(dir, "config");
-      const changedKeys = new Set(localConfig(dir).filter(([k, v]) => DANGEROUS.test(k) && !beforeConfig.has(`${k}=${v}`)).map(([k]) => k));
-      for (const k of changedKeys) {
-        try { execFileSync("git", ["config", "--file", file, "--unset-all", k], { stdio: "ignore" }); } catch { /* gone */ }
-        // Put back whatever the user had for this key before the turn.
-        for (const [bk, bv] of beforePairs) if (bk === k) execFileSync("git", ["config", "--file", file, "--add", bk, bv], { stdio: "ignore" });
-        removed.push(`config ${k}`);
+      for (const name of FILES) {
+        const file = join(dir, name);
+        const beforePairs = beforeByFile.get(name) ?? [];
+        const beforeConfig = new Set(beforePairs.map(([k, v]) => `${k}=${v}`));
+        const changedKeys = new Set(localConfig(dir, name).filter(([k, v]) => DANGEROUS.test(k) && !beforeConfig.has(`${k}=${v}`)).map(([k]) => k));
+        for (const k of changedKeys) {
+          try { execFileSync("git", ["config", "--file", file, "--unset-all", k], { stdio: "ignore" }); } catch { /* gone */ }
+          // Put back whatever the user had for this key before the turn.
+          for (const [bk, bv] of beforePairs) if (bk === k) execFileSync("git", ["config", "--file", file, "--add", bk, bv], { stdio: "ignore" });
+          removed.push(`${name} ${k}`);
+        }
       }
       return removed;
     },

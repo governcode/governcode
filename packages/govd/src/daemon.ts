@@ -15,7 +15,7 @@ import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
 import { openControllerSocket, accept, discard } from "./delegate.ts";
-import * as cp from "./checkpoint.ts";
+import { diff as specDiff, specPaths } from "./specstore.ts";
 import { fileURLToPath } from "node:url";
 
 const MCP_SCRIPT = fileURLToPath(new URL("./mcp-controller.ts", import.meta.url));
@@ -64,6 +64,10 @@ export class Daemon {
     this.server = createServer((sock) => this.serve(sock));
     await new Promise<void>((ok) => this.server!.listen(this.opts.socketPath, ok));
     chmodSync(this.opts.socketPath, 0o600);
+  }
+
+  private stateDir(): string {
+    return resolve(this.opts.ledgerPath, "..");
   }
 
   private specOr404(id: string) {
@@ -171,19 +175,20 @@ export class Daemon {
         return { specs: L.specs(p.project) };
       case "spec.diff": {
         const s = this.specOr404(p.id);
-        return { id: s.id, files: s.files, diff: s.checkpoints.after ? cp.diff(this.projectPath(s.project), s.id) : "" };
+        const { before, after } = s.checkpoints;
+        return { id: s.id, files: s.files, diff: before && after ? specDiff(specPaths(this.stateDir(), s.id), before, after) : "" };
       }
       case "spec.accept": {
         const s = this.specOr404(p.id);
         if (s.status !== "needs-review") throw new RpcError(Errors.refused, `${s.id} is ${s.status}, not waiting for review`);
-        const files = accept(this.projectPath(s.project), s.id);
+        const files = accept(this.stateDir(), this.projectPath(s.project), s);
         L.updateSpec(s.id, { status: "accepted" }, "user");
-        discard(this.projectPath(s.project), s.id);
+        discard(this.stateDir(), s.id);
         return { id: s.id, applied: files };
       }
       case "spec.discard": {
         const s = this.specOr404(p.id);
-        discard(this.projectPath(s.project), s.id);
+        discard(this.stateDir(), s.id);
         if (s.status === "needs-review" || s.status === "failed") L.updateSpec(s.id, { status: "undone", note: "discarded by the user" }, "user");
         return { id: s.id, discarded: true };
       }

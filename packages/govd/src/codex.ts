@@ -151,7 +151,8 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     const p = m.params ?? {};
     const kind = m.method === "item/commandExecution/requestApproval" ? "command"
       : m.method === "item/fileChange/requestApproval" ? "fileChange" : null;
-    if (!kind) return m.method === "item/tool/requestUserInput" ? { answers: {} } : {};
+    // Anything we do not recognise is refused, never granted by silence (Rattle).
+    if (!kind) throw new Error(`GovernCode does not answer ${m.method}`);
     const changes = kind === "fileChange" ? items.get(String(p.itemId))?.changes : undefined;
     // A Gate shows exactly what will happen. A file change whose content we have not seen
     // cannot be shown, so it is declined rather than approved blind.

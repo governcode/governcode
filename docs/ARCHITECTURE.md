@@ -33,6 +33,23 @@ GovernCode runs on your own machine. There is no hosted service.
    and waits. Allow runs exactly that input; deny, or the asker disconnecting, denies.
 5. Every step lands in the **Trace**: an append-only SQLite log that clients read.
 
+## Delegation (phase 1)
+
+In a project, the Claude Controller gets GovernCode's tools (`delegate`, `crew`,
+`spec_status`) from a small MCP server that runs inside its sandbox and can reach only a
+socket `govd` opens for that one turn. That socket offers no Gate answers and no undo.
+
+`delegate` measures the Runner's usage and checks the Limit (unknown means held; finished
+Specs keep counting until the provider's counter catches up), then builds the Runner's
+workspace **in govd's own state directory**, out of every AI tool's reach: the project's
+committed HEAD, exported without filters, with its own git directory for snapshots. The
+Runner runs sandboxed with write access only to the Spec's scope (checked for symlinks).
+Snapshots hash raw bytes with git plumbing under a config that runs no program, so no repo
+filter, hook or diff driver ever executes. A change outside the scope is never offered.
+`gov accept` applies exactly the reviewed after-state of each changed file, bound to the
+snapshot ids stored on the Spec, and only if the project still holds the before-state;
+otherwise nothing is applied.
+
 ## Protocol
 
 JSON-RPC 2.0, one object per line. `hello` returns the protocol number, a feature list and

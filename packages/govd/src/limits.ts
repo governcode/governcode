@@ -29,7 +29,10 @@ export const DEFAULTS: LimitsConfig = { reservePercent: {}, unmetered: [], ttlMs
 export class LimitGate {
   private config: LimitsConfig;
   private latest = new Map<string, Measurement>();
-  private inflight = new Map<string, { provider: string; percent: number }>();
+  private inflight = new Map<string, { provider: string; percent: number; baseline: number }>();
+  // Finished Specs keep counting until the provider's own counter catches up: usage reports lag,
+  // so without this, back-to-back Specs could each be admitted against the same reading.
+  private debits: Array<{ provider: string; percent: number; baseline: number; at: number }> = [];
   private now: () => number;
 
   constructor(config: Partial<LimitsConfig> = {}, now: () => number = Date.now) {
@@ -39,6 +42,12 @@ export class LimitGate {
 
   record(m: Measurement): void {
     this.latest.set(m.provider, m);
+    if (this.debitFor(m.provider) === 0) this.debits = this.debits.filter((d) => d.provider !== m.provider);
+  }
+
+  /** Forget a provider's measurement (a failed reading): it is held until measured again. */
+  forget(provider: string): void {
+    this.latest.delete(provider);
   }
 
   private reserve(provider: string): number {
@@ -49,7 +58,7 @@ export class LimitGate {
   admit(spec: string, provider: string, requested: number): Verdict {
     const percent = Math.min(Math.max(requested, 1), this.config.maxSpecPercent); // clamp: a request, not authority
     if (this.config.unmetered.includes(provider)) {
-      this.inflight.set(spec, { provider, percent: 0 });
+      this.inflight.set(spec, { provider, percent: 0, baseline: 0 });
       return { ok: true, provider, note: "unmetered (opt-in): spend not tracked" };
     }
     const m = this.latest.get(provider);
@@ -57,7 +66,8 @@ export class LimitGate {
     if (this.now() - m.measuredAt > this.config.ttlMs) {
       return { ok: false, provider, reason: `usage stale (measured ${Math.round((this.now() - m.measuredAt) / 1000)} s ago) · held`, resetsAt: null };
     }
-    const pending = [...this.inflight.values()].filter((f) => f.provider === provider).reduce((a, f) => a + f.percent, 0);
+    const pending = [...this.inflight.values()].filter((f) => f.provider === provider).reduce((a, f) => a + f.percent, 0)
+      + this.debitFor(provider);
     const ceiling = 100 - this.reserve(provider);
     for (const r of m.readings) {
       if (r.usedPercent + pending + percent > ceiling) {
@@ -65,7 +75,7 @@ export class LimitGate {
           reason: `inside its ${this.reserve(provider)}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})` };
       }
     }
-    this.inflight.set(spec, { provider, percent });
+    this.inflight.set(spec, { provider, percent, baseline: Math.max(...m.readings.map((r) => r.usedPercent)) });
     return { ok: true, provider };
   }
 
@@ -81,7 +91,20 @@ export class LimitGate {
                 : { ok: true, provider: f.provider };
   }
 
+  /** What finished Specs may still owe: their reservations, minus the rise the provider's own
+   *  counter has shown since the earliest of them started. */
+  private debitFor(provider: string): number {
+    const ds = this.debits.filter((d) => d.provider === provider);
+    if (!ds.length) return 0;
+    const m = this.latest.get(provider);
+    const top = m ? Math.max(...m.readings.map((r) => r.usedPercent), 0) : 0;
+    const risen = Math.max(0, top - Math.min(...ds.map((d) => d.baseline)));
+    return Math.max(0, ds.reduce((a, d) => a + d.percent, 0) - risen);
+  }
+
   release(spec: string): void {
+    const f = this.inflight.get(spec);
     this.inflight.delete(spec);
+    if (f && f.percent > 0) this.debits.push({ provider: f.provider, percent: f.percent, baseline: f.baseline, at: this.now() });
   }
 }

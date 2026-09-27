@@ -5,14 +5,14 @@
 import { createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, chmodSync } from "node:fs";
-import { join, resolve, relative, isAbsolute } from "node:path";
+import { mkdirSync, rmSync, chmodSync } from "node:fs";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { SpecInput, type Spec } from "@governcode/protocol";
+import { SpecInput } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
 import type { LimitGate, UsageSource } from "./limits.ts";
 import type { GateRequest } from "./claude.ts";
-import * as cp from "./checkpoint.ts";
+import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
 
 export type DelegationContext = {
@@ -61,7 +61,8 @@ async function measured(ctx: DelegationContext, provider: string): Promise<void>
   const src = ctx.usage[provider];
   if (!src) return;
   const m = await src.read();
-  if (m) ctx.limits.record(m);
+  // A failed reading must not leave an old one standing: unknown usage holds.
+  if (m) ctx.limits.record(m); else ctx.limits.forget(provider);
 }
 
 async function crew(ctx: DelegationContext) {
@@ -75,13 +76,6 @@ async function crew(ctx: DelegationContext) {
   return { runners: out };
 }
 
-/** Scope paths are relative to the project and must stay inside it. */
-function inside(root: string, p: string): string {
-  const abs = resolve(root, p);
-  const rel = relative(root, abs);
-  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`scope path ${p} leaves the project`);
-  return abs;
-}
 
 async function delegate(ctx: DelegationContext, raw: unknown) {
   const input = SpecInput.parse(raw);
@@ -99,29 +93,25 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   }
 
   try {
-    // 2. Its own worktree, on its own branch, from the project's HEAD.
+    // 2. Its own workspace in govd's state (out of every AI tool's reach): the project's
+    //    committed HEAD, exported without filters, with its own git dir for snapshots.
     const project = ctx.project.path;
     let head = "";
     try { head = execFileSync("git", ["-C", project, "rev-parse", "--verify", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* none */ }
     if (!head) throw new Error("the project has no commit yet; commit once so a Runner can work from it");
-    const worktree = join(project, ".gov", "worktrees", spec.id);
-    const exclude = join(project, ".git", "info", "exclude");
-    if (existsSync(join(project, ".git")) && !(existsSync(exclude) && readFileSync(exclude, "utf8").includes("/.gov/"))) {
-      mkdirSync(join(project, ".git", "info"), { recursive: true });
-      appendFileSync(exclude, "\n/.gov/\n");
-    }
-    execFileSync("git", ["-C", project, "worktree", "add", "-q", "-b", `gov/${spec.id}`, worktree, head], { stdio: "ignore" });
+    const paths = specPaths(ctx.stateDir, spec.id);
+    createWorkspace(project, paths);
 
-    // 3. Checkpoint, run the Runner sandboxed to the scope, checkpoint again.
-    const before = cp.take(worktree, spec.id, "before");
-    const writePaths = input.scope.write.length ? input.scope.write.map((p) => inside(worktree, p)) : [worktree];
+    // 3. Scope: real directories inside the workspace, never through a symlink.
+    const writePaths = input.scope.write.length ? input.scope.write.map((p) => safeTarget(paths.work, p.replace(/^\.\/+/, "").replace(/\/+$/, ""))) : [paths.work];
     for (const p of writePaths) mkdirSync(p, { recursive: true });
+    const before = snapshot(paths, "before");
     L.updateSpec(spec.id, { status: "running", checkpoints: { before, after: null } }, "govd");
-    const prompt = `${input.brief}\n\nDone means: ${input.result}\n\nYou may change only: ${input.scope.write.length ? input.scope.write.join(", ") : "anything in this worktree"}.`;
+    const prompt = `${input.brief}\n\nDone means: ${input.result}\n\nYou may change only: ${input.scope.write.length ? input.scope.write.join(", ") : "anything in this workspace"}.`;
     const texts: string[] = [];
     const result = await new Promise<{ ok: boolean; summary: string }>((done) => {
-      void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree,
-        writePaths, gitDir: join(project, ".git"), model: input.model, effort: input.effort, prompt,
+      void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work,
+        writePaths, model: input.model, effort: input.effort, prompt,
         hooks: {
           text: (t) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); },
           tool: (name) => ctx.notify({ kind: "spec.tool", id: spec.id, name }),
@@ -129,13 +119,18 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
           done,
         } });
     });
-    const after = cp.take(worktree, spec.id, "after");
-    const files = before && after ? cp.changed(worktree, before, after) : [];
-    const diff = files.length ? cp.diff(worktree, spec.id) : "";
-    const status = result.ok ? "needs-review" : "failed";
-    L.updateSpec(spec.id, { status, files, checkpoints: { before, after }, note: result.ok ? undefined : result.summary }, "govd");
-    return { id: spec.id, status, runner: input.to, files, summary: texts.join("\n").slice(-4000),
-      diff: diff.length > 20_000 ? diff.slice(0, 20_000) + "\n… (diff truncated; the user sees it in full with gov diff)" : diff,
+    const after = snapshot(paths, "after", before);
+    const files = changedFiles(paths, before, after);
+    // The sandbox should already stop it, but a change outside the scope is never offered.
+    const scopes = input.scope.write.map((w) => w.replace(/^\.\/+/, "").replace(/\/+$/, ""));
+    const outside = scopes.length ? files.filter((f) => !scopes.some((w) => f === w || f.startsWith(w + "/"))) : [];
+    const ok = result.ok && !outside.length;
+    const note = outside.length ? `changed files outside its scope: ${outside.join(", ")}` : result.ok ? undefined : result.summary;
+    L.updateSpec(spec.id, { status: ok ? "needs-review" : "failed", files, checkpoints: { before, after }, note }, "govd");
+    const d = files.length ? diff(paths, before, after) : "";
+    return { id: spec.id, status: ok ? "needs-review" : "failed", runner: input.to, files, ...(note ? { note } : {}),
+      summary: texts.join("\n").slice(-4000),
+      diff: d.length > 20_000 ? d.slice(0, 20_000) + "\n… (diff truncated; the user sees it in full with gov diff)" : d,
       review: `The user reviews with gov diff ${spec.id} and applies with gov accept ${spec.id}.` };
   } catch (e) {
     L.updateSpec(spec.id, { status: "failed", note: e instanceof Error ? e.message : String(e) }, "govd");
@@ -145,17 +140,15 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   }
 }
 
-/** The user accepts a Spec: its changes are applied to the project's working tree. */
-export function accept(projectPath: string, specId: string): string[] {
-  const patch = execFileSync("git", ["-C", projectPath, "diff", "--binary", `refs/governcode/specs/${specId}/before`, `refs/governcode/specs/${specId}/after`]);
-  if (!patch.length) return [];
-  execFileSync("git", ["-C", projectPath, "apply", "-"], { input: patch });
-  return execFileSync("git", ["-C", projectPath, "diff", "--name-only", `refs/governcode/specs/${specId}/before`, `refs/governcode/specs/${specId}/after`], { encoding: "utf8" }).split("\n").filter(Boolean);
+/** The user accepts a Spec: exactly the reviewed after-state of its files, if the project still
+ *  holds their before-state. Bound to the snapshot ids stored on the Spec, not to any ref. */
+export function accept(stateDir: string, projectPath: string, spec: { id: string; checkpoints: { before: string | null; after: string | null } }): string[] {
+  const { before, after } = spec.checkpoints;
+  if (!before || !after) throw new Error(`${spec.id} has no complete snapshot`);
+  return applyToProject(specPaths(stateDir, spec.id), projectPath, before, after);
 }
 
-/** Remove a Spec's worktree and branch (its Checkpoints stay in the Trace). */
-export function discard(projectPath: string, specId: string): void {
-  const wt = join(projectPath, ".gov", "worktrees", specId);
-  try { execFileSync("git", ["-C", projectPath, "worktree", "remove", "--force", wt], { stdio: "ignore" }); } catch { /* gone */ }
-  try { execFileSync("git", ["-C", projectPath, "branch", "-D", `gov/${specId}`], { stdio: "ignore" }); } catch { /* gone */ }
+/** Remove a Spec's workspace (its snapshots stay, for the record). */
+export function discard(stateDir: string, specId: string): void {
+  removeWorkspace(specPaths(stateDir, specId));
 }

@@ -67,3 +67,17 @@ test("the tool gets a clean environment and a narrow view of its own config", ()
     if (!(e instanceof Error && /claude not found/.test(e.message))) throw e;   // CI has no Claude Code
   }
 });
+
+test("git guard: config.worktree, core.worktree and remote upload-pack are scrubbed too", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gc-guard2-"));
+  git(dir, "init", "-q");
+  const guard = gitGuard(dir)!;
+  git(dir, "config", "extensions.worktreeConfig", "true");
+  git(dir, "config", "--worktree", "core.fsmonitor", "./evil");
+  git(dir, "config", "core.worktree", "/tmp");
+  git(dir, "config", "remote.origin.uploadpack", "./evil");
+  const removed = guard.restore().sort();
+  assert.ok(removed.includes("config extensions.worktreeconfig"), removed.join());
+  assert.ok(removed.includes("config.worktree core.fsmonitor"), removed.join());
+  assert.ok(removed.includes("config core.worktree") && removed.includes("config remote.origin.uploadpack"), removed.join());
+});

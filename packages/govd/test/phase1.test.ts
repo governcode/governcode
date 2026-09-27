@@ -68,7 +68,12 @@ test("limits: unknown and stale hold; a measured window admits and reserves", ()
   assert.equal(third.ok, false);
   assert.ok(!third.ok && third.resetsAt === "Tue 06:10" && /30% reserved by running Specs/.test(third.reason));
   gate.release("S-1");
-  assert.equal(gate.admit("S-3", "codex", 5).ok, true);
+  assert.equal(gate.admit("S-3", "codex", 5).ok, false, "a finished Spec keeps counting until measured");
+  gate.record({ provider: "codex", measuredAt: now, readings: [{ window: "weekly", usedPercent: 75, resetsAt: "Tue 06:10" }] });
+  assert.equal(gate.admit("S-3", "codex", 5).ok, false, "75 + S-2's 15 + 5 = 95: still held");
+  gate.release("S-2");
+  gate.record({ provider: "codex", measuredAt: now, readings: [{ window: "weekly", usedPercent: 84, resetsAt: "Tue 06:10" }] });
+  assert.equal(gate.admit("S-3", "codex", 5).ok, true, "the counter absorbed both: 84 + 1 + 5 <= 90");
   now += 10 * 60_000;
   const stale = gate.admit("S-4", "codex", 1);
   assert.ok(!stale.ok && /stale/.test(stale.reason));
