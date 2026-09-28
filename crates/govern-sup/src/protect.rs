@@ -58,6 +58,13 @@ pub fn parse(text: &str) -> Result<Protect, String> {
         if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
             return Err(format!("protect: {} must not contain ..", p.display()));
         }
+        // The rules are built along this exact path; a symlink on it would protect the
+        // link while its target stays reachable (security review 2026-09-27).
+        for a in p.ancestors() {
+            if std::fs::symlink_metadata(a).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(format!("protect: {} passes through the symlink {}; list the real path", p.display(), a.display()));
+            }
+        }
     }
     if !raw.cwd.is_absolute() || !raw.cwd.is_dir() {
         return Err(format!("cwd {} must be an existing absolute directory", raw.cwd.display()));
@@ -81,6 +88,12 @@ pub fn rules(p: &Protect) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
         for entry in entries.flatten() {
             let child = entry.path();
             if on_way.contains(&child) || protected.contains(&child) {
+                continue;
+            }
+            // A sibling symlink gets no rule of its own: granting it would grant its target,
+            // which may be the protected directory itself (/tmp/alias -> /tmp/control).
+            // Following it still works wherever the target is granted anyway.
+            if entry.file_type().is_ok_and(|t| t.is_symlink()) {
                 continue;
             }
             full.push(child);
@@ -150,6 +163,21 @@ mod tests {
         assert!(full.contains(&ctl.join("other")));
         assert!(!full.contains(&ctl.join("pipe")));
         assert!(on_way.contains(&ctl) && on_way.contains(&PathBuf::from("/")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_sibling_symlink_never_grants_the_protected_directory() {
+        let dir = std::env::temp_dir().join(format!("gs-protect-alias-{}", std::process::id()));
+        let ctl = dir.join("control");
+        std::fs::create_dir_all(&ctl).unwrap();
+        std::fs::write(ctl.join("approval"), b"").unwrap();
+        std::os::unix::fs::symlink(&ctl, dir.join("alias")).unwrap();
+        let p = Protect { protect: vec![ctl.join("approval")], cwd: dir.clone() };
+        let (full, _) = rules(&p).unwrap();
+        assert!(!full.contains(&dir.join("alias")), "the alias must not be granted");
+        let through = format!(r#"{{"version":1,"mode":"protect","protect":["{}"],"cwd":"/"}}"#, dir.join("alias/approval").display());
+        assert!(parse(&through).err().unwrap_or_default().contains("symlink"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

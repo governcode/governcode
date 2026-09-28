@@ -6,9 +6,10 @@
 use crate::policy::{Kind, Resolved};
 use landlock::{
     ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, NetPort, PathBeneath,
-    PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
+    Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
 };
 use std::io::Error;
+use std::os::fd::AsFd;
 
 /// The Landlock ABI the running kernel reports (0 when Landlock is missing or disabled).
 ///
@@ -57,6 +58,27 @@ pub fn apply(policy: &Resolved) -> Result<(), String> {
     install_seccomp(&filter)
 }
 
+/// Marks every descriptor above stdio close-on-exec, so the tool starts with stdin, stdout
+/// and stderr only. An inherited descriptor (a file or socket opened before the sandbox)
+/// would otherwise be usable whatever the policy says (security review 2026-09-27).
+pub fn close_inherited() -> Result<(), String> {
+    let rc = unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) };
+    if rc == 0 {
+        return Ok(());
+    }
+    // Kernels before 5.11: mark each open descriptor by hand.
+    let fds: Vec<i32> = std::fs::read_dir("/proc/self/fd")
+        .map_err(|e| format!("cannot list open descriptors: {e}"))?
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse().ok()))
+        .filter(|&fd| fd > 2)
+        .collect();
+    for fd in fds {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    Ok(())
+}
+
 pub fn no_new_privs() -> Result<(), String> {
     set_no_new_privs()
 }
@@ -99,32 +121,31 @@ fn landlock(policy: &Resolved, abi: i32) -> Result<(), String> {
         .create()
         .map_err(|e| fs_err(&e))?;
 
-    for (path, kind) in &policy.paths {
-        let mut access: BitFlags<AccessFs> = match kind {
+    for rule in &policy.paths {
+        let mut access: BitFlags<AccessFs> = match rule.kind {
             Kind::Read => read,
             Kind::Write => write,
             Kind::Exec => exec,
         };
         // Directory-only rights (ReadDir, Make*, Remove*) are invalid on a file rule.
-        if !path.is_dir() {
+        if !rule.dir {
             access &= AccessFs::from_file(ABI::V9);
         }
-        let fd = PathFd::new(path).map_err(|e| fs_err(&format!("{}: {e}", path.display())))?;
+        // The descriptor opened when the policy was checked: the path is not looked up again.
         ruleset = ruleset
-            .add_rule(PathBeneath::new(fd, access))
-            .map_err(|e| fs_err(&format!("{}: {e}", path.display())))?;
+            .add_rule(PathBeneath::new(rule.fd.as_fd(), access))
+            .map_err(|e| fs_err(&format!("{}: {e}", rule.path.display())))?;
     }
     // The only local sockets reachable: each listed path, and nothing else. Below ABI 9
     // seccomp refuses every new AF_UNIX socket instead, so the list cannot be honoured.
-    for path in &policy.unix_connect {
+    for rule in &policy.unix_connect {
         if abi < 9 {
-            eprintln!("govern-sup: unix_connect {} ignored: this kernel denies all local sockets", path.display());
+            eprintln!("govern-sup: unix_connect {} ignored: this kernel denies all local sockets", rule.path.display());
             continue;
         }
-        let fd = PathFd::new(path).map_err(|e| fs_err(&format!("{}: {e}", path.display())))?;
         ruleset = ruleset
-            .add_rule(PathBeneath::new(fd, AccessFs::ResolveUnix))
-            .map_err(|e| fs_err(&format!("{}: {e}", path.display())))?;
+            .add_rule(PathBeneath::new(rule.fd.as_fd(), AccessFs::ResolveUnix))
+            .map_err(|e| fs_err(&format!("{}: {e}", rule.path.display())))?;
     }
     // Only connect rules are added; BindTcp is handled with no rules, so every bind fails.
     for &port in &policy.tcp_connect {
@@ -178,6 +199,28 @@ fn if_nr(nr: libc::c_long, skip: u8) -> libc::sock_filter {
     jump(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, nr as u32, 0, skip)
 }
 
+// Newer syscalls the libc crate does not name yet; the numbers are shared by every
+// architecture since 5.x (asm-generic/unistd.h).
+const SYS_SETXATTRAT: libc::c_long = 463;
+const SYS_REMOVEXATTRAT: libc::c_long = 466;
+const SYS_FILE_SETATTR: libc::c_long = 469;
+
+#[cfg(target_arch = "x86_64")]
+const LEGACY: [libc::c_long; 3] = [libc::SYS_chown, libc::SYS_lchown, libc::SYS_fchown];
+#[cfg(target_arch = "aarch64")]
+const LEGACY: [libc::c_long; 1] = [libc::SYS_fchown];
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const DENIED: [libc::c_long; 27] = [
+    libc::SYS_shmget, libc::SYS_shmat, libc::SYS_shmctl, libc::SYS_msgget, libc::SYS_msgsnd,
+    libc::SYS_msgrcv, libc::SYS_msgctl, libc::SYS_semget, libc::SYS_semop, libc::SYS_semtimedop,
+    libc::SYS_semctl, libc::SYS_mq_open, libc::SYS_mq_timedsend, libc::SYS_mq_timedreceive,
+    libc::SYS_mq_notify, libc::SYS_mq_getsetattr, libc::SYS_mq_unlink,
+    libc::SYS_fchownat, libc::SYS_setxattr, libc::SYS_lsetxattr, libc::SYS_fsetxattr,
+    libc::SYS_removexattr, libc::SYS_lremovexattr, libc::SYS_fremovexattr, SYS_SETXATTRAT,
+    SYS_REMOVEXATTRAT, SYS_FILE_SETATTR,
+];
+
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub fn seccomp_filter(abi: i32) -> Result<Vec<libc::sock_filter>, String> {
     let mut f = vec![
@@ -205,6 +248,25 @@ pub fn seccomp_filter(abi: i32) -> Result<Vec<libc::sock_filter>, String> {
     ] {
         f.extend([if_nr(nr, 1), ret(errno(libc::EPERM))]);
     }
+    // Local IPC that no path rule covers (security review 2026-09-27): System V shared
+    // memory, message queues and semaphores, and POSIX message queues, would let the tool
+    // read or change another same-user program's state. Ownership and extended attributes
+    // are metadata Landlock does not mediate, so they are refused outright; chmod stays (npm
+    // and git need it), a documented limit.
+    for nr in DENIED.into_iter().chain(LEGACY) {
+        f.extend([if_nr(nr, 1), ret(errno(libc::EPERM))]);
+    }
+    // Terminal ioctls that type into, or drive, the terminal a descriptor points at
+    // (TIOCSTI, TIOCLINUX). The kernel reads the command as a 32-bit int, so the low word
+    // is the whole command.
+    f.extend([
+        if_nr(libc::SYS_ioctl, 5),
+        load(ARG1),
+        jump(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, libc::TIOCSTI as u32, 2, 0),
+        jump(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, libc::TIOCLINUX as u32, 1, 0),
+        ret(libc::SECCOMP_RET_ALLOW),
+        ret(errno(libc::EPERM)),
+    ]);
     // From ABI 9 Landlock decides which pathname Unix sockets may be reached (only the
     // policy's unix_connect list) and scoping already blocks abstract ones, so seccomp
     // leaves AF_UNIX alone; the system DNS resolver, for one, is a Unix socket.
@@ -268,6 +330,6 @@ mod tests {
                 assert!(i + 1 + (ins.jt.max(ins.jf) as usize) < f.len(), "jump at {i} leaves the program");
             }
         }
-        assert!(f.len() < 64);
+        assert!(f.len() < 128);
     }
 }

@@ -4,10 +4,10 @@ mod policy;
 mod protect;
 mod sandbox;
 mod selftest;
+mod supervise;
 
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   govern-sup run --policy <file.json> -- <program> [args...]
@@ -36,30 +36,33 @@ fn main() -> ExitCode {
     }
 }
 
-/// Restricts this process and then replaces it with the tool, so the tool keeps our pid,
-/// our stdio pipes from govd and our environment, and govd sees its exit status directly.
+/// Runs the tool as our child, restricted, and stays outside the sandbox as its reaper: when
+/// the tool exits (or govd stops us), every process it left behind is killed, so nothing
+/// the tool started outlives the run (security review 2026-09-27). The tool keeps our stdio
+/// pipes from govd and our environment; its exit status becomes ours.
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (policy_file, argv) = match args {
         [flag, file, sep, argv @ ..] if flag == "--policy" && sep == "--" && !argv.is_empty() => (file, argv),
         _ => return Err(USAGE.to_string()),
     };
-    let text = std::fs::read_to_string(policy_file).map_err(|e| format!("cannot read policy {policy_file}: {e}"))?;
+    let text = policy::read_bounded(Path::new(policy_file))?;
     if protect::is_protect(&text) {
         // Protect mode: the whole machine except the listed paths (see protect.rs).
         let p = protect::parse(&text)?;
         std::env::set_current_dir(&p.cwd).map_err(|e| format!("cwd {}: {e}", p.cwd.display()))?;
-        sandbox::no_new_privs()?;
-        protect::apply(&p, sandbox::kernel_abi())?;
-        let err = Command::new(&argv[0]).args(&argv[1..]).exec();
-        return Err(format!("cannot execute {}: {err}", argv[0]));
+        return supervise::run(argv, || {
+            sandbox::no_new_privs()?;
+            protect::apply(&p, sandbox::kernel_abi())?;
+            sandbox::close_inherited()
+        });
     }
-    let policy = policy::load(Path::new(policy_file))?;
+    let policy = policy::parse(&text)?;
     for w in &policy.warnings {
         eprintln!("govern-sup: warning: {w}");
     }
     std::env::set_current_dir(&policy.cwd).map_err(|e| format!("cwd {}: {e}", policy.cwd.display()))?;
-    sandbox::apply(&policy)?;
-    // exec only returns on failure. Landlock refusing a binary outside `exec` lands here.
-    let err = Command::new(&argv[0]).args(&argv[1..]).exec();
-    Err(format!("cannot execute {}: {err} (is it under an exec path?)", argv[0]))
+    supervise::run(argv, || {
+        sandbox::apply(&policy)?;
+        sandbox::close_inherited()
+    })
 }

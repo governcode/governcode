@@ -8,15 +8,20 @@ mode is not a boundary; this sandbox is.
 
 ## Invariants
 
-1. **One channel.** A sandboxed process talks to `govd` only through file descriptors
-   `govern-sup` hands it (its stdin/stdout pipes and, later, one inherited socketpair for
-   MCP). It cannot open new connections to `govd`.
+1. **One channel.** A sandboxed process talks to `govd` only through its stdin, stdout and
+   stderr. Every other inherited descriptor is closed before the tool starts, so a file or
+   socket opened outside the sandbox cannot be carried in. It cannot open new connections to
+   `govd`.
 2. **Filesystem is an allowlist** (Landlock). Writable: the project worktree (nothing, in
    Home) and the tool's own scratch directories. Read-only: system directories, the
    toolchain, and only the parts of the tool's configuration it needs. Everything else,
    including GovernCode's state, the tool's transcripts of other projects, other tools'
    files and the user's keyrings, is neither readable nor writable. Of `/dev`, only
-   `null`, `zero` and `urandom`; no device ioctls, so no typing into a terminal.
+   `null`, `zero` and `urandom`; no device ioctls, and seccomp refuses `TIOCSTI` and
+   `TIOCLINUX` on any descriptor, so no typing into a terminal. Every policy path is opened
+   once, and the rule is built on that descriptor: a write path may not pass through any
+   symlink, and a read or exec path only through symlinks root owns (`/bin -> usr/bin`), so a
+   link planted by an earlier run cannot redirect a grant.
 3. **The tool's own settings, instructions and credentials are read-only**, so a run
    cannot widen what the tool auto-allows on its next launch. The worktree's own settings
    files are not loaded at all. After each turn `govd` removes any git hook or
@@ -27,15 +32,22 @@ mode is not a boundary; this sandbox is.
 5. **No local IPC out, except what the policy lists.** The session bus, the keyring service
    and the daemon are all Unix sockets. From Landlock ABI 9 the kernel refuses connecting to
    any pathname Unix socket except those in the policy's `unix_connect` list (in practice
-   only the system DNS resolver's), and scoping blocks abstract sockets. On older kernels
-   seccomp refuses creating `AF_UNIX` sockets at all. Inherited sockets and stream
-   `socketpair` keep working.
+   only the system DNS resolver's; each entry must be a socket file, never a folder), and
+   scoping blocks abstract sockets. On older kernels seccomp refuses creating `AF_UNIX`
+   sockets at all. Stream `socketpair` keeps working. seccomp also refuses System V shared
+   memory, message queues and semaphores, and POSIX message queues.
 6. **No reaching other processes.** seccomp denies `ptrace`, `process_vm_readv/writev`,
    `pidfd_getfd` and `io_uring_setup`; Landlock denies ptrace-level access to processes
    outside the sandbox and scopes signals and abstract Unix sockets.
-7. **No privilege gain.** `no_new_privs` is set; setuid binaries do not elevate.
-8. **Fail closed.** If the kernel lacks what a rule needs, `govern-sup` refuses to start the
-   tool and says which rule and why. There is no "run unsandboxed" switch.
+7. **No privilege gain.** `no_new_privs` is set; setuid binaries do not elevate. Changing a
+   file's owner or its extended attributes is refused.
+8. **Nothing outlives the run.** The tool runs as a child of `govern-sup`, which stays
+   outside the sandbox as its subreaper: when the tool exits, or `govd` stops the run, every
+   process it started, detached or not, is killed.
+9. **Fail closed.** If the kernel lacks what a rule needs, `govern-sup` refuses to start the
+   tool and says which rule and why. There is no "run unsandboxed" switch. The self-test
+   proves each rule on your machine, against a control run without the sandbox, before any
+   tool starts.
 
 ## Gates and standing allows: fewer questions, the same sandbox
 
@@ -82,6 +94,12 @@ once, how many minutes each), since there is no quota to measure.
 
 ## Known limits
 
+- `chmod` stays allowed (npm and git set file modes), and Landlock does not mediate it, so a
+  tool can change the permission bits of a file it can name by path, even outside its
+  allowlist. It cannot read or write such a file; it could make one unreadable to you.
+- If `govern-sup` itself is killed with SIGKILL (not how `govd` stops a run), the tool dies
+  with it, but processes the tool started are not collected. A per-run cgroup would close
+  that; it is not needed for how GovernCode runs tools today.
 - The tool can read its own credentials (it needs them) and reach any address on port
   443, so a misbehaving tool could send its own credentials away. The sandbox protects
   everything else; it cannot make a tool trustworthy with what it must hold.

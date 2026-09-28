@@ -4,7 +4,15 @@
 //! govern-sup disagree about what the sandbox should be, and guessing would widen it.
 
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::path::{Component, Path, PathBuf};
+
+/// Bounds on what govd may ask for, checked before anything is allocated per entry.
+const MAX_POLICY_BYTES: u64 = 1 << 20;
+const MAX_ENTRIES: usize = 4096;
+const MAX_PATH_BYTES: usize = 4096;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,21 +44,78 @@ pub enum Kind {
     Exec,
 }
 
+/// One path of the policy, already opened: the rule is built on this descriptor, never on
+/// the path again, so nothing can be swapped in between the check and the rule.
+#[derive(Debug)]
+pub struct Rule {
+    pub path: PathBuf,
+    pub kind: Kind,
+    pub fd: OwnedFd,
+    pub dir: bool,
+}
+
 /// A policy checked against the real filesystem, ready to turn into Landlock rules.
 #[derive(Debug)]
 pub struct Resolved {
-    pub paths: Vec<(PathBuf, Kind)>,
+    pub paths: Vec<Rule>,
     pub tcp_connect: Vec<u16>,
-    pub unix_connect: Vec<PathBuf>,
+    pub unix_connect: Vec<Rule>,
     pub cwd: PathBuf,
     /// Non-fatal notes (skipped missing read/exec paths) for stderr.
     pub warnings: Vec<String>,
 }
 
-pub fn load(file: &Path) -> Result<Resolved, String> {
-    let text = std::fs::read_to_string(file)
-        .map_err(|e| format!("cannot read policy {}: {e}", file.display()))?;
-    parse(&text)
+/// Reads a policy file, refusing anything over 1 MiB before reading it.
+pub fn read_bounded(file: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let f = std::fs::File::open(file).map_err(|e| format!("cannot read policy {}: {e}", file.display()))?;
+    let mut text = String::new();
+    f.take(MAX_POLICY_BYTES + 1).read_to_string(&mut text).map_err(|e| format!("cannot read policy {}: {e}", file.display()))?;
+    if text.len() as u64 > MAX_POLICY_BYTES {
+        return Err(format!("policy {} is larger than {MAX_POLICY_BYTES} bytes", file.display()));
+    }
+    Ok(text)
+}
+
+/// Opens `path` as an O_PATH descriptor. Write paths may not pass through any symlink at
+/// all (the kernel resolves with RESOLVE_NO_SYMLINKS, so there is no check-then-open gap).
+/// Read and exec paths may pass through symlinks only if root owns them (/bin -> usr/bin):
+/// a symlink the user owns could have been planted by an earlier run (security review
+/// 2026-09-27). ponytail: that ownership walk and the open are two steps; only a process
+/// running as the user outside any sandbox could swap a folder in between, and the
+/// supervisor now kills everything a run leaves behind. Upgrade: resolve component by
+/// component with openat(O_NOFOLLOW) if that assumption ever changes.
+fn open_path(path: &Path, kind: Kind) -> Result<(OwnedFd, std::fs::Metadata), std::io::Error> {
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_MAGICLINKS;
+    if kind == Kind::Write {
+        how.resolve |= libc::RESOLVE_NO_SYMLINKS;
+    } else {
+        for a in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            if let Ok(m) = std::fs::symlink_metadata(a) {
+                if m.file_type().is_symlink() && m.uid() != 0 {
+                    return Err(std::io::Error::other(format!("{} is a symlink you own; list its real path instead", a.display())));
+                }
+            }
+        }
+    }
+    let fd = unsafe { libc::syscall(libc::SYS_openat2, libc::AT_FDCWD, c.as_ptr(), &how as *const libc::open_how, std::mem::size_of::<libc::open_how>()) };
+    if fd < 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            return Err(std::io::Error::other("it passes through a symlink (a write path must be a real path)"));
+        }
+        return Err(e);
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    let meta = std::fs::File::from(fd.try_clone()?).metadata()?;
+    Ok((fd, meta))
+}
+
+fn plain(path: &Path) -> bool {
+    path.is_absolute() && path.as_os_str().len() <= MAX_PATH_BYTES && !path.components().any(|c| matches!(c, Component::ParentDir))
 }
 
 pub fn parse(text: &str) -> Result<Resolved, String> {
@@ -72,15 +137,26 @@ fn resolve(p: Policy) -> Result<Resolved, String> {
     if let Some(port) = out.tcp_connect.iter().find(|&&port| port == 0) {
         return Err(format!("tcp_connect: port {port} is not a valid destination port"));
     }
+    let entries = p.read.len() + p.write.len() + p.exec.len() + p.unix_connect.len() + out.tcp_connect.len();
+    if entries > MAX_ENTRIES {
+        return Err(format!("policy lists {entries} entries (at most {MAX_ENTRIES})"));
+    }
 
+    // Each listed socket must be a socket file itself: a folder would expose every socket
+    // below it (security review 2026-09-27).
     for path in p.unix_connect {
-        if !path.is_absolute() {
-            return Err(format!("unix_connect: {} is not an absolute path", path.display()));
+        if !plain(&path) {
+            return Err(format!("unix_connect: {} must be an absolute path without ..", path.display()));
         }
-        if path.exists() {
-            out.unix_connect.push(path);
-        } else {
-            out.warnings.push(format!("unix_connect: {} does not exist; skipped", path.display()));
+        match open_path(&path, Kind::Write) {
+            Ok((fd, meta)) if meta.file_type().is_socket() => {
+                out.unix_connect.push(Rule { path, kind: Kind::Read, fd, dir: false })
+            }
+            Ok(_) => return Err(format!("unix_connect: {} is not a socket", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                out.warnings.push(format!("unix_connect: {} does not exist; skipped", path.display()))
+            }
+            Err(e) => return Err(format!("unix_connect: cannot use {}: {e}", path.display())),
         }
     }
 
@@ -91,8 +167,11 @@ fn resolve(p: Policy) -> Result<Resolved, String> {
             if !path.is_absolute() {
                 return Err(format!("{key}: path {} is not absolute", path.display()));
             }
-            match std::fs::symlink_metadata(&path) {
-                Ok(_) => out.paths.push((path, kind)),
+            if !plain(&path) {
+                return Err(format!("{key}: path {} must not contain .. (or be over {MAX_PATH_BYTES} bytes)", path.display()));
+            }
+            match open_path(&path, kind) {
+                Ok((fd, meta)) => out.paths.push(Rule { path, kind, fd, dir: meta.is_dir() }),
                 // A missing read/exec path only means less access, so skipping it is safe.
                 // A missing write path means the tool would run without the workspace it
                 // was promised, which is a govd bug worth stopping on.
@@ -115,8 +194,8 @@ fn resolve(p: Policy) -> Result<Resolved, String> {
         return Err(format!("cwd: {} is not a directory", p.cwd.display()));
     }
     // Compare canonical forms so a symlink cannot place cwd outside what the policy lists.
-    let inside = out.paths.iter().any(|(path, kind)| {
-        *kind != Kind::Exec && path.canonicalize().is_ok_and(|root| cwd.starts_with(root))
+    let inside = out.paths.iter().any(|r| {
+        r.kind != Kind::Exec && r.path.canonicalize().is_ok_and(|root| cwd.starts_with(root))
     });
     if !inside {
         return Err(format!("cwd: {} is not inside a read or write path", cwd.display()));
@@ -175,8 +254,8 @@ mod tests {
         let extra = r#","read":["/usr"],"exec":["/usr/bin"],"tcp_connect":[443,80]"#;
         let r = parse(&policy(&t, extra)).unwrap();
         assert_eq!(r.tcp_connect, vec![443, 80]);
-        assert!(r.paths.contains(&(PathBuf::from("/usr"), Kind::Read)));
-        assert!(r.paths.contains(&(PathBuf::from("/usr/bin"), Kind::Exec)));
+        assert!(r.paths.iter().any(|x| x.path == PathBuf::from("/usr") && x.kind == Kind::Read));
+        assert!(r.paths.iter().any(|x| x.path == PathBuf::from("/usr/bin") && x.kind == Kind::Exec));
     }
 
     #[test]
@@ -215,5 +294,42 @@ mod tests {
         rejects(&policy(&t, r#","tcp_connect":[0]"#), "port 0");
         rejects(&policy(&t, r#","tcp_connect":[70000]"#), "invalid policy");
         rejects("not json", "invalid policy");
+        rejects(&policy(&t, &format!(r#","read":["{w}/../work"]"#)), "..");
+    }
+
+    #[test]
+    fn symlinks_the_user_owns_are_refused() {
+        // Security review 2026-09-27: a symlink planted where a policy path should be would
+        // otherwise turn that grant into access to wherever it points.
+        let t = TempDir::new("links");
+        let w = t.p("work");
+        std::os::unix::fs::symlink(std::env::temp_dir(), t.0.join("link")).unwrap();
+        let l = t.p("link");
+        rejects(&format!(r#"{{"version":1,"write":["{w}","{l}"],"cwd":"{w}"}}"#), "symlink");
+        rejects(&policy(&t, &format!(r#","read":["{l}"]"#)), "symlink");
+        rejects(&policy(&t, &format!(r#","read":["{l}/x"]"#)), "symlink");
+        // Root-owned system links (/bin -> usr/bin on merged-/usr systems) stay usable.
+        if std::fs::symlink_metadata("/bin").is_ok_and(|m| m.file_type().is_symlink()) {
+            assert!(parse(&policy(&t, r#","exec":["/bin"]"#)).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_unix_socket_entry_must_be_a_socket() {
+        let t = TempDir::new("sock");
+        let w = t.p("work");
+        rejects(&policy(&t, &format!(r#","unix_connect":["{w}"]"#)), "not a socket");
+        let _l = std::os::unix::net::UnixListener::bind(t.0.join("s.sock")).unwrap();
+        assert_eq!(parse(&policy(&t, &format!(r#","unix_connect":["{}"]"#, t.p("s.sock")))).unwrap().unix_connect.len(), 1);
+    }
+
+    #[test]
+    fn oversized_policies_are_refused() {
+        let t = TempDir::new("big");
+        let many: Vec<String> = (0..5000).map(|i| format!(r#""/nope/{i}""#)).collect();
+        rejects(&policy(&t, &format!(r#","read":[{}]"#, many.join(","))), "entries");
+        let f = t.0.join("huge.json");
+        std::fs::write(&f, vec![b' '; (MAX_POLICY_BYTES + 10) as usize]).unwrap();
+        assert!(read_bounded(&f).unwrap_err().contains("larger than"));
     }
 }
