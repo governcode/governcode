@@ -60,7 +60,7 @@ function project() {
   return dir;
 }
 
-function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settings?: any) {
+function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settings?: any, turnEnded?: AbortSignal) {
   const proj = project();
   const state = mkdtempSync(join(root, "state-"));
   mkdirSync(join(state, "codex-home"), { recursive: true });
@@ -72,7 +72,7 @@ function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settin
     usage: { codex: codexUsage({ supervisor, policyDir: join(state, "pol"), stateDir: state, scratch: join(state, "scratch") }) },
     runtimeDir: join(state, "run"), supervisor, policyDir: join(state, "pol"), stateDir: state,
     gate: async (r: { tool?: string; canonical: string }) => { if (r.tool === "governcode delegate") return "allow" as const; gates.push(r.canonical); return gateAnswer; }, notify: () => {},
-    ...(settings ? { settings: () => settings } : {}) };
+    ...(settings ? { settings: () => settings } : {}), ...(turnEnded ? { turnEnded } : {}) };
   const sock = openControllerSocket(ctx);
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {
     const s = connect(sock.path);
@@ -224,4 +224,13 @@ test("the Controller can discard its own Spec, but not one that was accepted", a
   assert.equal(t.ledger.spec(r.result.id)!.status, "undone");
   const again = await t.call("controller.spec_discard", { id: r.result.id });
   assert.match(again.error.message, /only a Spec waiting for review, failed or held/);
+});
+
+test("review: a Runner whose Controller's turn has ended is stopped, not left running", async () => {
+  const ended = new AbortController();
+  ended.abort("turn ended");
+  const t = setup("allow", {}, undefined, ended.signal);
+  const r = await t.call("controller.delegate", SPEC);
+  assert.equal(r.result.status, "failed");
+  assert.match(r.result.note, /stopped: the Controller's turn ended/);
 });

@@ -56,7 +56,8 @@ rl.createInterface({ input: process.stdin }).on("line", async (l) => {
 });
 `);
 
-async function run(crew: object, planReply: Record<string, unknown>, handoffs: string[]) {
+async function run(crew: object, planReply: Record<string, unknown>, handoffs: string[],
+    beforeAnswer?: (call: (method: string, params?: unknown) => Promise<any>) => Promise<void>) {
   const PATH = process.env.PATH;
   process.env.PATH = `${bin}:${PATH}`;
   const dir = join(root, `d-${Math.random().toString(36).slice(2)}`);
@@ -73,7 +74,7 @@ async function run(crew: object, planReply: Record<string, unknown>, handoffs: s
       s.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n"); });
     createInterface({ input: s }).on("line", (l) => {
       const m = JSON.parse(l);
-      if (m.method === "event" && m.params.kind === "plan") void call("plan.answer", { id: m.params.id, ...planReply });
+      if (m.method === "event" && m.params.kind === "plan") void (async () => { await beforeAnswer?.(call); await call("plan.answer", { id: m.params.id, ...planReply }); })();
       if (m.method === "event" && m.params.kind === "gate") { gates.push(String(m.params.canonical)); void call("gate.answer", { id: m.params.id, answer: "deny" }); }
       if (m.id) { waiting.get(m.id)?.(m); waiting.delete(m.id); }
     });
@@ -110,6 +111,15 @@ test("ask each time: an approved plan is shown, and every handoff still asks", a
 
 test("review: an empty selection approves nothing, so the handoff asks", async () => {
   const r = await run({ handoff: "plan" }, { answer: "approve", items: [] }, ["codex"]);
+  assert.equal(r.summary, "plan:approve|declined");
+  assert.equal(r.gates.length, 1);
+});
+
+test("review 2: a Crew card changed to 'ask' during the turn stops approved items from skipping the Gate", async () => {
+  // The Controller asks the test (via its prompt) to switch the card before handing off.
+  const r = await run({ handoff: "plan" }, { answer: "approve" }, ["codex"], async (call) => {
+    await call("crew.set", { project: "p", crew: { ...DEFAULT_CREW, handoff: "ask" } });
+  });
   assert.equal(r.summary, "plan:approve|declined");
   assert.equal(r.gates.length, 1);
 });

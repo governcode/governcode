@@ -49,6 +49,7 @@ export type DelegationContext = {
   provider?: string;                       // the Controller's provider (project memory consent)
   crew?: () => CrewValue;                  // the project's Crew card, read at each call
   alive?: () => boolean;                   // false once the Controller's turn has ended
+  turnEnded?: AbortSignal;                 // aborted when that turn ends: its Runners stop too
   plan?: {                                 // this turn's game plan (govd asks the user)
     propose(items: PlanItem[], note: string): Promise<{ answer: string; approved: PlanItem[] }>;
     justYou(): boolean;
@@ -233,10 +234,14 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     if (no) throw new Error(no);
     return card;
   };
-  const crewCard = stillAllowed();
   let capNote: string | null = null;
-  const cap = crewCard?.maxPercent[input.to];
-  if (cap !== undefined && input.budgetPercent > cap) { capNote = `budget capped at ${cap}% by the Crew card (asked ${input.budgetPercent}%)`; input.budgetPercent = cap; }
+  const asked = input.budgetPercent;
+  // The card's cap for this Runner, applied again after every wait (it may have been lowered).
+  const applyCap = (card: CrewValue | undefined) => {
+    const cap = card?.maxPercent[input.to];
+    if (cap !== undefined && input.budgetPercent > cap) { input.budgetPercent = cap; capNote = `budget capped at ${cap}% by the Crew card (asked ${asked}%)`; }
+  };
+  applyCap(stillAllowed());
   const picked = specModel(input, ctx.settings?.());
   input.model = picked.model; input.effort = picked.effort;
   // ponytail: the Antigravity Runner's Limit reads its Gemini pool, so it runs Gemini models only;
@@ -252,7 +257,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   if ((await ctx.gate({ id: `handoff-${Date.now()}`, tool: "governcode delegate", input: shown, canonical: canonical({ tool: "governcode delegate", input: shown }) })) !== "allow") {
     throw new Error("the user declined this handoff");
   }
-  stillAllowed();
+  applyCap(stillAllowed());
   const spec = L.createSpec(ctx.project.name, input, ctx.provider ? `controller · ${ctx.provider}` : "controller");
   const notes = [capNote, picked.note].filter(Boolean).join("; ");
   if (notes) L.updateSpec(spec.id, { note: notes }, "govd");
@@ -260,7 +265,11 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
 
   // 1. The Limit, from a fresh measurement.
   await measured(ctx, input.to);
-  try { stillAllowed(); } catch (e) { L.updateSpec(spec.id, { status: "failed", note: e instanceof Error ? e.message : String(e) }, "govd"); throw e; }
+  try {
+    const before = input.budgetPercent;
+    applyCap(stillAllowed());
+    if (input.budgetPercent !== before) L.updateSpec(spec.id, { note: capNote! }, "govd");
+  } catch (e) { L.updateSpec(spec.id, { status: "failed", note: e instanceof Error ? e.message : String(e) }, "govd"); throw e; }
   const verdict = ctx.limits.admit(spec.id, input.to, input.budgetPercent);
   if (!verdict.ok) {
     L.updateSpec(spec.id, { status: "held", note: verdict.reason }, "govd");
@@ -302,6 +311,9 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     // While it runs, the Limit is re-measured; crossing it stops the Runner (a measured hold,
     // so a little overshoot between readings is possible, never a free run).
     const stop = new AbortController();
+    // The Controller's turn ending stops its Runners: nothing of a finished turn keeps running or asking.
+    if (ctx.turnEnded?.aborted) stop.abort("the Controller's turn ended");
+    ctx.turnEnded?.addEventListener("abort", () => stop.abort("the Controller's turn ended"), { once: true });
     poll = setInterval(async () => {
       await measured(ctx, input.to);
       const v = ctx.limits.stillWithin(spec.id);
@@ -309,6 +321,8 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     }, POLL_MS);
     const local = ctx.limits.localRule(input.to);
     const result = await new Promise<{ ok: boolean; summary: string }>((done) => {
+      // Already stopped (the turn ended while this handoff waited): nothing starts.
+      if (stop.signal.aborted) { done({ ok: false, summary: `stopped: ${String(stop.signal.reason ?? "aborted")}` }); return; }
       if (local) {
         // No tools and no commands: govd itself writes the model's proposed files, checked against the scope.
         const model = input.model || ctx.usage[input.to].models?.()[0] || "";
@@ -328,13 +342,13 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
       if (input.to === "agy") {
         void runAgyTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, runtimeDir: ctx.runtimeDir,
           worktree: paths.work, writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks,
-          noSubagents: crewCard?.subagents.runners === false,
+          noSubagents: ctx.crew?.()?.subagents.runners === false,
           openSocket: (h) => openTurnSocket(ctx.runtimeDir, h) })
           .catch((e) => done({ ok: false, summary: `the Antigravity Runner failed: ${e instanceof Error ? e.message : e}` }));
         return;
       }
       void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work,
-        writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks, noSubagents: crewCard?.subagents.runners === false });
+        writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks, noSubagents: ctx.crew?.()?.subagents.runners === false });
     });
     clearInterval(poll);
     // An untouched placeholder (still empty, same timestamp) was never the Runner's: remove it.

@@ -562,7 +562,8 @@ export class Daemon {
     const store = found && files && files.length <= MAX_CHECKPOINT_FILES ? turnStore(this.stateDir(), found.name, found.path) : null;
     let before: string | null = null;
     try { if (store && files) before = snapshot(store, `turns/${turnId}/before`, null, files); } catch { before = null; }
-    let alive = true;   // false once the turn is done: late handoffs and plans are refused
+    let alive = true;   // false once the turn is done: late handoffs, plans and Gates are refused
+    const ended = new AbortController();
     return new Promise((done) => {
       const hooks: TurnHooks = {
           text: (t) => { notify({ kind: "text", text: t }); L.append(project.name, "turn.text", actor, { text: t.slice(0, 4000) }); },
@@ -580,7 +581,9 @@ export class Daemon {
             };
             // A handoff the user approved in this turn's game plan (Crew card: follow the plan):
             // one approved item lets one handoff to that Runner through.
-            if (found && crew.handoff === "plan" && /^(mcp__governcode__delegate|governcode delegate)$/.test(req.base ?? req.tool)) {
+            // A finished turn (a Runner still winding down) opens no new Gate.
+            if (!alive) { L.append(project.name, "gate.denied", "govd", { tool: req.tool, by: "turn ended" }); return answer("deny"); }
+            if (found && crewOf(L, found.name).handoff === "plan" && /^(mcp__governcode__delegate|governcode delegate)$/.test(req.base ?? req.tool)) {
               const item = this.turnPlans.get(turnId)?.approved.find((x) => !x.used && x.who === String(req.input.to ?? ""));
               if (item) { item.used = true; return pass("plan", `in the plan you approved: ${item.who}: ${item.what}`); }
             }
@@ -607,6 +610,7 @@ export class Daemon {
           }),
           done: (r) => {
             alive = false;
+            ended.abort("turn ended");
             this.turning.set(turnKey, (this.turning.get(turnKey) ?? 1) - 1);
             // A Gate of this turn still waiting is denied (its request is gone), and turn and
             // Spec rules end with the turn.
@@ -651,7 +655,7 @@ export class Daemon {
       // Either Controller gets GovernCode's tools on a socket that exists only for this turn:
       // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
       const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, provider: project.controller.provider,
-        crew: () => crewOf(L, found.name), alive: () => alive, ledger: L, limits: this.limits,
+        crew: () => crewOf(L, found.name), alive: () => alive, turnEnded: ended.signal, ledger: L, limits: this.limits,
         plan: {
           propose: (items, note) => new Promise((answer) => {
             // Nobody left to answer, or the turn is over: rejected at once, never left waiting.
