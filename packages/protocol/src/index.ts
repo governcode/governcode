@@ -112,7 +112,7 @@ export type TraceEvent = {
     | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed" | "allow.added" | "allow.revoked"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
-    | "git.scrubbed" | "checkpoint.taken" | "checkpoint.undone"
+    | "git.scrubbed" | "git.guard_failed" | "checkpoint.taken" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;

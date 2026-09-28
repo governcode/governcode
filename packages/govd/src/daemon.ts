@@ -389,7 +389,7 @@ export class Daemon {
     if (found) this.turning.set(found.name, (this.turning.get(found.name) ?? 0) + 1);
     // A tool that can write the project can write .git; hooks and some config keys would then
     // run later, outside the sandbox, when the user runs git. Undone after every turn.
-    const guard = found ? gitGuard(project.path) : null;
+    const guard = found ? gitGuard(project.path, join(this.stateDir(), "scratch")) : null;
     // A Checkpoint of the project before the Controller's turn, in govd's own store, so the
     // user can undo the whole turn (gov undo T-n). Git projects only; ignored files excluded.
     const started = L.events(project.name ?? undefined, 1).at(-1);
@@ -440,8 +440,15 @@ export class Daemon {
                 if (changed.length) L.append(project.name, "checkpoint.taken", "govd", { turn: turnId, before, after, files: changed });
               } catch { /* a Checkpoint is a convenience; its failure never fails the turn */ }
             }
-            const scrubbed = guard?.restore() ?? [];
-            if (scrubbed.length) L.append(project.name, "git.scrubbed", "govd", { removed: scrubbed });
+            try {
+              const scrubbed = guard?.restore() ?? [];
+              if (scrubbed.length) L.append(project.name, "git.scrubbed", "govd", { removed: scrubbed });
+            } catch (e) {
+              // Never a quiet failure: the user must look before running git in this project.
+              const why = e instanceof Error ? e.message : String(e);
+              L.append(project.name, "git.guard_failed", "govd", { reason: why });
+              notify({ kind: "text", text: `Warning: the .git guard could not verify this repository: ${why}` });
+            }
             L.append(project.name, r.ok ? "turn.completed" : "turn.failed", actor, { summary: r.summary.slice(0, 2000) });
             done(r);
           },

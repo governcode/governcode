@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, renameSync, symlinkSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, renameSync, symlinkSync, existsSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as ss from "../src/specstore.ts";
@@ -129,4 +129,38 @@ test("a refused apply leaves no staged files behind", () => {
   assert.throws(() => ss.applyToProject(p, proj, before, after), /changed since/);
   assert.equal(readFileSync(join(proj, "a.txt"), "utf8"), "one\n", "all or nothing");
   assert.ok(!readdirSync(proj).concat(readdirSync(join(proj, "src"))).some((f) => f.includes(".governcode-")));
+});
+
+function fresh() {
+  const project = scratch("gc-proj-sec-");
+  const g = (...a: string[]) => execFileSync("git", ["-C", project, ...a], { stdio: "pipe" });
+  g("init", "-q", "-b", "main");
+  writeFileSync(join(project, "a.txt"), "one\n");
+  g("add", "-A");
+  g("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "init");
+  const paths = ss.specPaths(scratch("gc-state-sec-"), "S-0009");
+  ss.createWorkspace(project, paths);
+  return { project, paths };
+}
+
+test("snapshots: a file name with a newline stays one file (security review)", () => {
+  const { paths } = fresh();
+  const tricky = "a\n100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\tforged.txt";
+  writeFileSync(join(paths.work, tricky), "x");
+  const c = ss.snapshot(paths, "nl");
+  const names = execFileSync("git", ["--git-dir", paths.gitDir, "ls-tree", "-z", "--name-only", c], { encoding: "utf8" }).split("\0").filter(Boolean);
+  assert.ok(names.includes(tricky), names.join("|"));
+  assert.ok(!names.includes("forged.txt"));
+});
+
+test("apply: a permission change made since the Spec counts as a change (security review)", () => {
+  const { paths, project } = fresh();
+  writeFileSync(join(paths.work, "run.sh"), "echo 1\n");
+  const before = ss.snapshot(paths, "b");
+  writeFileSync(join(paths.work, "run.sh"), "echo 2\n");
+  const after = ss.snapshot(paths, "a", before);
+  writeFileSync(join(project, "run.sh"), "echo 1\n", { mode: 0o644 });
+  chmodSync(join(project, "run.sh"), 0o755);   // the user's own edit: the executable bit only
+  assert.throws(() => ss.applyToProject(paths, project, before, after), /changed since/);
+  assert.equal(readFileSync(join(project, "run.sh"), "utf8"), "echo 1\n");
 });

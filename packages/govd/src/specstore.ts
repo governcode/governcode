@@ -72,7 +72,9 @@ export function snapshot(p: SpecPaths, label: string, parent?: string | null, on
   const tmp = mkdtempSync(join(tmpdir(), "governcode-idx-"));
   try {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
-    git(p.gitDir, ["update-index", "--add", "--index-info"], entries.join("\n") + (entries.length ? "\n" : ""), env);
+    // NUL-separated: a file name may contain a newline, which must never read as a second
+    // record (security review 2026-09-27).
+    git(p.gitDir, ["update-index", "-z", "--add", "--index-info"], entries.map((e) => e + "\0").join(""), env);
     const tree = git(p.gitDir, ["write-tree"], undefined, env).toString().trim();
     const idEnv = { GIT_AUTHOR_NAME: "governcode", GIT_AUTHOR_EMAIL: "governcode@localhost", GIT_COMMITTER_NAME: "governcode", GIT_COMMITTER_EMAIL: "governcode@localhost" };
     const commit = git(p.gitDir, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", label], undefined, idEnv).toString().trim();
@@ -157,19 +159,23 @@ export function applyToProject(p: SpecPaths, projectPath: string, before: string
   const files = changedFiles(p, before, after);
   const plan: Array<{ path: string; target: string; from: Entry; to: Entry; staged?: string }> = [];
   const conflicts: string[] = [];
+  // Content AND the executable bit: a permission change made since is an edit too, and
+  // must stop the apply rather than be reset (security review 2026-09-27).
   const current = (target: string): string | null | undefined => {
     const st = lstatOrNull(target);
     if (!st) return null;
     if (!st.isFile()) return undefined;      // a symlink, folder or device: never overwritten
-    return git(p.gitDir, ["hash-object", "--no-filters", "--stdin"], readFileSync(target)).toString().trim();
+    const oid = git(p.gitDir, ["hash-object", "--no-filters", "--stdin"], readFileSync(target)).toString().trim();
+    return `${st.mode & 0o111 ? "100755" : "100644"} ${oid}`;
   };
+  const was = (e: Entry): string | null => (e ? `${e.mode} ${e.oid}` : null);
   for (const f of files) {
     const target = safeTarget(projectPath, f);
     const from = entryAt(p, before, f), to = entryAt(p, after, f);
     if (to?.mode === "120000" || from?.mode === "120000") throw new Error(`${f}: symlinks are not applied; review by hand`);
     const now = current(target);
     if (now === undefined) { conflicts.push(`${f} (not a regular file in the project)`); continue; }
-    if ((from?.oid ?? null) !== now) { conflicts.push(f); continue; }
+    if (was(from) !== now) { conflicts.push(f); continue; }
     plan.push({ path: f, target, from, to });
   }
   if (conflicts.length) throw new Error(`the project changed since ${since}, so nothing was applied: ${conflicts.join(", ")}`);
@@ -187,7 +193,7 @@ export function applyToProject(p: SpecPaths, projectPath: string, before: string
         fchmodSync(fd, item.to.mode === "100755" ? 0o755 : 0o644);   // exactly, whatever the umask
       } finally { closeSync(fd); }
     }
-    const moved = plan.filter((item) => safeTargetOk(projectPath, item.path) && (item.from?.oid ?? null) !== current(item.target)).map((item) => item.path);
+    const moved = plan.filter((item) => safeTargetOk(projectPath, item.path) && was(item.from) !== current(item.target)).map((item) => item.path);
     if (moved.length) throw new Error(`the project changed while applying, so nothing was applied: ${moved.join(", ")}`);
     for (const item of plan) {
       if (item.staged) renameSync(item.staged, item.target);   // replaces, never follows
