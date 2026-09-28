@@ -234,6 +234,10 @@ export function runTurn(opts: {
   let stderr = "";
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
   child.stdin.on("error", () => {});   // a dead harness is reported by its exit, not by EPIPE
+  // The run's home is finished (login put back, folder removed) only once govern-sup has exited,
+  // which it does after every process of the run is gone.
+  child.on("close", () => rh.finish());
+  child.on("error", () => rh.finish());
   const send = (obj: unknown) => child.stdin.write(JSON.stringify(obj) + "\n");
   send({ type: "user", message: { role: "user", content: [{ type: "text", text: opts.prompt }] } });
 
@@ -245,7 +249,6 @@ export function runTurn(opts: {
     try { process.kill(-child.pid!, "SIGTERM"); } catch { /* already gone */ }
     rmSync(policyFile, { force: true });
     rmSync(sessionTmp, { recursive: true, force: true });
-    rh.finish();
     opts.hooks.done(r);
   };
 

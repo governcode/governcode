@@ -80,8 +80,9 @@ gives you; Codex's page finishes the sign-in by itself (its browser hands it bac
 computer). For those two sign-ins the sandbox lets the tool listen on one local port for that
 hand-back; nothing else an AI tool runs may listen at all.
 
-- Your own setup for these tools (their folders, logins, settings, keyring) is never used, and
-  GovernCode never reads or parses the logins it keeps.
+- Your own setup for these tools (their folders, logins, settings, keyring) is not used, except
+  the personal instructions you choose to bring (below). GovernCode never parses the logins it
+  keeps; when a tool refreshes its login during a run, govd copies the new file back as it is.
 - Only a subscription sign-in counts as connected, never an API key: GovernCode does not switch
   anything onto paid API use.
 - Claude Code and Codex start every run from a fresh home of their own, with only the login

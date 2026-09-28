@@ -107,20 +107,15 @@ async function session(o: { supervisor: string; policyDir: string; stateDir: str
   await rpc.request("initialize", { clientInfo: { name: "governcode", title: "GovernCode", version: "0.0.1" } });
   // The run's home goes only once Codex has exited (a login refresh must not be cut off).
   const cleanup = () => { rpc.close(); rmSync(policyFile, { force: true }); rmSync(tmp, { recursive: true, force: true });
-    void rpc.exited.then(() => rh.finish()); setTimeout(() => rh.finish(), 10_000).unref(); };
+    void rpc.exited.then(() => rh.finish()); };
   return { rpc, cleanup };
 }
 
 /** Codex's usage windows, for the Limit gate. Null when they cannot be read (= held). */
-export function codexUsage(o: { supervisor: string; policyDir: string; stateDir: string; scratch: string }): UsageSource {
-  let why: string | null = null;
-  return {
-    provider: "codex",
-    why: () => why,
-    async read(): Promise<Measurement | null> {
+/** Codex's usage windows, asked of OpenAI with GovernCode's Codex login (an authenticated request:
+ *  Connect uses it to check that the login really works). Null when they cannot be read. */
+export async function readCodexUsage(o: { supervisor: string; policyDir: string; stateDir: string; scratch: string }): Promise<Measurement | null> {
       let s: Awaited<ReturnType<typeof session>> | undefined;
-      if (!isConnected(o.stateDir, "codex")) { why = "Codex is not connected (gov connect codex)"; return null; }
-      why = "Codex did not report its usage";
       try {
         mkdirSync(o.scratch, { recursive: true, mode: 0o700 });
         s = await session({ ...o, worktree: o.scratch, readOnly: true });
@@ -131,13 +126,24 @@ export function codexUsage(o: { supervisor: string; policyDir: string; stateDir:
           ? [{ window: w.windowDurationMins ? (w.windowDurationMins >= 10_000 ? "weekly" : `${Math.round(w.windowDurationMins / 60)}-hour`) : name,
                usedPercent: w.usedPercent, resetsAt: w.resetsAt ? new Date(w.resetsAt * 1000).toISOString() : null }] : [];
         const readings = [...win(snap.primary, "primary"), ...win(snap.secondary, "secondary")];
-        if (readings.length) why = null;
         return readings.length ? { provider: "codex", measuredAt: Date.now(), readings } : null;
       } catch {
         return null;
       } finally {
         s?.cleanup();
       }
+}
+
+export function codexUsage(o: { supervisor: string; policyDir: string; stateDir: string; scratch: string }): UsageSource {
+  let why: string | null = null;
+  return {
+    provider: "codex",
+    why: () => why,
+    async read(): Promise<Measurement | null> {
+      if (!isConnected(o.stateDir, "codex")) { why = "Codex is not connected (gov connect codex)"; return null; }
+      const m = await readCodexUsage(o);
+      why = m ? null : "Codex did not report its usage (its login may need signing in again: gov connect codex)";
+      return m;
     },
   };
 }

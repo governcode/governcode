@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { agyBinary, agyEnv, hold, inUse, isConnected, quotaIn, run, toolHome, useKey } from "./agy.ts";
 import { setConnected } from "./homes.ts";
 import { resolverFiles, toolchainDirs, which, type Policy } from "./claude.ts";
-import { codexBinary } from "./codex.ts";
+import { codexBinary, readCodexUsage } from "./codex.ts";
 
 export type Tool = "agy" | "claude" | "codex";
 type Opts = { supervisor: string; policyDir: string; stateDir: string };
@@ -53,8 +53,10 @@ export const TOOLS: Record<Tool, Spec> = {
   codex: { name: "Codex", revoke: "https://chatgpt.com/#settings/Security", flow: "browser", binary: codexBinary,
     signIn: ["login"], bind: [1455], env: (tmp, home) => agyEnv(tmp, home, { CODEX_HOME: home }), writable: (home) => [home],
     // Codex prints its status on stderr ("Logged in using ChatGPT"), found in the first real Connect.
-    // A ChatGPT sign-in only, never an API key.
-    check: (o, home) => status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in using chatgpt/i.test(r.stdout + r.stderr)) },
+    // A ChatGPT sign-in only, never an API key; and then one authenticated request (its usage
+    // windows), so a login OpenAI no longer accepts is not "connected".
+    check: async (o, home) => await status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in using chatgpt/i.test(r.stdout + r.stderr))
+      && (await readCodexUsage({ ...o, scratch: join(o.stateDir, "usage-scratch") })) !== null },
 };
 
 /** What a sign-in (or its status check) may touch: its own home, the network on 443, no keyring,
