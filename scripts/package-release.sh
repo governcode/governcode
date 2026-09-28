@@ -10,7 +10,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 name="governcode-$ver-linux-x86_64"
 out="$root/dist-release"
 st="$out/$name"
-rm -rf "$out"
+rm -rf "$st" "$out"/*.tar.gz "$out/SHA256SUMS"
 mkdir -p "$st"
 cd "$root"
 
@@ -19,11 +19,14 @@ npm ci
 # runtime; run it on purpose (it verifies the download against Electron's own checksums).
 node node_modules/electron/install.js
 test -x node_modules/electron/dist/electron || { echo "Electron runtime missing" >&2; exit 1; }
-cargo build --release --locked
+# No build machine's paths in the binary (Rust embeds source paths for panic messages):
+# the home folder and this checkout become fixed placeholders.
+RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home/build --remap-path-prefix=$root=/src" \
+  cargo build --release --locked --target-dir "$out/cargo"
 npm run build -w apps/dashboard
 
 mkdir -p "$st/target/release" "$st/node_modules/@governcode" "$st/apps/dashboard" "$st/bin"
-cp target/release/govern-sup "$st/target/release/"
+cp "$out/cargo/release/govern-sup" "$st/target/release/"
 for p in protocol govd gov; do
   mkdir -p "$st/packages/$p"
   cp -r "packages/$p/package.json" "packages/$p/src" "$st/packages/$p/"
