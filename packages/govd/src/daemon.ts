@@ -14,6 +14,7 @@ import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
+import { agyUsage } from "./agy.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
 import { ollamaUsage } from "./local.ts";
 import { Allows, analyze, scopesFor, type AllowRule, type AllowScope, type GateContext, type Kind } from "./allows.ts";
@@ -64,7 +65,7 @@ export class Daemon {
     this.ledger = new Ledger(opts.ledgerPath);
     const stateDir = resolve(opts.ledgerPath, "..");
     this.usage = { codex: codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") }),
-      ollama: ollamaUsage() };
+      ollama: ollamaUsage(), agy: agyUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir }) };
     this.limits.setReserves(this.settings().reserves);
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));

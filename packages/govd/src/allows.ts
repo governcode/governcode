@@ -195,6 +195,9 @@ function quietArgs(words: string[]): boolean {
 }
 
 /** The tool of a Gate request, without the Runner suffix govd adds for display. */
+// Tools whose input is a shell command, judged by the same command analysis.
+const COMMAND_TOOLS = new Set(["Bash", "codex command", "agy command"]);
+
 function baseTool(req: { tool: string; base?: string }): string {
   return req.base ?? req.tool;
 }
@@ -265,11 +268,11 @@ function commandKind(words: string[]): Kind | null {
 
 function controllerKind(req: { tool: string; base?: string; input: Record<string, unknown> }): Kind | null {
   const tool = baseTool(req);
-  if (tool === "Bash" || tool === "codex command") {
+  if (COMMAND_TOOLS.has(tool)) {
     const words = plainWords(req.input.command);
     return words ? commandKind(words) : null;
   }
-  if (["Edit", "Write", "MultiEdit", "NotebookEdit", "codex fileChange"].includes(tool)) {
+  if (["Edit", "Write", "MultiEdit", "NotebookEdit", "codex fileChange", "agy fileChange"].includes(tool)) {
     return { key: "edit", label: "file edits (only where the sandbox already lets it write)" };
   }
   if (tool.startsWith("mcp__") || tool.startsWith("governcode ")) return null;   // delegation and GovernCode's tools always ask
@@ -280,7 +283,7 @@ function controllerKind(req: { tool: string; base?: string; input: Record<string
 /** A read-only command that need not ask at all (when the user keeps "quiet reads" on). */
 export function isQuietRead(req: { tool: string; base?: string; input: Record<string, unknown> }): boolean {
   const tool = baseTool(req);
-  if (tool !== "Bash" && tool !== "codex command") return false;
+  if (!COMMAND_TOOLS.has(tool)) return false;
   const words = plainWords(req.input.command);
   if (!words) return false;
   // sed -n 'N,Mp' FILE...: printing a range of lines, nothing else.
@@ -347,7 +350,7 @@ export function shellSegments(text: string): string[][] | null {
 export function analyze(req: { tool: string; base?: string; spec?: string; input: Record<string, unknown> }): Analysis {
   const tool = baseTool(req);
   const runner = (k: Kind): Kind => (req.spec ? { key: `runner:${k.key}`, label: `a Runner's ${k.label}` } : k);
-  if (tool === "Bash" || tool === "codex command") {
+  if (COMMAND_TOOLS.has(tool)) {
     let command = req.input.command;
     if (Array.isArray(command) && command.length === 3 && ["bash", "sh", "zsh"].includes(String(command[0])) && ["-c", "-lc"].includes(String(command[1]))) command = command[2];
     let segs: string[][] | null = null;

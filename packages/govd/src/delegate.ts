@@ -15,6 +15,7 @@ import type { GateRequest } from "./claude.ts";
 import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
+import { runAgyTurn } from "./agy.ts";
 
 export type DelegationContext = {
   project: { name: string; path: string };
@@ -204,15 +205,22 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
           .catch((e) => done({ ok: false, summary: `the local Runner failed: ${e instanceof Error ? e.message : e}` }));   // never an unhandled rejection
         return;
       }
+      const hooks = {
+        text: (t: string) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); },
+        tool: (name: string) => ctx.notify({ kind: "spec.tool", id: spec.id, name }),
+        gate: (req: GateRequest) => ctx.gate({ ...req, tool: `${req.tool} (Runner · ${input.to}, ${spec.id})`, actor: `runner · ${input.to} · ${spec.id}`,
+          base: req.tool, spec: spec.id }),
+        done,
+      };
+      if (input.to === "agy") {
+        void runAgyTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, runtimeDir: ctx.runtimeDir,
+          worktree: paths.work, writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks,
+          openSocket: (h) => openTurnSocket(ctx.runtimeDir, h) })
+          .catch((e) => done({ ok: false, summary: `the Antigravity Runner failed: ${e instanceof Error ? e.message : e}` }));
+        return;
+      }
       void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work,
-        writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal,
-        hooks: {
-          text: (t) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); },
-          tool: (name) => ctx.notify({ kind: "spec.tool", id: spec.id, name }),
-          gate: (req) => ctx.gate({ ...req, tool: `${req.tool} (Runner · ${input.to}, ${spec.id})`, actor: `runner · ${input.to} · ${spec.id}`,
-            base: req.tool, spec: spec.id }),
-          done,
-        } });
+        writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks });
     });
     clearInterval(poll);
     // An untouched placeholder (still empty, same timestamp) was never the Runner's: remove it.
