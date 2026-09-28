@@ -5,16 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-SsxUJGkYrf7bK9C2fNcFMMIfAr2qBRCok5g5cMKRN3Y='; img-src data:; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
-<title>GovernCode · Govern your AI coding crew</title>
-<meta name="description" content="GovernCode governs your AI coding crew: one Controller, sandboxed Runners, Limits you set, Gates you sign. Free and open source (MIT), runs on your machine, no hosted service. Pre-alpha.">
+<title>GovernCode · Put your AI crew to work. Keep the keys.</title>
+<meta name="description" content="GovernCode puts your AI coding tools to work as one crew: one Controller, sandboxed Runners (cloud or local models), Limits you set, Gates you answer, and an undo for everything. Free and open source (MIT), forever. Runs on your machine. Pre-alpha.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0b0f14">
 <link rel="canonical" href="https://governcode.com/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://governcode.com/">
 <meta property="og:site_name" content="GovernCode">
-<meta property="og:title" content="GovernCode · Govern your AI coding crew">
-<meta property="og:description" content="One Controller, sandboxed Runners, Limits you set, Gates you sign. Free and open source (MIT). Runs on your machine. Pre-alpha, phase 0.">
+<meta property="og:title" content="GovernCode · Put your AI crew to work. Keep the keys.">
+<meta property="og:description" content="One Controller, sandboxed Runners, Limits you set, Gates you answer, an undo for everything. Free and open source (MIT), forever. Runs on your machine.">
 <meta name="twitter:card" content="summary">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0f14'/%3E%3Cpath d='M40 12H26A14 14 0 0 0 12 26V38A14 14 0 0 0 26 52H38A14 14 0 0 0 52 38V31' fill='none' stroke='%23d8e0ea' stroke-width='8'/%3E%3Cpath d='M56 28H28V36H56Z' fill='%23d8e0ea'/%3E%3Cpath d='M41 22H27A5 5 0 0 0 22 27V37A5 5 0 0 0 27 42H41' fill='none' stroke='%235eead4' stroke-width='4'/%3E%3C/svg%3E">
 <style>
@@ -92,7 +92,6 @@ h2{margin:0;font-size:28px;line-height:1.2;letter-spacing:-.01em;font-weight:650
 /* feature tiles */
 .tiles{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px;margin:32px 0 0;padding:0;list-style:none}
 .tile{grid-column:span 2;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 20px 18px;display:flex;flex-direction:column}
-.tile:nth-child(4),.tile:nth-child(5){grid-column:span 3}
 .tile .hd{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .tile .ico{width:32px;height:32px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2);display:grid;place-items:center;color:var(--accent);flex:none}
 .tile .ico svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
@@ -140,8 +139,7 @@ footer .row a:hover{color:var(--text)}
 @media (max-width:1040px){
   .hero .wrap{grid-template-columns:minmax(0,1fr);gap:36px}
   .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .tile,.tile:nth-child(4),.tile:nth-child(5){grid-column:span 1}
-  .tile:nth-child(5){grid-column:1 / -1}
+  .tile{grid-column:span 1}
   .oss{grid-template-columns:minmax(0,1fr);gap:28px}
   .road{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:28px}
 }
@@ -156,7 +154,6 @@ footer .row a:hover{color:var(--text)}
   section{padding:44px 0}
   h2{font-size:23px}
   .tiles{grid-template-columns:minmax(0,1fr)}
-  .tile:nth-child(5){grid-column:auto}
   .term pre{font-size:11.5px;padding:14px 12px}
   .term .sep{margin:10px -12px 8px}
   .oss .big{font-size:20px}
@@ -167,6 +164,31 @@ footer .row a:hover{color:var(--text)}
   .road li::after{top:2px}
   .road h3{margin-top:2px}
 }
+
+/* principles */
+.own{margin:36px 0 0;padding:26px 28px;border:1px solid rgba(94,234,212,.35);background:rgba(94,234,212,.06);border-radius:var(--radius);display:grid;grid-template-columns:auto minmax(0,1fr);gap:22px;align-items:center}
+.own .num{font:700 44px/1 var(--mono);color:var(--accent)}
+.own h3{margin:0 0 6px;font-size:21px;font-weight:650}
+.own p{margin:0;color:var(--text);font-size:15.5px;max-width:52em}
+.own p + p{margin-top:8px;color:var(--dim);font-size:14.5px}
+.creed{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:18px 0 0;padding:0;list-style:none;counter-reset:cr}
+.creed li{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 16px 14px}
+.creed b{display:block;font-size:14.5px;margin-bottom:4px}
+.creed b span{font:600 12px var(--mono);color:var(--accent);margin-right:6px}
+.creed p{margin:0;color:var(--dim);font-size:13.5px}
+.more{margin:16px 0 0;font-size:14px}
+/* channels */
+.chan{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:28px 0 0;padding:0;list-style:none}
+.chan li{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px}
+.chan h3{margin:0 0 2px;font-size:17px}
+.chan .k{font:12px var(--mono);color:var(--dim)}
+.chan p{margin:8px 0 0;color:var(--dim);font-size:14px}
+.chan li.live{border-color:rgba(94,234,212,.35)}
+/* coffee */
+.coffee{margin:22px 0 0;padding:14px 16px;border:1px dashed var(--line);border-radius:var(--radius);font-size:14.5px;color:var(--dim)}
+.coffee strong{color:var(--text)}
+@media (max-width:1040px){.creed{grid-template-columns:repeat(2,minmax(0,1fr))}.chan{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:640px){.creed{grid-template-columns:minmax(0,1fr)}.own{grid-template-columns:minmax(0,1fr);padding:20px}.own .num{font-size:32px}}
 </style>
 </head>
 <body>
@@ -180,7 +202,8 @@ footer .row a:hover{color:var(--text)}
     </a>
     <nav aria-label="Site">
       <ul>
-        <li class="opt"><a href="#features">Features</a></li>
+        <li class="opt"><a href="#features">What it does</a></li>
+        <li class="opt"><a href="#creed">What we stand for</a></li>
         <li class="opt"><a href="#roadmap">Roadmap</a></li>
         <li><a href="https://github.com/governcode/governcode">GitHub</a></li>
       </ul>
@@ -192,48 +215,45 @@ footer .row a:hover{color:var(--text)}
 <div class="hero" id="top">
   <div class="wrap">
     <div>
-      <span class="pill warn"><span class="dot" aria-hidden="true"></span>pre-alpha · phase 1</span>
+      <span class="pill warn"><span class="dot" aria-hidden="true"></span>pre-alpha · first release candidate coming</span>
       <svg class="hero-mark" viewBox="0 0 64 64" role="img" aria-label="GovernCode logo"><rect width="64" height="64" rx="14" fill="#0b0f14"/><path d="M40 12H26A14 14 0 0 0 12 26V38A14 14 0 0 0 26 52H38A14 14 0 0 0 52 38V31" fill="none" stroke="#d8e0ea" stroke-width="8"/><path d="M56 28H28V36H56Z" fill="#d8e0ea"/><path d="M41 22H27A5 5 0 0 0 22 27V37A5 5 0 0 0 27 42H41" fill="none" stroke="#5eead4" stroke-width="4"/></svg>
       <h1>Govern<b>Code</b></h1>
-      <p class="tag">Govern your AI coding crew: one Controller, sandboxed Runners, Limits you set, Gates you sign.</p>
-      <p class="lede">Appoint one AI coding tool as the <strong>Controller</strong>. It hands bounded jobs to the other tools you already use, as <strong>Runners</strong>. Every job is written down, runs in a deny-by-default sandbox in its own git worktree, and can be diffed and undone. Nothing risky runs until you allow the exact request.</p>
+      <p class="tag">Put your AI coding crew to work. Keep the keys.</p>
+      <p class="lede">Pick one AI tool to lead. It hands bounded jobs to the others, cloud or local, and every one of them works inside a sandbox the <strong>operating system</strong> enforces. They propose, you decide, and anything can be undone. The AI writes code faster than ever; GovernCode makes sure you are still the one steering.</p>
       <div class="cta">
         <a class="btn primary" href="https://github.com/governcode/governcode">
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
           GitHub
         </a>
-        <a class="btn" href="https://github.com/governcode/governcode/blob/debate/docs/SANDBOX.md">Read the sandbox spec</a>
+        <a class="btn" href="https://github.com/governcode/governcode/blob/debate/docs/PHILOSOPHY.md">What we stand for</a>
       </div>
       <ul class="facts" aria-label="At a glance">
-        <li>MIT licensed</li>
+        <li>free forever (MIT)</li>
         <li>runs on your machine</li>
-        <li>no hosted service</li>
-        <li>Linux first, macOS next</li>
+        <li>no account, no telemetry</li>
+        <li>Linux now · macOS + Windows together, next</li>
       </ul>
     </div>
 
     <figure style="margin:0">
       <div class="term" role="img" aria-labelledby="demo-cap demo-alt">
-        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>gov · tidepool</span></div>
-<pre aria-hidden="true"><span class="p">$</span> gov ask "Clear the stale build cache"
-<span class="d">· Bash</span>
+        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>gov · tide</span></div>
+<pre aria-hidden="true"><span class="p">$</span> gov ask "Add range() with a test, then run the tests"
+<span class="d">· Edit src/tide.js</span>
 
-<span class="w">Gate: the Controller wants to use Bash. Exactly this will run:</span>
-{
- "command": "rm -rf target/debug/incremental",
- "description": "Clear stale build cache"
-}
-Allow once? [y/N] <span class="b">y</span>
-Removed target/debug/incremental (1.4 GB).
-<span class="d">— done</span>
-<span class="sep"></span><span class="d"># phase 1 preview: a Limit says no</span>
-<span class="i">●</span> delegate → Runner · Codex
-  <span class="w">held</span> Codex is inside its 10% weekly Limit
-       <span class="d">weekly 91% used · resets Tue 06:10</span>
-<span class="i">●</span> Codex is held, so I'll do it myself.</pre>
+<span class="w">Gate · the Controller wants to run:</span>
+{ "command": "npm test" }
+<span class="d">sandbox still applies · y once · t this turn · p this project</span>
+Allow? [y/t/p/N] <span class="b">t</span>
+<span class="ok">✔ 2 tests pass</span>
+<span class="d">· npm test (allowed for this turn, logged)</span>
+<span class="sep"></span><span class="i">●</span> delegate → Runner · ollama (qwen3.5:9b)
+  <span class="d">local · 1 at once · 10 min max</span>
+  <span class="ok">needs review</span> README.md · 6 s · 103 tokens
+<span class="p">$</span> gov diff S-0003 <span class="d"># read it. it's yours now.</span></pre>
       </div>
-      <p class="vh" id="demo-alt">Terminal: gov ask asks the Controller to clear a build cache. A Gate shows the exact request as sorted JSON, command rm -rf target/debug/incremental. The user allows it once and the turn is done. Below, a phase 1 preview: Runner Codex is held inside its 10% weekly Limit, which resets Tuesday 06:10, so the Controller does the work itself.</p>
-      <figcaption class="caption" id="demo-cap">Illustrative session with invented data. The Gate shows the canonical request: sorted keys, ASCII-escaped JSON, exactly what will run.</figcaption>
+      <p class="vh" id="demo-alt">Terminal: gov ask has the Controller add a function and a test. A Gate shows the exact command npm test; the user allows it for the rest of the turn, the sandbox still applies, and the tests pass. Then the Controller hands a README job to a local model, qwen3.5:9b in Ollama, which finishes in 6 seconds; the change waits for review with gov diff.</p>
+      <figcaption class="caption" id="demo-cap">A real session, trimmed. The Gate shows exactly what will run; "t" skips the question for the rest of the turn, never the sandbox.</figcaption>
     </figure>
   </div>
 </div>
@@ -242,53 +262,88 @@ Removed target/debug/incremental (1.4 GB).
   <div class="wrap">
     <p class="eyebrow">What it does</p>
     <h2 id="features-h">Your tools, your rules, one crew</h2>
-    <p class="sub">GovernCode does not replace your AI coding tools. It starts them, fences them in, and keeps the record.</p>
+    <p class="sub">GovernCode doesn't replace your AI coding tools. It hires them, fences them in, keeps the receipts, and hands you the undo button.</p>
     <ul class="tiles">
       <li class="tile">
         <div class="hd">
           <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="12" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v9M12 11l-6 6M12 11l6 6"/></svg></span>
           <h3>Controller + Runners</h3>
-          <span class="pill sm">phase 0–1</span>
+          <span class="pill accent sm">works today</span>
         </div>
-        <p><strong>Bring your own AI tools.</strong> One leads the project and keeps its own subagents; the others take bounded jobs (Specs) with a brief, scope, budget and acceptance test.</p>
-        <p class="line">Controller · Claude Code<br>Runner · Codex</p>
+        <p><strong>One AI leads, the others take jobs.</strong> The Controller keeps the big picture and hands bounded jobs (Specs) to Runners: a brief, a scope, a budget, and what "done" means. Each Runner works in its own copy of your project, so nobody trips over anybody.</p>
+        <p class="line">Controller · Claude Code or Codex<br>Runners · Codex, or a model on your own machine</p>
       </li>
       <li class="tile">
         <div class="hd">
           <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 21V5M19 21V5M5 9h14M9 9v12M15 9v12"/></svg></span>
           <h3>Gates</h3>
-          <span class="pill accent sm">phase 0</span>
+          <span class="pill accent sm">works today</span>
         </div>
-        <p><strong>Approve the exact request</strong>, byte for byte, not a summary of it. Deny is always available. Today you answer in your own terminal; later you sign on your phone.</p>
-        <p class="line">allow runs exactly that input<br>no answer means deny</p>
-      </li>
-      <li class="tile">
-        <div class="hd">
-          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4.5-5"/><path d="M4 21h16"/></svg></span>
-          <h3>Limits</h3>
-          <span class="pill sm">phase 1</span>
-        </div>
-        <p><strong>A measured hold, never paid overage.</strong> Each provider keeps the reserve you set. Unknown or stale usage counts as held, and a hold names its reset time.</p>
-        <p class="line"><code>gov limits set codex --reserve 10%</code></p>
+        <p><strong>You see exactly what will run</strong>, byte for byte, not a friendly summary of it. Say yes once, yes for the rest of this turn, or yes for this project. The fence never moves; you just stop being asked about <code>npm test</code> forty times.</p>
+        <p class="line">rm, sudo, git, network, handing work to another AI:<br>always ask. No answer means no.</p>
       </li>
       <li class="tile">
         <div class="hd">
           <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg></span>
           <h3>Sandbox</h3>
-          <span class="pill accent sm">phase 0</span>
+          <span class="pill accent sm">works today</span>
         </div>
-        <p><strong>Deny by default, self-tested, fails closed.</strong> Landlock and seccomp fence every tool: a filesystem allowlist, outbound TCP to 443 only, and one channel to the daemon, so a tool cannot approve its own Gate. If the self-test fails on your machine, nothing starts. There is no unsandboxed switch.</p>
-        <p class="line"><code>govern-sup selftest</code> <span class="ok">· must pass</span></p>
+        <p><strong>Deny by default, and the OS means it.</strong> Landlock and seccomp fence every AI tool: a filesystem allowlist, outbound HTTPS only, and no way to reach the daemon to approve its own Gates. If your machine can't enforce it, GovernCode refuses to start. There is no "just this once" switch.</p>
+        <p class="line"><code>govern-sup selftest</code> <span class="ok">· must pass, or nothing runs</span></p>
       </li>
       <li class="tile">
         <div class="hd">
           <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10H9"/><path d="M8 5L4 9l4 4"/></svg></span>
           <h3>Checkpoints</h3>
-          <span class="pill sm">phase 1</span>
+          <span class="pill accent sm">works today</span>
         </div>
-        <p><strong>Undo, with guard rails.</strong> Every Spec gets a git snapshot before and after, so you can diff it and roll it back. Undo refuses if you changed those files afterwards, rather than overwrite your work. Everything lands in the Trace, an append-only history.</p>
-        <p class="line"><code>gov undo S-0412</code> <span class="d">· restored 1 file</span></p>
+        <p><strong>Ctrl-Z for your whole crew.</strong> Every change is snapshotted before and after, so you can diff it and put it back exactly. Undo refuses if you have edited those files since: it will never "restore" over your own work. Everything lands in the Trace, an append-only history.</p>
+        <p class="line"><code>gov undo T-12</code> <span class="d">· restored 2 files</span></p>
       </li>
+      <li class="tile">
+        <div class="hd">
+          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4.5-5"/><path d="M4 21h16"/></svg></span>
+          <h3>Limits</h3>
+          <span class="pill accent sm">works today</span>
+        </div>
+        <p><strong>Your quota's bodyguard.</strong> Each provider keeps the reserve you set, measured before a job starts and while it runs. Unknown usage counts as "no". Paid overage is never switched on for you. Local models get a machine limit instead: how many at once, how many minutes each.</p>
+        <p class="line"><code>gov reserve codex weekly 15</code></p>
+      </li>
+      <li class="tile">
+        <div class="hd">
+          <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+          <h3>Local models</h3>
+          <span class="pill accent sm">works today</span>
+        </div>
+        <p><strong>Small jobs, zero quota.</strong> Point a Spec at a model running in Ollama on your own machine. It gets no tools and runs no commands: it proposes whole files, GovernCode checks every path against the job's scope, and you review it like anyone else's work.</p>
+        <p class="line">qwen3.5:9b wrote a README section in 6 s<br><span class="d">no cloud quota was harmed</span></p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section id="creed" aria-labelledby="creed-h">
+  <div class="wrap">
+    <p class="eyebrow">What we stand for</p>
+    <h2 id="creed-h">Nine things we won't budge on</h2>
+    <p class="sub">The short version. The long version is <a href="https://github.com/governcode/governcode/blob/debate/docs/PHILOSOPHY.md">in the repo</a>, and every one of them is backed by code, a test, or both.</p>
+    <div class="own">
+      <div class="num" aria-hidden="true">02</div>
+      <div>
+        <h3>You ship it, you own it.</h3>
+        <p>GovernCode exists to make building software with AI more approachable: fewer surprises, clearer reviews, an easy undo. It doesn't make anyone less responsible. Whatever you accept is yours, so read the diff, understand the code, run the tests, and know what you're shipping before you ship it.</p>
+        <p>The AI can write it. Only you can answer for it.</p>
+      </div>
+    </div>
+    <ul class="creed">
+      <li><b><span>1</span>You hold the controls.</b><p>AI does the work; you make the calls. Anything that matters waits for your yes, and everything can be undone.</p></li>
+      <li><b><span>3</span>Deny by default, fail closed.</b><p>Enforced by the operating system, not by asking the AI nicely.</p></li>
+      <li><b><span>4</span>Any model can lead.</b><p>Claude, Codex, Gemini, Grok, or the one on your own GPU. No favourite vendor in the design.</p></li>
+      <li><b><span>5</span>Honest about limits.</b><p>We say what we measure, how, and where the edges are. Especially the edges.</p></li>
+      <li><b><span>6</span>Free and open, forever.</b><p>MIT. No paid tier, no telemetry, no account. Your code stays on your machine.</p></li>
+      <li><b><span>7</span>Built with AI, openly.</b><p>AI writes a lot of GovernCode, and we say exactly which AI did what.</p></li>
+      <li><b><span>8</span>Small, boring, verifiable.</b><p>Plain code and a test for every rule that matters. Boring beats clever.</p></li>
+      <li><b><span>9</span>Respect, always.</b><p>Love AI or distrust it, any OS, any tool: all welcome. Critique the code, never the people.</p></li>
     </ul>
   </div>
 </section>
@@ -296,21 +351,37 @@ Removed target/debug/incremental (1.4 GB).
 <section id="open" aria-labelledby="open-h">
   <div class="wrap oss">
     <div>
-      <p class="eyebrow">Open source</p>
+      <p class="eyebrow">Free, actually free</p>
       <h2 id="open-h" class="vh">Free and open source</h2>
-      <p class="big">Free and open source <span>(MIT)</span>. Runs on your machine. No hosted service.</p>
-      <p class="sub">Your code, keys and history stay local. The daemon, the sandbox supervisor and the CLI are all in the repo. Nothing is usable by non-developers yet: phase 1 runs a Controller in the sandbox, lets it hand jobs to a Runner, and asks you at every Gate.</p>
+      <p class="big">Free and open source <span>(MIT)</span>. Always will be. No "pro" tier lurking behind the next release.</p>
+      <p class="sub">It runs on your machine, uses the AI subscriptions you already have, and keeps your code, keys and history local. There's no hosted service to sign up for, because there's no hosted service.</p>
+      <p class="coffee"><strong>Oh, by the way.</strong> If GovernCode saves you an afternoon and you feel like saying thanks, you can <a href="https://buymeacoffee.com/onelegdave" id="coffee" rel="me">buy Dave a coffee</a>. The crew runs on tokens; Dave runs on coffee. Only one of them has a button. Zero pressure: the code is yours either way.</p>
     </div>
     <div>
       <div class="term try">
-        <div class="bar"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>build from source</span><button class="copy" type="button" data-copy="try-cmd" hidden>copy</button></div>
+        <div class="bar"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>try it (developers, Linux)</span><button class="copy" type="button" data-copy="try-cmd" hidden>copy</button></div>
 <pre id="try-cmd" tabindex="0" aria-label="Build from source commands"><span class="p" aria-hidden="true">$ </span>git clone https://github.com/governcode/governcode
 <span class="p" aria-hidden="true">$ </span>cd governcode
 <span class="p" aria-hidden="true">$ </span>npm ci &amp;&amp; cargo build --release
-<span class="p" aria-hidden="true">$ </span>./target/release/govern-sup selftest</pre>
+<span class="p" aria-hidden="true">$ </span>./target/release/govern-sup selftest
+<span class="p" aria-hidden="true">$ </span>npm run govd &amp;  # the daemon
+<span class="p" aria-hidden="true">$ </span>npm run gov -- demo</pre>
       </div>
-      <p class="req">Developers only, for now. Needs Linux 6.12+ (Landlock ABI 6), Node 22.18+, Rust and git. The README has the rest. <span id="copy-status" class="vh" aria-live="polite"></span></p>
+      <p class="req">Developers only, for now. Needs Linux 6.12+ (Landlock ABI 6), Node 22.18+, Rust and git, plus Claude Code or Codex logged in. <code>gov demo</code> walks you through a real task in about five minutes. <span id="copy-status" class="vh" aria-live="polite"></span></p>
     </div>
+  </div>
+</section>
+
+<section id="channels" aria-labelledby="channels-h">
+  <div class="wrap">
+    <p class="eyebrow">Release channels</p>
+    <h2 id="channels-h">Debate, Motion, Decree</h2>
+    <p class="sub">One repository, three channels, named the way a good parliament works: argue first, vote second, then it's the law.</p>
+    <ul class="chan">
+      <li class="live"><h3>Debate</h3><span class="k">branch debate · where work happens</span><p>Ideas argue it out here. It's where the newest things land first, and occasionally where they get voted down.</p></li>
+      <li><h3>Motion</h3><span class="k">tags vX.Y.Z-motion.N · release candidates</span><p>Seconded, not yet passed. Try it, poke it, tell us what broke. The first Motion is close.</p></li>
+      <li><h3>Decree</h3><span class="k">tags vX.Y.Z · stable</span><p>Passed into law. Boring, dependable, and exactly what we said it would be.</p></li>
+    </ul>
   </div>
 </section>
 
@@ -318,22 +389,22 @@ Removed target/debug/incremental (1.4 GB).
   <div class="wrap">
     <p class="eyebrow">Roadmap</p>
     <h2 id="roadmap-h">Where it stands</h2>
-    <p class="sub">Built in the open, in this order. Linux and macOS are first-class; Windows is not supported yet.</p>
+    <p class="sub">Built in the open, in this order. <strong>Linux first</strong>, while the foundations set. Then <strong>macOS and Windows arrive together</strong>, with the same priority: neither waits for the other, because GovernCode should work for as many people as want it (and three platforms find more bugs than one).</p>
     <ol class="road">
       <li class="done">
         <div class="n">phase 0 <span class="pill sm">done</span></div>
         <h3>Foundation</h3>
         <p>Daemon, sandbox + self-test, CLI, Claude Code driver, the Trace.</p>
       </li>
-      <li class="now" aria-current="step">
-        <div class="n">phase 1 <span class="pill accent sm">now</span></div>
+      <li class="done">
+        <div class="n">phase 1 <span class="pill sm">done</span></div>
         <h3>The crew</h3>
-        <p>Delegation and Specs, first measured Runner, Limits, Checkpoints + undo.</p>
+        <p>Delegation and Specs, measured and local Runners, Limits, Checkpoints + undo.</p>
       </li>
-      <li>
-        <div class="n">phase 2</div>
+      <li class="now" aria-current="step">
+        <div class="n">phase 2 <span class="pill accent sm">now</span></div>
         <h3>Dashboard</h3>
-        <p>Desktop app for Linux and macOS, review queue, Gates.</p>
+        <p>The desktop app: review queue, Gates, Limits, Settings. Then macOS + Windows, together.</p>
       </li>
       <li>
         <div class="n">phase 3</div>
@@ -348,7 +419,7 @@ Removed target/debug/incremental (1.4 GB).
       <li>
         <div class="n">phase 5</div>
         <h3>Launch</h3>
-        <p>iOS, driver Modules, and a proper release.</p>
+        <p>iOS, driver Modules, and a Decree worth the name.</p>
       </li>
     </ol>
   </div>
@@ -359,13 +430,13 @@ Removed target/debug/incremental (1.4 GB).
   <div class="wrap">
     <p class="credit"><strong>A human holds the controls.</strong> GovernCode is owned and maintained by <strong>OneLegDave</strong>, who makes every product decision and reviews what ships:
       <a href="https://www.onelegdave.dev/" rel="me">onelegdave.dev</a> · <a href="https://x.com/OneLegDavePDX" rel="me">X</a> · <a href="https://github.com/onelegdave" rel="me">GitHub</a>.</p>
-    <p class="credit">Built with AI assistance, openly: Claude (lead AI developer), Grok (research, red-team), Gemini (naming, design).</p>
+    <p class="credit">Built with AI assistance, openly: Claude (lead AI developer), Codex (code review, test runs), Grok (research, red-team), Gemini (naming, design).</p>
     <div class="row">
       <span>GovernCode is released under the MIT License.</span>
       <a href="https://github.com/governcode/governcode">github.com/governcode/governcode</a>
       <a href="https://github.com/governcode/governcode/blob/debate/LICENSE">License</a>
     </div>
-    <p>This page has no analytics, no cookies and no third-party requests.</p>
+    <p>This page has no analytics, no cookies and no third-party requests. We checked.</p>
   </div>
 </footer>
 
