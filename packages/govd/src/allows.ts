@@ -36,7 +36,11 @@ const ALWAYS_ASK = new Set(["rm", "rmdir", "sudo", "su", "doas", "curl", "wget",
   "fakeroot", "setarch", "numactl", "nsenter", "runuser", "pkexec", "sshpass", "prlimit", "chroot", "setpriv",
   "unshare", "systemd-run", "doas", "ssh-agent", "dbus-launch", "xvfb-run", "valgrind", "gdb",
   // tar's options hide in its first word without a dash (tar xvfI a.tar ./prog runs ./prog).
-  "tar"]);
+  "tar",
+  // Grok's red-team of compound commands, 2026-09-27: more shells, and programs that run their
+  // input or another program later (a pipe into any of these runs whatever came before it).
+  "ksh", "mksh", "ash", "csh", "tcsh", "coproc", "at", "batch", "parallel", "socat", "ncat", "netcat", "corepack",
+  "torsocks", "proot", "bwrap"]);
 // Program + subcommand pairs that always ask.
 const ALWAYS_ASK_SUB = new Set(["npm publish", "npm exec", "yarn publish", "pnpm publish", "pnpm exec",
   "cargo publish", "cargo install", "gh",
@@ -362,6 +366,9 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
     for (const w of segs) {
       if (!w.length || w[0].includes("=") || w[0].includes("/")) return { ask: true, quiet: false, kinds: [] };
       if (QUIET_READS.has(w[0]) && quietArgs(w)) continue;
+      // A read-only program with an option it is not known to read with (sort -o, tail -f,
+      // grep -f, a special file) is not a kind a rule may cover: it asks (Grok's red-team).
+      if (QUIET_READS.has(w[0]) && !(w.length === 2 && ["--help", "--version"].includes(w[1]))) return { ask: true, quiet: false, kinds: [] };
       const k = commandKind(w);
       if (!k) return { ask: true, quiet: false, kinds: [] };
       if (!kinds.some((x) => x.key === runner(k).key)) kinds.push(runner(k));

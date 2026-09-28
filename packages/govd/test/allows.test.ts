@@ -164,6 +164,10 @@ test("compound commands are judged part by part; anything that could hide a comm
   assert.equal(a("uniq a.txt src/main.ts").quiet, false, "uniq's second operand is an output file");
   for (const c of ["npm version patch", "git constructor", "git __proto__", "cat //dev/zero", "cat ../../dev/zero", "cat /./dev/zero",
     "head -c 9 /proc//self/mem"]) assert.equal(a(c).quiet || a(c).kinds.some((k) => /git|npm/.test(k.key)), false, c);
+  // Grok's red-team, 2026-09-27.
+  for (const c of ["echo id | ksh", "coproc rm -rf /", "echo x | sort -opwned", "grep foo /dev/zero", "grep -f/dev/zero x",
+    "npm x cowsay", "corepack npm exec id", "echo id | at now", "echo id | parallel", "pnpm dlx cowsay", "yarn dlx x",
+    "npm explore lodash -- id", "tail -f log"]) assert.equal(a(c).ask, true, c);
   assert.equal(a("ls && echo --- && cat README.md 2>/dev/null | head -100").quiet, true, "echo prints; it is quiet");
   for (const c of ["npm install left-pad", "npm i", "npm ci", "pip install requests", "uv add httpx", "cargo add serde", "go get x",
     "cd app && npm install && npm test"]) assert.equal(a(c).ask, true, `installing always asks: ${c}`);
