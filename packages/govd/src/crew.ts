@@ -31,7 +31,7 @@ export function crewBrief(crew: CrewValue): string {
       : "You plan and hand off only: the user chose that you do not change this project yourself (the sandbox makes it read-only for you).",
     crew.handoff === "off" ? "Handing off is off: work alone; there are no Runners for this project."
       : crew.handoff === "plan" ? "Before handing off, post a game plan with the plan tool; handoffs the user approves there run without asking again, others ask."
-      : "Each handoff to a paid Runner waits for the user's approval at a Gate.",
+      : "Each handoff to a paid Runner waits for the user's approval at a Gate. For bigger work, post a game plan with the plan tool first, so the user sees who will do what.",
     ...(crew.handoff !== "off" && crew.runners ? [`Runners allowed: ${crew.runners.join(", ") || "none"}.`] : []),
     ...(Object.keys(crew.maxPercent).length ? [`Most one Spec may reserve: ${Object.entries(crew.maxPercent).map(([r, n]) => `${r} ${n}%`).join(", ")}.`] : []),
     crew.subagents.controller ? "" : "Do not start subagents: the user turned them off for this project.",

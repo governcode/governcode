@@ -13,6 +13,7 @@ export type Entry =
   | { t: "spec"; id: string; to: string; brief: string; lines: string[] }
   | { t: "checkpoint"; id: string; files: string[]; undone?: boolean }
   | { t: "proposal"; id: string; name: string; path: string; git: boolean; reason: string }
+  | { t: "plan"; id: string; items: Array<{ who: string; what: string; scope?: string[] }>; note: string; handoff: string }
   | { t: "done"; ok: boolean; summary: string }
   | { t: "error"; text: string };
 export type Thread = { entries: Entry[]; busy: boolean };
@@ -75,6 +76,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
               </div>
             );
             case "proposal": return <ProposalCard key={i} {...e} onOpen={props.onOpenProject} />;
+            case "plan": return <PlanCard key={i} {...e} />;
             case "done": return <div key={i} className={`done ${e.ok ? "dim" : "error"}`}>{e.ok ? "— done" : `— failed: ${e.summary}`}</div>;
             case "error": return <div key={i} className="done error">— {e.text}</div>;
           }
@@ -90,6 +92,41 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
 }
 
 /** A project the Home Controller proposed. govd creates it only when you choose Create. */
+/** The Controller's game plan: approve all or some items, "just you", or reject. */
+function PlanCard(p: { id: string; items: Array<{ who: string; what: string; scope?: string[] }>; note: string; handoff: string }) {
+  const [picked, setPicked] = useState<boolean[]>(() => p.items.map(() => true));
+  const [state, setState] = useState<"waiting" | "busy" | "approve" | "just-you" | "reject">("waiting");
+  const [error, setError] = useState<string | null>(null);
+  const answer = async (a: "approve" | "just-you" | "reject") => {
+    setState("busy");
+    const items = picked.map((on, i) => (on ? i + 1 : 0)).filter(Boolean);
+    try { await call("plan.answer", { id: p.id, answer: a, ...(a === "approve" && items.length < p.items.length ? { items } : {}) }); setState(a); setError(null); }
+    catch (e) { setState("waiting"); setError(e instanceof Error ? e.message : String(e)); }
+  };
+  const some = picked.some(Boolean);
+  return (
+    <div className="proposal">
+      <div className="row"><Pill tone="accent">game plan</Pill><b>Who does what</b><span className="spacer" /><span className="dim mono small">{p.id}</span></div>
+      {p.items.map((it, i) => (
+        <label key={i} className="policy-option">
+          <input type="checkbox" checked={picked[i]} disabled={state !== "waiting"} onChange={(e) => setPicked((x) => x.map((v, j) => (j === i ? e.target.checked : v)))} />
+          <span><b>{it.who === "me" ? "Controller" : it.who}</b><span className="dim small"> · {it.what}{it.scope?.length ? ` · ${it.scope.join(", ")}` : ""}</span></span>
+        </label>
+      ))}
+      {p.note && <div className="small">{p.note}</div>}
+      <div className="dim small">{p.handoff === "plan" ? "Each approved handoff runs once without asking again; anything else still asks." : "Handoffs still ask at a Gate (Crew card: ask each time)."} Just you: the Controller does it all itself this turn.</div>
+      {error && <div className="error small">{error}</div>}
+      <div className="row end">
+        {state === "approve" ? <span className="ok small">Approved.</span> : state === "just-you" ? <span className="small">Just the Controller.</span>
+          : state === "reject" ? <span className="dim small">Rejected.</span>
+          : <><button className="btn" disabled={state === "busy"} onClick={() => answer("reject")}>Reject</button>
+              <button className="btn" disabled={state === "busy"} onClick={() => answer("just-you")}>Just you</button>
+              <button className="btn btn-accent" disabled={state === "busy" || !some} onClick={() => answer("approve")}>{picked.every(Boolean) ? "Approve" : "Approve selected"}</button></>}
+      </div>
+    </div>
+  );
+}
+
 function ProposalCard(p: { id: string; name: string; path: string; git: boolean; reason: string; onOpen?: (name: string) => void }) {
   const [state, setState] = useState<"waiting" | "busy" | "created" | "cancelled">("waiting");
   const [error, setError] = useState<string | null>(null);

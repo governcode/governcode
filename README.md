@@ -188,6 +188,25 @@ Honest limits, for now:
 Claude Code and Codex still use your own logins; they move to the same Connect step in a later
 release. Gemini CLI (for Gemini API keys) comes after that, once GovernCode can hold a key safely.
 
+### Crew and delegation
+
+Each project has a **Crew card** (`gov crew`, or the Dashboard's Crew view). You set it; GovernCode
+enforces it, and the Controller is told it each turn:
+- **The Controller** works itself and hands off (default), or plans and hands off only (then the
+  project is read-only for it in the sandbox).
+- **Handing off**: *ask me each time* (default: a handoff to a paid Runner waits at a Gate),
+  *follow the approved plan*, or *off* (the Controller works alone).
+- **Runners**: which ones this project may use, and the most one job may reserve of each.
+- **Subagents**, for the Controller and for Runners: off removes Claude Code's subagent tool,
+  switches Codex's multi-agent features off, and refuses Antigravity's subagent tools.
+
+Before bigger work the Controller can post a **game plan** with GovernCode's `plan` tool: who
+does what. You approve it (all or some items), answer "just you" (it does everything itself and
+cannot hand off for the rest of the turn), or reject it. With *follow the approved plan*, each
+approved item lets one handoff to that Runner through without asking again; the Runner's own
+steps still stop at their Gates. Only a Controller hands work to other tools: Runners get no
+delegate tool.
+
 ### The Dashboard (desktop app, early)
 
 ```sh
@@ -197,8 +216,8 @@ npm start -w apps/dashboard
 
 It talks to the same `govd`: chat with the Controller and answer Gates inline, review
 Specs (diff side by side, accept, discard), undo Checkpoints, see and set each Runner's
-Limits, connect tools (Settings › Tools), change each project's Controller, Gates across projects
-and the Trace. The window's page has no direct access to your files or sockets: it can only ask
+Limits, connect tools (Settings › Tools), set each project's Crew card and edit its Notes,
+change each project's Controller, Gates across projects and the Trace. The window's page has no direct access to your files or sockets: it can only ask
 the app's main process, which passes a fixed list of requests to `govd`.
 
 ## Plan

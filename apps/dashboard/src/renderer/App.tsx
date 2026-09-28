@@ -217,6 +217,8 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
     case "allowed": return [...entries, { t: "allowed", tool: String(e.tool), why: String(e.why) }];
     case "spec": return [...entries, { t: "spec", id: String(e.id), to: String(e.to), brief: String(e.brief), lines: [] }];
     case "proposal": return [...entries, { t: "proposal", id: String(e.id), name: String(e.name), path: String(e.path), git: e.git === true, reason: String(e.reason ?? "") }];
+    case "plan": return [...entries, { t: "plan", id: String(e.id), note: String(e.note ?? ""), handoff: String(e.handoff ?? "ask"),
+      items: Array.isArray(e.items) ? e.items.slice(0, 12).map((x: any) => ({ who: String(x?.who ?? ""), what: String(x?.what ?? ""), ...(Array.isArray(x?.scope) ? { scope: x.scope.map(String) } : {}) })) : [] }];
     case "spec.text":
     case "spec.tool": {
       const line = ev.kind === "spec.text" ? String(e.text) : `· ${String(e.name)}`;

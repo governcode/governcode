@@ -111,6 +111,14 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
       await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" || remember ? "allow" : "deny", ...(remember ? { remember } : {}) });
     } else if (ev.kind === "allowed") {
       console.log(dim(`· allowed without asking: ${ev.why} (the sandbox still applies)`));
+    } else if (ev.kind === "plan") {
+      console.log(warn(`\nGame plan ${ev.id}: who does what`));
+      ev.items.forEach((it: any, i: number) => console.log(`  ${i + 1}. ${it.who === "me" ? "Controller" : it.who}: ${it.what}${it.scope?.length ? dim(` (${it.scope.join(", ")})`) : ""}`));
+      if (ev.note) console.log(dim(`  ${ev.note}`));
+      console.log(dim(ev.handoff === "plan" ? "  Each approved handoff runs once without asking again; anything else still asks." : "  Handoffs still ask at a Gate (Crew card: ask each time)."));
+      const a = (await tty.next("Approve? [y = all / 1,3 = only those / j = just you / N] ")).trim().toLowerCase();
+      const nums = /^\d+(\s*,\s*\d+)*$/.test(a) ? a.split(",").map((x) => Number(x.trim())) : null;
+      await api.call("plan.answer", { id: ev.id, ...(a === "y" || a === "yes" ? { answer: "approve" } : nums ? { answer: "approve", items: nums } : a === "j" ? { answer: "just-you" } : { answer: "reject" }) });
     } else if (ev.kind === "proposal") {
       console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
       if (ev.reason) console.log(dim(ev.reason));

@@ -24,6 +24,13 @@ const PROJECT_TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "spec_status", description: "Status, changed files and summary of a Spec.",
     inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" } }, additionalProperties: false } },
+  { name: "plan", description: "Post a game plan before handing work off: who does what (\"me\" for yourself, or a Runner's name from crew). The user approves it (all or some items), answers \"just you\", or rejects it; this waits for the answer. Depending on the project's Crew card, handoffs the user approved here may then run without asking again.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["items"], properties: {
+      items: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", additionalProperties: false, required: ["who", "what"], properties: {
+        who: { type: "string", description: "\"me\" or a Runner (e.g. codex, agy, ollama)" },
+        what: { type: "string", description: "The job, in one line" },
+        scope: { type: "array", items: { type: "string" }, description: "The files or folders it would change" } } } },
+      note: { type: "string", description: "Anything the user should know about the plan (optional)" } } } },
   { name: "project_notes", description: "Read or rewrite this project's notes: a short brief of the goal, decisions made, open questions and next steps. Every Controller of this project reads them first (possibly another AI), and the user can read, edit and roll them back. Rewrite them when something important is decided or done; keep them under 4000 characters. Never put secrets in them.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       write: { type: "string", description: "The whole new notes (replaces the old). Leave out to read the current notes." } } } },

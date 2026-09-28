@@ -28,10 +28,30 @@ function mine(ctx: DelegationContext, id: string): boolean {
     .some((e) => e.data.spec === id && e.actor === `controller · ${ctx.provider}`);
 }
 
+export type PlanItem = { who: string; what: string; scope?: string[] };
+
+/** A game plan as the Controller sent it, checked: 1 to 12 items, short, "me" or a Runner name. */
+export function parsePlan(raw: unknown): { items: PlanItem[]; note: string } {
+  const p = (raw ?? {}) as { items?: unknown; note?: unknown };
+  if (!Array.isArray(p.items) || !p.items.length || p.items.length > 12) throw new Error("a plan has 1 to 12 items");
+  const items = p.items.map((x: any, i: number) => {
+    const who = typeof x?.who === "string" ? x.who.trim().toLowerCase() : "";
+    if (!/^[a-z0-9-]{1,40}$/.test(who)) throw new Error(`item ${i + 1}: who must be "me" or a Runner's name`);
+    if (typeof x?.what !== "string" || !x.what.trim() || x.what.length > 300) throw new Error(`item ${i + 1}: what must be a short description (under 300 characters)`);
+    const scope = Array.isArray(x?.scope) ? x.scope.filter((s: unknown) => typeof s === "string").slice(0, 20).map((s: string) => s.slice(0, 200)) : undefined;
+    return { who, what: x.what.trim(), ...(scope?.length ? { scope } : {}) };
+  });
+  return { items, note: typeof p.note === "string" ? p.note.slice(0, 500) : "" };
+}
+
 export type DelegationContext = {
   project: { name: string; path: string };
   provider?: string;                       // the Controller's provider (project memory consent)
   crew?: () => CrewValue;                  // the project's Crew card, read at each call
+  plan?: {                                 // this turn's game plan (govd asks the user)
+    propose(items: PlanItem[], note: string): Promise<{ answer: string; approved: PlanItem[] }>;
+    justYou(): boolean;
+  };
   ledger: Ledger;
   limits: LimitGate;
   usage: Record<string, UsageSource>;      // providers that can be Runners, with a usage source
@@ -76,6 +96,15 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
   return openTurnSocket(ctx.runtimeDir, async (method, params) => {
     if (method === "controller.delegate") return delegate(ctx, params);
     if (method === "controller.crew") return crew(ctx);
+    if (method === "controller.plan") {
+      if (!ctx.plan) throw new Error("plans are not offered here");
+      const { items, note } = parsePlan(params);
+      const r = await ctx.plan.propose(items, note);
+      return { answer: r.answer, approved: r.approved,
+        next: r.answer === "just-you" ? "The user wants you to do this yourself: do not hand anything off in this turn."
+          : r.answer === "reject" ? "The user rejected this plan: ask what they want instead, or work within the usual Gates."
+          : "Go ahead with the approved items." };
+    }
     if (method === "controller.spec_discard") {
       // The Controller may throw away its own proposal (a bad draft it wants to redo). Accepting
       // stays the user's alone.
@@ -183,6 +212,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   const input = SpecInput.parse(raw);
   const L = ctx.ledger;
   if (!ctx.usage[input.to]) throw new Error(`${input.to} is not a Runner GovernCode can use (known: ${Object.keys(ctx.usage).join(", ") || "none"})`);
+  if (ctx.plan?.justYou()) throw new Error("the user answered your plan with \"just you\": do this yourself, do not hand off in this turn");
   // The Crew card: which Runners, whether handing off at all, and the most one Spec may reserve.
   const crewCard = ctx.crew?.();
   if (crewCard) {

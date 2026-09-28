@@ -202,7 +202,8 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     // status and keeping the project's notes touch only GovernCode's own records: no Gate, as for
     // Claude (whose allowedTools lists the same ones).
     if (tool === "propose_project" && o.mcp?.mode === "home") return { action: "accept", content: {} };
-    if (["crew", "spec_status", "project_notes"].includes(tool) && o.mcp?.mode !== "home") return { action: "accept", content: {} };
+    // (plan is itself a question to the user, answered in GovernCode.)
+    if (["crew", "spec_status", "project_notes", "plan"].includes(tool) && o.mcp?.mode !== "home") return { action: "accept", content: {} };
     const input = (announced.args ?? {}) as Record<string, unknown>;
     const req: GateRequest = { id: `mcp-${Date.now()}`, tool: `governcode ${tool}`, input, canonical: canonical({ tool: `governcode ${tool}`, input }) };
     return { action: (await o.hooks.gate(req)) === "allow" ? "accept" : "decline", content: {} };

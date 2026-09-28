@@ -138,6 +138,10 @@ export const Params = {
   "context.share": z.object({ project: ProjectName, provider: z.string().regex(/^[a-z0-9-]{1,40}$/), share: z.boolean() }),
   "crew.get": z.object({ project: ProjectName }),
   "crew.set": z.object({ project: ProjectName, crew: Crew }),
+  // The game plan a Controller posted: approve all (or only some items, 1-based), "just you"
+  // (it works alone for the rest of the turn), or reject.
+  "plan.answer": z.object({ id: z.string().regex(/^GP-\d+$/), answer: z.enum(["approve", "just-you", "reject"]),
+    items: z.array(z.number().int().min(1).max(12)).max(12).optional() }),
 } as const;
 export type Method = keyof typeof Params;
 
@@ -160,7 +164,7 @@ export type TraceEvent = {
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone"
-    | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared" | "crew.set";
+    | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared" | "crew.set" | "plan.proposed" | "plan.answered";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
 };

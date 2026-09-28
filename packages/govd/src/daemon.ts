@@ -18,6 +18,7 @@ import { agyUsage } from "./agy.ts";
 import { Connector, TOOLS } from "./connect.ts";
 import { contextState, mayShare, notesHistory, notesOf, projectRecord, setNotes } from "./memory.ts";
 import { crewBrief, crewOf, setCrew, DEFAULT_CREW } from "./crew.ts";
+import type { PlanItem } from "./delegate.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
 import { ollamaUsage } from "./local.ts";
 import { Allows, analyze, scopesFor, type AllowRule, type AllowScope, type GateContext, type Kind } from "./allows.ts";
@@ -45,6 +46,11 @@ export class Daemon {
   private server?: Server;
   private sockets = new Set<Socket>();
   private gates = new Map<string, Gate>();
+  // Game plans waiting for the user, and what each turn's approved plan allows.
+  private plans = new Map<string, { id: string; project: string; turn: string; items: PlanItem[]; owner: Socket;
+    answer: (r: { answer: string; approved: PlanItem[] }) => void }>();
+  private planSeq = 0;
+  private turnPlans = new Map<string, { approved: Array<PlanItem & { used?: boolean }>; justYou: boolean }>();
   private limits = new LimitGate();
   private allows!: Allows;               // standing allows (#192): they skip questions, never the sandbox
   // Controller turns running per project: accept and undo wait for them, so a running tool
@@ -236,7 +242,10 @@ export class Daemon {
     this.sockets.add(sock);
     sock.on("close", () => { this.sockets.delete(sock); this.watchers.get(sock)?.stop(); this.watchers.delete(sock); });
     const write = (obj: unknown) => sock.writable && sock.write(JSON.stringify(obj) + "\n");
-    sock.on("close", () => { for (const g of [...this.gates.values()]) if (g.owner === sock) this.settle(g.id, "deny", "asker left"); });
+    sock.on("close", () => {
+      for (const g of [...this.gates.values()]) if (g.owner === sock) this.settle(g.id, "deny", "asker left");
+      for (const pl of [...this.plans.values()]) if (pl.owner === sock) this.answerPlan(pl.id, "reject", undefined, "asker left");
+    });
     // A client that drops mid-line (ECONNRESET) must not take govd down: the error is the
     // client's problem, and "close" already denies its Gates.
     sock.on("error", () => sock.destroy());
@@ -258,6 +267,21 @@ export class Daemon {
         write({ jsonrpc: "2.0", id, error: { code, message: err instanceof Error ? err.message : String(err) } });
       }
     });
+  }
+
+  /** The user's answer to a game plan. */
+  private answerPlan(id: string, answer: "approve" | "just-you" | "reject", items: number[] | undefined, by: string): boolean {
+    const pl = this.plans.get(id);
+    if (!pl) return false;
+    this.plans.delete(id);
+    const approved = answer !== "approve" ? [] : items?.length ? pl.items.filter((_, i) => items.includes(i + 1)) : pl.items;
+    const state = this.turnPlans.get(pl.turn) ?? { approved: [], justYou: false };
+    state.approved.push(...approved.map((x) => ({ ...x })));
+    if (answer === "just-you") state.justYou = true;
+    this.turnPlans.set(pl.turn, state);
+    this.ledger.append(pl.project, "plan.answered", "user", { plan: id, answer, by, approved: approved.map((x) => pl.items.indexOf(x) + 1) });
+    pl.answer({ answer, approved });
+    return true;
   }
 
   private settle(id: string, answer: "allow" | "deny", by: string, remember?: AllowScope): boolean {
@@ -444,6 +468,9 @@ export class Daemon {
         return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, kinds, ...g }) => ({ ...g,
           covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
           suggest: this.settings().gates.level === "balanced" && g.scopes.includes("project") ? "project" : null })) };
+      case "plan.answer":
+        if (!this.answerPlan(p.id, p.answer, p.items, "user")) throw new RpcError(Errors.notFound, `no plan ${p.id} is waiting`);
+        return { ok: true };
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
@@ -549,6 +576,12 @@ export class Daemon {
               notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why });
               answer("allow");
             };
+            // A handoff the user approved in this turn's game plan (Crew card: follow the plan):
+            // one approved item lets one handoff to that Runner through.
+            if (found && crew.handoff === "plan" && /^(mcp__governcode__delegate|governcode delegate)$/.test(req.base ?? req.tool)) {
+              const item = this.turnPlans.get(turnId)?.approved.find((x) => !x.used && x.who === String(req.input.to ?? ""));
+              if (item) { item.used = true; return pass("plan", `in the plan you approved: ${item.who}: ${item.what}`); }
+            }
             if (!a.ask) {
               if (a.quiet && quietReads) return pass("quiet read", "a read-only command (quiet reads are on)");
               if (level === "relaxed") return pass("relaxed", "not on the always-ask list (Gates: relaxed; the sandbox still applies)");
@@ -575,6 +608,8 @@ export class Daemon {
             // A Gate of this turn still waiting is denied (its request is gone), and turn and
             // Spec rules end with the turn.
             for (const g of [...this.gates.values()]) if (g.ctx.turn === turnId) this.settle(g.id, "deny", "turn ended");
+            for (const pl of [...this.plans.values()]) if (pl.turn === turnId) this.answerPlan(pl.id, "reject", undefined, "turn ended");
+            this.turnPlans.delete(turnId);
             this.allows.endTurn(turnId);
             // A Checkpoint that could not be taken is said out loud, never silent: the user must
             // know this turn cannot be undone with Undo (security review 2026-09-27).
@@ -614,6 +649,15 @@ export class Daemon {
       // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
       const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, provider: project.controller.provider,
         crew: () => crewOf(L, found.name), ledger: L, limits: this.limits,
+        plan: {
+          propose: (items, note) => new Promise((answer) => {
+            const id = `GP-${++this.planSeq}`;
+            this.plans.set(id, { id, project: found.name, turn: turnId, items, owner: sock, answer });
+            L.append(found.name, "plan.proposed", actor, { plan: id, items, note, turn: turnId });
+            notify({ kind: "plan", id, items, note, handoff: crew.handoff });
+          }),
+          justYou: () => this.turnPlans.get(turnId)?.justYou === true,
+        },
         usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
         policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify,
         settings: () => this.settings() })
