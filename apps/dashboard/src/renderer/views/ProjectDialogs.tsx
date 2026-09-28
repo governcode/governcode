@@ -119,11 +119,34 @@ export function ControllerPicker({ project, onClose, onDone }: { project: Projec
     setProvider(p);
     if (!MODELS[p].includes(model)) setModel(MODELS[p][0]);
   };
-  const { busy, error, submit } = useSubmit(async () => {
+  // Switching to another provider: ask once whether it may see this project's context.
+  const [ask, setAsk] = useState<{ notes: string; specs: number; checkpoints: number } | null>(null);
+  const apply = async (share?: boolean) => {
+    if (share !== undefined) await call("context.share", { project: project.name, provider, share });
     const controller: Controller = { provider, model: model.trim(), effort: effort || null };
     await call("controller.set", { project: project.name, controller });
     onDone();
+  };
+  const { busy, error, submit } = useSubmit(async () => {
+    const st = await call<{ providers: string[]; shared: Record<string, boolean>; notes: string; specs: number; checkpoints: number }>("context.state", { project: project.name });
+    if (st.providers.some((x) => x !== provider) && st.shared[provider] === undefined) { setAsk(st); return; }
+    await apply();
   });
+  const who = provider === "codex" ? "Codex (OpenAI)" : provider === "claude-code" ? "Claude Code (Anthropic)" : provider;
+  if (ask) return (
+    <Modal title={`Share ${project.name}'s context with ${who}?`} onClose={onClose}>
+      <div className="form">
+        <p>{who} will see this project's conversation, its record ({ask.specs} Specs, {ask.checkpoints} Checkpoints) and its notes{ask.notes ? ":" : " (none yet)."}</p>
+        {ask.notes && <pre className="mono small notes-preview">{ask.notes}</pre>}
+        <p className="dim small"><b>Share</b>: it picks up where the last Controller left off. <b>Start fresh</b>: it sees only its own turns here. You are asked once per project and provider.</p>
+        <div className="row end">
+          <button type="button" className="btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn" onClick={() => void apply(false)}>Start fresh</button>
+          <button type="button" className="btn btn-accent" autoFocus onClick={() => void apply(true)}>Share and switch</button>
+        </div>
+      </div>
+    </Modal>
+  );
   return (
     <Modal title={`Controller for ${project.name}`} onClose={onClose}>
       <form onSubmit={submit} className="form">

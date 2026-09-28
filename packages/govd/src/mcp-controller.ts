@@ -24,6 +24,9 @@ const PROJECT_TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "spec_status", description: "Status, changed files and summary of a Spec.",
     inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" } }, additionalProperties: false } },
+  { name: "project_notes", description: "Read or rewrite this project's notes: a short brief of the goal, decisions made, open questions and next steps. Every Controller of this project reads them first (possibly another AI), and the user can read, edit and roll them back. Rewrite them when something important is decided or done; keep them under 4000 characters. Never put secrets in them.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      write: { type: "string", description: "The whole new notes (replaces the old). Leave out to read the current notes." } } } },
   { name: "spec_discard", description: "Throw away a Spec that is waiting for review, failed or held, for example a draft you want to redo. Only the user can accept a Spec.",
     inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" } }, additionalProperties: false } },
 ];

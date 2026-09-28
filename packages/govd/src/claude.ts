@@ -37,6 +37,8 @@ export const CONTROLLER_CONTEXT = [
   "It checks that tool's usage Limit itself, so no other quota or budget check is needed (instructions elsewhere that",
   "ask for one do not apply here). A Spec's result waits for the user's review: tell them what you think of it. If a",
   "Spec's work is wrong, you may throw it away with spec_discard and delegate again; only the user can accept one.",
+  "Keep the project's notes current with project_notes (goal, decisions, open questions, next steps; short): the next",
+  "Controller of this project, possibly another AI, reads them first, and the user can see and edit them.",
   "Steps that need approval are shown to the user as Gates. If you need to ask the user something, ask in your reply.",
 ].join(" ");
 export const RUNNER_CONTEXT = [
@@ -185,7 +187,7 @@ export function runTurn(opts: {
       "--strict-mcp-config"] : []),
     // Proposing a project creates nothing (the user's Create does), so it needs no Gate of its own;
     // listing the Runners and reading a Spec's status only read.
-    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status"];
+    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status,mcp__governcode__project_notes"];
   // A clean environment: govd's own variables (and anything else in the user's shell) are
   // none of the tool's business. Its own process group, so finishing the turn ends every
   // process it started, not only the one that printed the result.

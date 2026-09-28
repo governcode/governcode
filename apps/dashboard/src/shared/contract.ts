@@ -24,7 +24,8 @@ export const Channel = {
  */
 export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "controller.set", "gate.list",
   "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "trace.list", "turn.list", "turn.undo", "limits.list", "proposal.answer", "settings.get", "settings.set",
-  "allows.list", "allows.revoke", "conversation.reset", "tools.list", "tools.disconnect", "connect.input", "connect.cancel"] as const;
+  "allows.list", "allows.revoke", "conversation.reset", "tools.list", "tools.disconnect", "connect.input", "connect.cancel",
+  "notes.get", "notes.set", "context.state", "context.share"] as const;
 export type Callable = (typeof CALLABLE)[number];
 
 export function isCallable(m: unknown): m is Callable {

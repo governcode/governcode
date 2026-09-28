@@ -55,6 +55,13 @@ export class Ledger {
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
+  /** A project's events of some kinds, newest last (all of its history, not a recent window). */
+  eventsOfKind(project: string, kinds: TraceEvent["kind"][], limit = 500): TraceEvent[] {
+    const rows = this.db.prepare(`SELECT * FROM events WHERE project = ? AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT ?`)
+      .all(project, ...kinds, limit) as Array<Record<string, unknown>>;
+    return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
+  }
+
   // --- projects (a projection kept in step with project.* events, in one transaction)
   addProject(name: string, path: string, kind: "project.created" | "project.opened"): Project {
     const created = new Date().toISOString();

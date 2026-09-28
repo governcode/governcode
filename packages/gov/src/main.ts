@@ -4,7 +4,9 @@
 import { connect, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { runDemo } from "./demo.ts";
 
@@ -60,6 +62,7 @@ function answers(): { next(prompt: string): Promise<string>; close(): void } {
   };
 }
 
+const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (Anthropic)", codex: "Codex (OpenAI)" };
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
@@ -164,10 +167,55 @@ async function main(argv: string[]): Promise<number> {
         const project = await currentProject(api);
         if (!project) throw new Error("run this inside a project folder");
         const m = rest.indexOf("--model"), e = rest.indexOf("--effort");
-        await api.call("controller.set", { project, controller: { provider: rest[0] ?? "claude-code",
+        const provider = rest[0] ?? "claude-code";
+        // Project memory goes to another provider only if the user says so, once per project.
+        const ctx = await api.call("context.state", { project });
+        if (ctx.providers.some((x: string) => x !== provider) && ctx.shared[provider] === undefined) {
+          const tty = answers();
+          const who = PROVIDER_NAMES[provider] ?? provider;
+          console.log(warn(`\n${who} will see this project's conversation, its record (${ctx.specs} Specs, ${ctx.checkpoints} Checkpoints) and its notes${ctx.notes ? ":" : " (none yet)."}`));
+          if (ctx.notes) console.log(dim(ctx.notes.split("\n").slice(0, 8).map((l: string) => "  " + l).join("\n") + (ctx.notes.split("\n").length > 8 ? "\n  …" : "")));
+          console.log(dim("  Yes: it picks up where the last Controller left off. No: it starts fresh here, with only its own turns."));
+          const a = (await tty.next("Share this project's context with it? [y/N] ")).trim().toLowerCase();
+          tty.close();
+          await api.call("context.share", { project, provider, share: a === "y" || a === "yes" });
+        }
+        await api.call("controller.set", { project, controller: { provider,
           model: m >= 0 ? rest[m + 1] : "opus", effort: e >= 0 ? rest[e + 1] : "high" } });
         console.log(`Controller for ${project}: ${rest[0] ?? "claude-code"}`);
         return 0;
+      }
+      case "notes": {
+        // gov notes: this project's notes; edit (in $EDITOR), history, restore SEQ.
+        const project = await currentProject(api);
+        if (!project) throw new Error("run this inside a project folder");
+        const n = await api.call("notes.get", { project });
+        if (!rest[0]) { console.log(n.text || dim("no notes yet (the Controller writes them with project_notes; gov notes edit to write your own)")); return 0; }
+        if (rest[0] === "history") {
+          for (const h of n.history) console.log(`${String(h.seq).padStart(6)}  ${new Date(h.ts).toTimeString().slice(0, 8)}  ${h.actor.padEnd(22)} ${h.text.length} chars`);
+          return 0;
+        }
+        if (rest[0] === "restore") {
+          const v = n.history.find((h: any) => String(h.seq) === rest[1]);
+          if (!v) throw new Error("usage: gov notes restore SEQ   (see gov notes history)");
+          await api.call("notes.set", { project, text: v.text });
+          console.log(`notes restored to version ${v.seq}`);
+          return 0;
+        }
+        if (rest[0] === "edit") {
+          const dir = mkdtempSync(join(tmpdir(), "gov-notes-"));
+          const file = join(dir, "notes.md");
+          writeFileSync(file, n.text, { mode: 0o600 });
+          const r = spawnSync(env.EDITOR || env.VISUAL || "nano", [file], { stdio: "inherit" });
+          const text = readFileSync(file, "utf8");
+          rmSync(dir, { recursive: true, force: true });
+          if (r.status !== 0) throw new Error("the editor did not finish; notes unchanged");
+          if (text === n.text) { console.log(dim("unchanged")); return 0; }
+          await api.call("notes.set", { project, text });
+          console.log(`notes saved (${text.length} chars)`);
+          return 0;
+        }
+        throw new Error("usage: gov notes [edit|history|restore SEQ]");
       }
       case "gates": {
         const { gates } = await api.call("gate.list");
@@ -375,7 +423,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy]|disconnect agy|reset|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy]|disconnect agy|notes [edit|history|restore SEQ]|reset|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

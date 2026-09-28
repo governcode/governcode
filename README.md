@@ -92,9 +92,22 @@ risky steps always ask (deleting, git commands that change the repository, insta
 network tools, interpreters, handing work to a paid Runner), and everything is in the Trace. Details:
 [docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
 
-The Controller remembers the project's recent conversation (the last 10 exchanges, up to about
-12,000 characters) until you start a new one (`gov reset`, or **New conversation** in the
-Dashboard). The first time a Controller works, GovernCode asks
+**Project memory.** GovernCode, not the AI tool, keeps what a Controller knows about a project,
+so you can switch Controllers without losing the story. Each turn the Controller gets:
+- the project's **notes**: a short brief (goal, decisions, open questions, next steps) that the
+  Controller keeps current with GovernCode's `project_notes` tool. You read and edit them with
+  `gov notes` (`edit`, `history`, `restore`) or the Dashboard's Notes view; every version is
+  kept, and they stay in GovernCode, never in your repository;
+- the project's **record**, built from the Trace with no AI: recent Specs, Checkpoints and what
+  you have allowed for the project;
+- the **recent conversation**: the last 10 exchanges, up to about 12,000 characters, until you
+  start a new one (`gov reset`, or **New conversation** in the Dashboard).
+
+All of it goes into the message as information, never as instructions. When you switch a
+project to a Controller from another provider (`gov controller codex`, or Change in the
+Dashboard), GovernCode shows what it would share and asks once: share, and the new Controller
+picks up where the last one left off; or start fresh, and it sees only its own turns. What
+carries over is what was said, decided and done, not a tool's private working state. The first time a Controller works, GovernCode asks
 whether it should bring **your own instructions** (for Claude Code: your CLAUDE.md, skills,
 agents and hooks; for Codex: your AGENTS.md). Off by default: it starts clean. Change it any time
 with `gov personal claude on|off` or in Settings.

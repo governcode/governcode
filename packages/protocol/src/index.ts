@@ -115,6 +115,12 @@ export const Params = {
   "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),
   "connect.cancel": z.object({ id: z.string().regex(/^C-\d+$/) }),
   "tools.disconnect": z.object({ tool: z.enum(["agy"]) }),
+  // Project memory: the notes (read, set by the user, with every version), and whether a
+  // Controller from another provider may see the project's conversation, record and notes.
+  "notes.get": z.object({ project: ProjectName }),
+  "notes.set": z.object({ project: ProjectName, text: z.string().max(4000) }),
+  "context.state": z.object({ project: ProjectName }),
+  "context.share": z.object({ project: ProjectName, provider: z.string().regex(/^[a-z0-9-]{1,40}$/), share: z.boolean() }),
 } as const;
 export type Method = keyof typeof Params;
 
@@ -137,7 +143,7 @@ export type TraceEvent = {
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone"
-    | "tool.connected" | "tool.disconnected";
+    | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
 };

@@ -16,6 +16,7 @@ import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, s
 import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
+import { notesOf, setNotes } from "./memory.ts";
 
 export type DelegationContext = {
   project: { name: string; path: string };
@@ -72,6 +73,14 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
       discard(ctx.stateDir, s.id);
       ctx.ledger.updateSpec(s.id, { status: "undone", note: "discarded by the Controller" }, "controller");
       return { id: s.id, discarded: true };
+    }
+    if (method === "controller.project_notes") {
+      const w = (params as { write?: unknown } | null)?.write;
+      if (w === undefined) return { notes: notesOf(ctx.ledger, ctx.project.name).text };
+      if (typeof w !== "string") throw new Error("write must be the whole notes, as text");
+      const r = setNotes(ctx.ledger, ctx.project.name, w, "controller");
+      ctx.notify({ kind: "notes", project: ctx.project.name, chars: r.chars });
+      return { saved: true, chars: r.chars };
     }
     if (method === "controller.spec_status") {
       const s = ctx.ledger.spec(String((params as any)?.id));
