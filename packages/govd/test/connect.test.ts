@@ -19,6 +19,7 @@ const login = path.join(process.env.HOME, ".gemini", "login");
 const quota = () => { process.stdout.write(JSON.stringify({ command: { data: { groups: [{ name: "Gemini Models",
   buckets: [{ window: "weekly", remaining_fraction: 0.5, reset_time: null }] }] } } }) + "\\n"); process.exit(0); };
 if (fs.existsSync(login)) quota();
+if (!process.stdin.isTTY) { process.stderr.write("not logged in and no controlling terminal; cannot complete interactive login\\n"); process.exit(1); }
 process.stdout.write("Authentication required. Please visit the URL to log in:\\n  https://accounts.example/auth?client=x&code_challenge=y\\n");
 require("node:readline").createInterface({ input: process.stdin }).once("line", (code) => {
   if (code.trim() !== "good-code") { process.stderr.write("error: invalid code\\n"); process.exit(1); }

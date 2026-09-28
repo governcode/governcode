@@ -64,7 +64,7 @@ export function Tools() {
       <p className="dim small">Each AI tool signs in for GovernCode once, with its own sign-in, in a home that belongs to GovernCode: your own setup, keyring and settings are never used. GovernCode never reads the login the tool keeps there. Disconnect removes it.</p>
       <div className="table">
         {tools.map((t) => {
-          const use = t.usage?.readings?.length ? t.usage.readings.map((r) => `${r.window} ${r.usedPercent}% used`).join(" · ") : "";
+          const use = t.connected && t.usage?.readings?.length ? t.usage.readings.map((r) => `${r.window} ${r.usedPercent}% used`).join(" · ") : "";
           return (
             <div key={t.tool} className="tr">
               <b>{t.name}</b>
@@ -88,7 +88,7 @@ export function Tools() {
           <div className="row"><b>Signing in</b><span className="spacer" /><button className="btn" onClick={cancel} disabled={!signIn.id}>Cancel</button></div>
           {!signIn.url && <p className="dim small">Starting the tool's sign-in inside the sandbox…</p>}
           {signIn.url && !signIn.sent && <>
-            <p className="small">1. Open the sign-in page and sign in with the account this tool should use.</p>
+            <p className="small">1. Open the sign-in page and sign in with the account this tool should use. The tool waits about a minute; if it runs out, choose Connect again.</p>
             <div className="row">
               <button className="btn btn-accent" onClick={() => void api().openSignIn(signIn.url!)}>Open sign-in page</button>
               <button className="btn" onClick={() => void navigator.clipboard.writeText(signIn.url!)}>Copy link</button>

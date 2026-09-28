@@ -178,36 +178,47 @@ function parseQuotaUnsafe(out: string, model: string): Measurement | null {
 }
 
 /** The usage source: `agy -p /quota` in the private home, sandboxed, no agent turn. */
+/** Antigravity's usage, read in a home with `agy -p /quota` (sandboxed, no agent turn, no quota
+ *  spent, no terminal: it never signs in here). */
+export async function quotaIn(o: { supervisor: string; policyDir: string }, home: string): Promise<{ m: Measurement | null; why: string | null }> {
+  let bin: string;
+  try { bin = agyBinary(); } catch { return { m: null, why: "Antigravity is not installed" }; }
+  const tmp = mkdtempSync(join(tmpdir(), "governcode-agy-"));
+  const scratch = join(tmp, "work");
+  mkdirSync(scratch);
+  const policyFile = join(o.policyDir, `agy-usage-${process.pid}-${Date.now()}-${randomBytes(3).toString("hex")}.json`);
+  try {
+    mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
+    const policy = agyPolicy({ work: scratch, tmp, home, bin, writePaths: [], node: process.execPath, socket: "/nonexistent" });
+    writeFileSync(policyFile, JSON.stringify({ ...policy, unix_connect: policy.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
+    const out = await run(o.supervisor, policyFile, bin, ["-p", "/quota", "--output-format", "json"], agyEnv(tmp, home), scratch, 40_000);
+    const m = out.code === 0 ? parseQuota(out.stdout) : null;   // a reading counts only from a clean run
+    return { m, why: m ? null : /not logged in|Authentication required|controlling terminal/i.test(out.stdout + out.stderr)
+      ? "Antigravity needs signing in again (gov connect agy)" : "Antigravity did not report its quota" };
+  } catch {
+    return { m: null, why: "Antigravity did not report its quota" };
+  } finally {
+    rmSync(policyFile, { force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/** The usage source: the connected home's quota. */
 export function agyUsage(o: { supervisor: string; policyDir: string; stateDir: string }): UsageSource & { why(): string | null } {
   let why: string | null = null;
   return {
     provider: "agy",
     why: () => why,
     async read() {
-      let bin: string;
-      try { bin = agyBinary(); } catch (e) { why = "Antigravity is not installed"; return null; }
-      const home = toolHome(o.stateDir, "agy");
-      if (!isConnected(o.stateDir, "agy")) { why = "Antigravity is not connected (gov connect agy)"; return null; }
-      const tmp = mkdtempSync(join(tmpdir(), "governcode-agy-"));
-      const scratch = join(tmp, "work");
-      mkdirSync(scratch);
-      const policyFile = join(o.policyDir, `agy-usage-${process.pid}-${Date.now()}.json`);
-      try {
-        mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
-        const policy = agyPolicy({ work: scratch, tmp, home, bin, writePaths: [], node: process.execPath, socket: "/nonexistent" });
-        writeFileSync(policyFile, JSON.stringify({ ...policy, unix_connect: policy.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
-        const out = await run(o.supervisor, policyFile, bin, ["-p", "/quota", "--output-format", "json"], agyEnv(tmp, home), scratch, 40_000);
-        const m = out.code === 0 ? parseQuota(out.stdout) : null;   // a reading counts only from a clean run
-        why = m ? null : /not logged in|Authentication required/i.test(out.stdout + out.stderr)
-          ? "Antigravity needs signing in again (gov connect agy)" : "Antigravity did not report its quota";
-        return m;
-      } catch {
-        why = "Antigravity did not report its quota";
+      if (!isConnected(o.stateDir, "agy")) {
+        let installed = true;
+        try { agyBinary(); } catch { installed = false; }
+        why = installed ? "Antigravity is not connected (gov connect agy)" : "Antigravity is not installed";
         return null;
-      } finally {
-        rmSync(policyFile, { force: true });
-        rmSync(tmp, { recursive: true, force: true });
       }
+      const r = await quotaIn(o, toolHome(o.stateDir, "agy"));
+      why = r.why;
+      return r.m;
     },
   };
 }

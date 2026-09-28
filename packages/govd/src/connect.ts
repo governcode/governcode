@@ -7,14 +7,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agyBinary, agyEnv, agyPolicy, hold, inUse, isConnected, parseQuota, safeWrite, toolHome, useKey, CONNECTED_MARK } from "./agy.ts";
+import { agyBinary, agyEnv, agyPolicy, hold, inUse, isConnected, quotaIn, safeWrite, toolHome, useKey, CONNECTED_MARK } from "./agy.ts";
 
 export type Tool = "agy";
 export const TOOLS: Record<Tool, { name: string; revoke: string }> = {
   agy: { name: "Antigravity", revoke: "https://myaccount.google.com/connections" },
 };
 
-type Session = { tool: Tool; child: ChildProcess };
+type Session = { tool: Tool; child: ChildProcess; sent: Set<string> };
 const URL_RE = /https:\/\/[^\s"'<>]+/;
 
 export class Connector {
@@ -54,38 +54,46 @@ export class Connector {
     writeFileSync(policyFile, JSON.stringify({ ...base, unix_connect: base.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
     const env = agyEnv(tmp, home);
     const release = hold(this.o.stateDir, tool);
-    const child = spawn(this.o.supervisor, ["run", "--policy", policyFile, "--", bin, "-p", "/quota", "--output-format", "json"],
+    const sent = new Set<string>();           // what the user pasted is echoed by the terminal: not shown back
+    // The tool signs in only with a terminal ("no controlling terminal; cannot complete interactive
+    // login"), so the sandboxed command runs under a pseudo-terminal from `script` (util-linux).
+    const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
+    const inner = [this.o.supervisor, "run", "--policy", policyFile, "--", bin, "-p", "/quota", "--output-format", "json"].map(q).join(" ");
+    const child = spawn(process.env.GOVERNCODE_SCRIPT_BIN ?? "script", ["-qfec", inner, "/dev/null"],
       { cwd: work, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     child.stdin!.on("error", () => {});
-    this.sessions.set(id, { tool, child });
-    let stdout = "";
+    this.sessions.set(id, { tool, child, sent });
     let shownUrl = false;
+    const clean = (x: string) => x.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
     const show = (chunk: string) => {
-      for (const line of chunk.split("\n")) {
+      for (const line of clean(chunk).split("\n")) {
         const t = line.trim();
+        if (sent.has(t)) continue;
         if (!t || t.startsWith("{")) continue;             // the final usage JSON is read, not shown
         const url = URL_RE.exec(t)?.[0];
         if (url && !shownUrl) { shownUrl = true; notify({ kind: "connect", id, url }); continue; }
         notify({ kind: "connect", id, text: t.slice(0, 500) });
       }
     };
-    child.stdout!.on("data", (b) => { const s = String(b); stdout = (stdout + s).slice(-200_000); show(s); });
+    child.stdout!.on("data", (b) => show(String(b)));
     child.stderr!.on("data", (b) => show(String(b)));
     const timer = setTimeout(() => { try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } }, 10 * 60_000);
     return new Promise((ok) => {
-      child.on("close", (code) => {
+      child.on("close", async (code) => {
         clearTimeout(timer);
         this.sessions.delete(id);
-        release();
         rmSync(policyFile, { force: true });
         rmSync(tmp, { recursive: true, force: true });
-        const json = stdout.split("\n").filter((l) => l.trim().startsWith("{")).pop() ?? "";
-        // Connected only when the tool exited cleanly AND then reported its usage (so the login works).
-        let connected = code === 0 && parseQuota(json) !== null;
+        // Connected only when the sign-in exited cleanly AND a separate, ordinary usage check in
+        // that home then works (a terminal may drop the tool's last line, so its output is not
+        // trusted for this).
+        let connected = false;
         try {
+          connected = code === 0 && (await quotaIn(this.o, home)).m !== null;
           if (connected) safeWrite(join(home, CONNECTED_MARK), "Connected for GovernCode. GovernCode never reads the login the tool keeps here.\n");
           else rmSync(join(home, CONNECTED_MARK), { force: true });
         } catch { connected = false; }
+        release();
         ok({ id, connected, note: connected ? `${TOOLS[tool].name} is connected for GovernCode` : `${TOOLS[tool].name} did not finish signing in` });
       });
       child.on("error", () => { clearTimeout(timer); this.sessions.delete(id); release(); ok({ id, connected: false, note: `${TOOLS[tool].name} did not start` }); });
@@ -96,7 +104,8 @@ export class Connector {
   input(id: string, text: string): void {
     const s = this.sessions.get(id);
     if (!s) throw new Error(`no sign-in ${id} is running`);
-    s.child.stdin!.write(text + "\n");
+    s.sent.add(text.trim());
+    s.child.stdin!.write(text + "\r");      // Enter, on a terminal
   }
 
   cancel(id: string): void {
