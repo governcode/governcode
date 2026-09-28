@@ -432,6 +432,11 @@ export class Daemon {
     const project = found ?? { name: null, path: this.opts.homeDir, controller: this.homeController(), readOnly: true };
     const actor = `controller · ${project.controller.provider}`;
     const L = this.ledger;
+    // One Controller turn at a time per project: a second would talk over the first, and the
+    // conversation record could pair a reply with the wrong message (security review).
+    if (found && (this.turning.get(found.name) ?? 0) > 0) {
+      throw new RpcError(Errors.refused, `the Controller is still working on ${found.name}; wait for it to finish`);
+    }
     const history = this.conversation(project.name);
     L.append(project.name, "turn.started", "user", { prompt: prompt.slice(0, 2000), controller: project.controller, home: !found });
     if (found) this.turning.set(found.name, (this.turning.get(found.name) ?? 0) + 1);

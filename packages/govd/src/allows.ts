@@ -9,7 +9,7 @@
 // Some programs always ask whatever the rule says (deleting, publishing, networking,
 // interpreters that can run anything).
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, posix } from "node:path";
 
 export type AllowScope = "turn" | "spec" | "project";
 export type Kind = { key: string; label: string };
@@ -151,7 +151,12 @@ const FIND_TESTS = new Set(["-name", "-iname", "-path", "-ipath", "-type", "-max
   "-mtime", "-mmin", "-user", "-regex", "-iregex"]);
 const FIND_FLAGS = new Set(["-print", "-print0", "-not", "-o", "-or", "-a", "-and", "-empty", "-L", "-P"]);
 // Special files that never end or are not files at all: reading them is not a quiet read.
-const SPECIAL = /^\/(dev|proc|sys|run)(\/|$)/;
+const SPECIAL_RE = /^\/(dev|proc|sys|run)(\/|$)/;
+/** A special place, however it is spelled (//dev/zero, /./dev), or any path with a .. segment,
+ *  which could climb out of the project to one (security review 2026-09-27).
+ *  ponytail: a symlink inside the project pointing at /dev/zero is not caught here; the read is
+ *  still sandboxed, only unbounded. */
+const SPECIAL = { test: (p: string) => p.split("/").includes("..") || (p.startsWith("/") && SPECIAL_RE.test(posix.normalize(p).replace(/^\/+/, "/"))) };
 
 function quietArgs(words: string[]): boolean {
   if (words[0] === "find") {
@@ -165,7 +170,7 @@ function quietArgs(words: string[]): boolean {
     return true;
   }
   if (words[0] === "echo") return true;                        // echo prints its words (substitution already refused)
-  const o = QUIET[words[0]];
+  const o = Object.hasOwn(QUIET, words[0]) ? QUIET[words[0]] : undefined;
   if (!o) return false;
   let operands = false;
   for (let i = 1; i < words.length; i++) {
@@ -212,7 +217,7 @@ const GIT_READ: Record<string, RegExp> = {
   show: /^(--stat|--name-only|--name-status|--oneline|--no-color|-p|--patch|--no-ext-diff|--no-textconv|--(format|pretty)=[^]*|--)$/,
 };
 function gitReadOk(words: string[]): boolean {
-  const opts = GIT_READ[words[1] ?? ""];
+  const opts = Object.hasOwn(GIT_READ, words[1] ?? "") ? GIT_READ[words[1]] : undefined;   // never Object.prototype's names
   if (!opts) return false;
   for (let i = 2; i < words.length; i++) {
     const w = words[i];
@@ -227,7 +232,7 @@ function gitReadOk(words: string[]): boolean {
 // listing). Everything else asks, because installing hides behind many names (npm i, it,
 // isntall, add...) and some tools install when given nothing at all (a bare `yarn`).
 const PACKAGE_SAFE: Record<string, Set<string>> = {
-  npm: new Set(["test", "t", "tst", "run", "run-script", "rum", "urn", "start", "ls", "list", "outdated", "version", "help"]),
+  npm: new Set(["test", "t", "tst", "run", "run-script", "rum", "urn", "start", "ls", "list", "outdated", "help"]),
   pnpm: new Set(["test", "t", "run", "start", "ls", "list", "outdated"]),
   yarn: new Set(["test", "run", "start", "list", "outdated"]),
   bun: new Set(["test", "run"]),
@@ -239,7 +244,7 @@ const PACKAGE_SAFE: Record<string, Set<string>> = {
 /** The kind of one simple command (its words), or null when it must always ask. */
 function commandKind(words: string[]): Kind | null {
     if (words[0] === "git" && !gitReadOk(words)) return null;
-    const pm = PACKAGE_SAFE[words[0]];
+    const pm = Object.hasOwn(PACKAGE_SAFE, words[0]) ? PACKAGE_SAFE[words[0]] : undefined;
     const info = words.length === 2 && ["--version", "-v", "-V", "--help", "-h"].includes(words[1]);
     if (pm && !info && !pm.has(words[1] ?? "")) return null;
     const key = commandKey(words);
