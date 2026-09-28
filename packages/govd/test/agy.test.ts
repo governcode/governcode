@@ -252,3 +252,9 @@ test("review: junk on a turn socket gets no reply and does not crash govd; an ov
     assert.equal(JSON.parse((await send(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "ping" }) + "\n"))!).result.ok, "ping");
   } finally { sock.close(); }
 });
+
+test("review 2: quota fields of the wrong type are skipped, never a crash", () => {
+  const evil = { toString: 0 };
+  assert.equal(parseQuota(JSON.stringify({ command: { data: { groups: [{ name: evil, buckets: [] }] } } })), null);
+  assert.equal(parseQuota(JSON.stringify({ command: { data: { groups: [{ name: "Gemini Models", buckets: [{ window: evil, remaining_fraction: 0.5 }] }] } } })), null);
+});

@@ -426,8 +426,9 @@ export class Daemon {
         }));
         return { tools: tools.map((t) => {
           const view = this.usage[t.tool] ? this.limits.view(t.tool) : null;
-          const why = view && !view.readings.length && !view.verdict.ok ? view.verdict.reason : null;
-          return { ...t, usage: view, problem: t.connected && why && /sign|connect/i.test(why) ? why : null };
+          // Measured and no reading, for any reason: the login may no longer work. Never "connected".
+          const problem = p.measure && t.connected && view && !view.readings.length ? (view.verdict.ok ? "could not check" : view.verdict.reason) : null;
+          return { ...t, usage: view, problem };
         }) };
       }
       case "connect.start": {

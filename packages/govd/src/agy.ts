@@ -159,15 +159,19 @@ export function agyEnv(tmp: string, home: string): Record<string, string> {
 /** Antigravity's usage for the model group GovernCode runs (Gemini unless a Claude or GPT
  *  model is named): weekly and 5-hour windows. Null when it cannot be read (= held). */
 export function parseQuota(out: string, model = ""): Measurement | null {
+  try { return parseQuotaUnsafe(out, model); } catch { return null; }   // vendor output never crashes govd
+}
+function parseQuotaUnsafe(out: string, model: string): Measurement | null {
   let d: any;
   try { d = JSON.parse(out); } catch { return null; }
   const groups: unknown = d?.command?.data?.groups;
   if (!Array.isArray(groups)) return null;
   const third = /claude|gpt|opus|sonnet/i.test(model);
-  const g = groups.find((x) => (third ? /claude|gpt/i : /gemini/i).test(String(x?.name ?? "")));
+  const g = groups.find((x) => typeof x?.name === "string" && (third ? /claude|gpt/i : /gemini/i).test(x.name));
   if (!Array.isArray(g?.buckets)) return null;
   const readings = g.buckets.filter((b: any) => typeof b?.remaining_fraction === "number" && Number.isFinite(b.remaining_fraction))
-    .map((b: any) => ({ window: b.window === "5h" ? "5-hour" : String(b.window ?? b.id ?? "window"),
+    .filter((b: any) => typeof b.window === "string" && /^[a-z0-9-]{1,20}$/i.test(b.window))
+    .map((b: any) => ({ window: b.window === "5h" ? "5-hour" : b.window,
       usedPercent: Math.round(Math.min(100, Math.max(0, (1 - b.remaining_fraction) * 100)) * 10) / 10,
       resetsAt: typeof b.reset_time === "string" ? b.reset_time : null }));
   return readings.length ? { provider: "agy", measuredAt: Date.now(), readings } : null;
@@ -193,7 +197,7 @@ export function agyUsage(o: { supervisor: string; policyDir: string; stateDir: s
         const policy = agyPolicy({ work: scratch, tmp, home, bin, writePaths: [], node: process.execPath, socket: "/nonexistent" });
         writeFileSync(policyFile, JSON.stringify({ ...policy, unix_connect: policy.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
         const out = await run(o.supervisor, policyFile, bin, ["-p", "/quota", "--output-format", "json"], agyEnv(tmp, home), scratch, 40_000);
-        const m = parseQuota(out.stdout);
+        const m = out.code === 0 ? parseQuota(out.stdout) : null;   // a reading counts only from a clean run
         why = m ? null : /not logged in|Authentication required/i.test(out.stdout + out.stderr)
           ? "Antigravity needs signing in again (gov connect agy)" : "Antigravity did not report its quota";
         return m;
@@ -209,14 +213,14 @@ export function agyUsage(o: { supervisor: string; policyDir: string; stateDir: s
 }
 
 function run(supervisor: string, policyFile: string, bin: string, args: string[], env: Record<string, string>, cwd: string, ms: number) {
-  return new Promise<{ stdout: string; stderr: string }>((ok) => {
+  return new Promise<{ stdout: string; stderr: string; code: number | null }>((ok) => {
     const child = spawn(supervisor, ["run", "--policy", policyFile, "--", bin, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdout = "", stderr = "";
     child.stdout.on("data", (b) => (stdout = (stdout + b).slice(-200_000)));
     child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-8000)));
     const t = setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } }, ms);
-    child.on("close", () => { clearTimeout(t); ok({ stdout, stderr }); });
-    child.on("error", () => { clearTimeout(t); ok({ stdout, stderr }); });
+    child.on("close", (code) => { clearTimeout(t); ok({ stdout, stderr, code }); });
+    child.on("error", () => { clearTimeout(t); ok({ stdout, stderr, code: null }); });
   });
 }
 
@@ -276,6 +280,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
     { cwd: o.worktree, env: agyEnv(tmp, home), stdio: ["ignore", "pipe", "pipe"], detached: true });
   cleanups.push(() => { try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } });
   let stderr = "";
+  child.on("error", (e) => finish({ ok: false, summary: `agy did not start: ${e.message}` }));
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
   let result: any = null;
   createInterface({ input: child.stdout }).on("line", (line) => {
@@ -292,7 +297,9 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   o.signal?.addEventListener("abort", () => {
     stopped = String(o.signal?.reason ?? "aborted");
     try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ }
-    setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } }, 10_000).unref();
+    // govern-sup reaps every descendant itself (up to 30 s) and only then exits; a SIGKILL after
+    // 60 s is the last resort, and even then nothing is recorded until it reports closed.
+    setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } }, 60_000).unref();
   }, { once: true });
   child.on("close", (code) => {
     if (stopped) return finish({ ok: false, summary: `stopped: ${stopped}` });
