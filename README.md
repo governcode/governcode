@@ -181,6 +181,8 @@ GovernCode is developed with heavy AI assistance, and we say exactly how:
   he makes every product decision and reviews what ships.
 - **Claude (Anthropic)**: lead AI developer: architecture, most of the code, reviews,
   and integration.
+- **Codex (OpenAI)**: code and security reviews (the sandbox, the git guard, the Gate rules)
+  and test runs.
 - **Grok (xAI)**: research on the landscape and red-team security reviews.
 - **Gemini (Google)**: naming and design work, including the phone mockups.
 
