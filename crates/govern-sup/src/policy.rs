@@ -6,7 +6,7 @@
 use serde::Deserialize;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 
 /// Bounds on what govd may ask for, checked before anything is allocated per entry.
@@ -92,19 +92,23 @@ fn resolve_root_links(path: &Path) -> Result<PathBuf, std::io::Error> {
             continue;
         }
         let next = real.join(&name);
-        let meta = match std::fs::symlink_metadata(&next) {
-            Ok(m) => m,
-            Err(e) => return Err(e),
-        };
-        if !meta.file_type().is_symlink() {
+        // Pinned: the owner check and the target read happen on this one inode, so a link
+        // swapped in between cannot supply its target (security re-review 2026-09-27).
+        let (meta, target) = inspect(&next)?;
+        if meta.st_mode & libc::S_IFMT != libc::S_IFLNK {
+            // Walking on past something means it must be a directory, as for the kernel:
+            // "/etc/passwd/.." is ENOTDIR there, never "/etc".
+            if !todo.is_empty() && meta.st_mode & libc::S_IFMT != libc::S_IFDIR {
+                return Err(std::io::Error::from_raw_os_error(libc::ENOTDIR));
+            }
             real = next;
             continue;
         }
         links += 1;
-        if meta.uid() != 0 || links > 40 {
+        if meta.st_uid != 0 || links > 40 {
             return Err(std::io::Error::other(format!("{} is a symlink you own (or a loop); list its real path instead", next.display())));
         }
-        let target = std::fs::read_link(&next)?;
+        let target = target.ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))?;
         if target.is_absolute() {
             real = PathBuf::from("/");
         }
@@ -115,6 +119,33 @@ fn resolve_root_links(path: &Path) -> Result<PathBuf, std::io::Error> {
         }));
     }
     Ok(real)
+}
+
+/// Opens `path` itself (not following it) and reads, from that one descriptor, its type and
+/// owner and, for a symlink, its target.
+fn inspect(path: &Path) -> Result<(libc::stat, Option<PathBuf>), std::io::Error> {
+    use std::os::unix::ffi::OsStringExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    use std::os::fd::AsRawFd;
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if st.st_mode & libc::S_IFMT != libc::S_IFLNK {
+        return Ok((st, None));
+    }
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    let n = unsafe { libc::readlinkat(fd.as_raw_fd(), c"".as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    buf.truncate(n as usize);
+    Ok((st, Some(PathBuf::from(std::ffi::OsString::from_vec(buf)))))
 }
 
 /// Opens `path` as an O_PATH descriptor, never through a symlink the user owns. Write paths
@@ -338,6 +369,13 @@ mod tests {
         if std::fs::symlink_metadata("/bin").is_ok_and(|m| m.file_type().is_symlink()) {
             assert!(parse(&policy(&t, r#","exec":["/bin"]"#)).is_ok());
         }
+    }
+
+    #[test]
+    fn resolution_never_walks_past_a_file() {
+        // The kernel refuses /etc/passwd/..; so must we (it must not become /etc).
+        assert!(resolve_root_links(Path::new("/etc/passwd/../hosts")).is_err());
+        assert_eq!(resolve_root_links(Path::new("/usr/bin")).unwrap(), PathBuf::from("/usr/bin"));
     }
 
     #[test]
