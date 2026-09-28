@@ -18,6 +18,7 @@ const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\n
 // A Controller that edits README.md and adds notes.txt in its working directory.
 exe("claude", `#!/usr/bin/env node
 const fs = require("node:fs");
+fs.writeFileSync(require("node:path").join(__dirname, "last-args.json"), JSON.stringify(process.argv.slice(2)));
 require("node:readline").createInterface({ input: process.stdin }).on("line", () => {
   fs.writeFileSync("README.md", "# changed by the controller\\n");
   fs.writeFileSync("notes.txt", "new\\n");
@@ -48,6 +49,11 @@ test("a Controller turn's changes are checkpointed and can be undone exactly onc
   execFileSync("git", ["-C", proj, "add", "-A"]);
   const r = await c.call("ask", { project: "proj", prompt: "edit things" });
   assert.equal(r.result.ok, true, JSON.stringify(r));
+  // The user's own Claude Code "allow" rules can never skip a Gate: every acting tool is sent
+  // back to GovernCode with an "ask" rule (first fresh-install test, 2026-09-27).
+  const args: string[] = JSON.parse(readFileSync(join(bin, "last-args.json"), "utf8"));
+  const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
+  for (const t of ["Bash", "Edit", "Write", "WebFetch", "mcp__governcode__delegate"]) assert.ok(settings.permissions.ask.includes(t), t);
   const { result: { turns } } = await c.call("turn.list", { project: "proj" });
   assert.equal(turns.length, 1);
   assert.deepEqual(turns[0].files.sort(), ["README.md", "notes.txt"]);

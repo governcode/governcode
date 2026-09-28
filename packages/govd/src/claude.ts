@@ -108,6 +108,14 @@ function which(cmd: string): string {
   throw new Error(`${cmd} not found on PATH`);
 }
 
+/** Every tool that acts, sent back to GovernCode whatever the user's own Claude Code settings
+ *  allow. The user's settings are loaded (their model and preferences), and in Claude Code an
+ *  "ask" rule outranks an "allow" rule, so a permissive `permissions.allow` there can never
+ *  skip GovernCode's Gate; GovernCode then applies its own rules (quiet reads, standing allows).
+ *  Found in the first fresh-install test, 2026-09-27: `npm test` ran with no Gate. Reads
+ *  (Read, Glob, Grep) are not listed: Claude Code does not ask for them, the sandbox bounds them. */
+export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "mcp__governcode__delegate"];
+
 export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
   mcp?: McpServer;
@@ -121,6 +129,7 @@ export function runTurn(opts: {
     "--permission-prompt-tool", "stdio", "--permission-mode", "default",
     // Only the user's own settings; never the worktree's, which the harness can write.
     "--setting-sources", "user", "--no-session-persistence",
+    "--settings", JSON.stringify({ permissions: { ask: ASK_TOOLS } }),
     "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : []),
     "--append-system-prompt", CONTROLLER_CONTEXT,
     // GovernCode's own tools for the Controller, and no other MCP servers from anywhere.
