@@ -22,11 +22,13 @@ shift; policy="$2"; shift 3; cp "$policy" "${root}/last-policy.json"; exec "$@"
 `);
 // Fake Claude Code: one text, one permission request, then a result reporting the answer.
 exe("claude", `#!/usr/bin/env node
+// The new message only: earlier ones ride along as a record in the same message.
+const newMsg = (m) => { const t = JSON.stringify(m); const k = t.lastIndexOf("The user's new message:"); return k < 0 ? t : t.slice(k); };
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 rl.on("line", (l) => {
   const m = JSON.parse(l);
-  if (m.type === "user" && JSON.stringify(m).includes("propose")) {
+  if (m.type === "user" && newMsg(m).includes("propose")) {
     // Like the real MCP server: call propose_project on the turn socket named in --mcp-config.
     const cfg = JSON.parse(process.argv[process.argv.indexOf("--mcp-config") + 1]).mcpServers.governcode;
     const s = require("node:net").connect(cfg.args[1]);
@@ -37,9 +39,9 @@ rl.on("line", (l) => {
       out({ type: "result", is_error: false, result: "mode:" + cfg.args[2] + " " + JSON.stringify(got.map((g) => g.result ? g.result.id : g.error.message)) });
       process.exit(0);
     });
-    s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.propose_project", params: (() => { const path = /propose (\\/[^ "\\\\]+)/.exec(JSON.stringify(m))[1]; return { name: path.split("/").pop(), path, reason: "an AIS reader" }; })() }) + "\\n");
+    s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.propose_project", params: (() => { const path = /propose (\\/[^ "\\\\]+)/.exec(newMsg(m))[1]; return { name: path.split("/").pop(), path, reason: "an AIS reader" }; })() }) + "\\n");
     s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "controller.delegate", params: {} }) + "\\n");
-  } else if (m.type === "user" && JSON.stringify(m).includes("twice")) {
+  } else if (m.type === "user" && newMsg(m).includes("twice")) {
     // Two steps of the same kind, then a different one: shows what a standing allow covers.
     global.asks = ["npm test", "npm test --watch", "ls -la", "npm install"]; global.got = [];
     out({ type: "control_request", request_id: "t0", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: global.asks[0] } } });

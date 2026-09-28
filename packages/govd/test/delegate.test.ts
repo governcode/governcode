@@ -209,6 +209,9 @@ test("the model may be left out, or given as \"default\": the Runner's own defau
   assert.deepEqual(specModel(input, undefined), { model: "", effort: null, note: null });
   assert.deepEqual(specModel({ ...input, model: "" }, { runners: { codex: { model: "gpt-x", effort: "low" } }, specModels: "free" } as any),
     { model: "gpt-x", effort: "low", note: null });
+  // An empty model must not skip the effort policy (security review 2026-09-27).
+  const within = specModel({ ...input, model: "", effort: "max" }, { runners: { codex: { model: "gpt-x", effort: "low" } }, specModels: "within" } as any);
+  assert.equal(within.effort, "low");
 });
 
 test("the Controller can discard its own Spec, but not one that was accepted", async () => {

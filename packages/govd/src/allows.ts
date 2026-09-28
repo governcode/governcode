@@ -49,7 +49,7 @@ const ALWAYS_ASK_SUB = new Set(["npm publish", "npm exec", "yarn publish", "pnpm
 // file in the project can steer into running something else.
 // Quiet reads use the same guard (EXEC_FLAG) as rules.
 const QUIET_READS = new Set(["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "which", "stat", "du", "df", "find",
-  "sort", "uniq", "cut", "nl", "echo"]);
+  "sort", "cut", "nl", "echo"]);
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
 
 // Outside quotes, anything that could chain, substitute, redirect, glob or hide a command.
@@ -142,7 +142,6 @@ const QUIET: Record<string, Opts> = {
   df: { letters: "hTi" },
   // Filters that commonly end a pipeline; sort's -o (write a file) is not among its options.
   sort: { letters: "rnufbdhV", arg: ["-k", "-t"] },
-  uniq: { letters: "cdiu" },
   cut: { arg: ["-d", "-f", "-c", "-b"] },
   nl: { letters: "b", arg: ["-w"] },
   echo: { letters: "neE" },
@@ -202,19 +201,57 @@ export function kindOf(req: { tool: string; base?: string; spec?: string; input:
 // git: reading the repository is a kind like any other (it runs inside the sandbox, and the .git
 // guard puts back anything a turn changed in .git); anything that changes the repository or
 // reaches the network always asks: commit, push, pull, fetch, reset, rebase, checkout, config...
-const GIT_READ = new Set(["status", "diff", "log", "show", "blame", "ls-files", "rev-parse", "describe", "shortlog", "grep"]);
+// Only these subcommands, and only these options (anything else, such as grep's
+// --open-files-in-pager or diff's --output, asks; security review 2026-09-27). Operands (refs,
+// paths) are allowed. git may still run a program its own config names (a diff driver, a
+// pager): inside the sandbox, as `npm test` runs the project's scripts, and the label says so.
+const GIT_READ: Record<string, RegExp> = {
+  status: /^(-s|--short|-b|--branch|--porcelain(=v[12])?|-u|--untracked-files=(no|normal|all)|--ignored)$/,
+  diff: /^(--stat|--numstat|--shortstat|--summary|--name-only|--name-status|--cached|--staged|--no-color|--color=never|-U\d+|--unified=\d+|--word-diff|-w|--ignore-all-space|--no-ext-diff|--no-textconv|--)$/,
+  log: /^(--oneline|-\d+|-n|--max-count=\d+|--stat|--graph|--decorate|--all|--no-color|--reverse|--name-only|--name-status|-p|--patch|--no-ext-diff|--no-textconv|--(format|pretty)=[^]*|--(since|until|author)=[^]*|--)$/,
+  show: /^(--stat|--name-only|--name-status|--oneline|--no-color|-p|--patch|--no-ext-diff|--no-textconv|--(format|pretty)=[^]*|--)$/,
+};
+function gitReadOk(words: string[]): boolean {
+  const opts = GIT_READ[words[1] ?? ""];
+  if (!opts) return false;
+  for (let i = 2; i < words.length; i++) {
+    const w = words[i];
+    if (!w.startsWith("-")) continue;
+    if (!opts.test(w)) return false;
+    if (w === "-n") i++;                                          // -n N
+  }
+  return true;
+}
+
+// Package managers: only these subcommands are a kind (running the project's own scripts or
+// listing). Everything else asks, because installing hides behind many names (npm i, it,
+// isntall, add...) and some tools install when given nothing at all (a bare `yarn`).
+const PACKAGE_SAFE: Record<string, Set<string>> = {
+  npm: new Set(["test", "t", "tst", "run", "run-script", "rum", "urn", "start", "ls", "list", "outdated", "version", "help"]),
+  pnpm: new Set(["test", "t", "run", "start", "ls", "list", "outdated"]),
+  yarn: new Set(["test", "run", "start", "list", "outdated"]),
+  bun: new Set(["test", "run"]),
+  pip: new Set(["list", "show", "freeze", "check"]), pip3: new Set(["list", "show", "freeze", "check"]),
+  uv: new Set(["run"]), poetry: new Set(["run", "show", "check"]), gem: new Set(["list"]), bundle: new Set(["exec", "list"]),
+  composer: new Set(["show", "test", "run-script"]), deno: new Set(["test", "task", "fmt", "lint", "check"]),
+};
 
 /** The kind of one simple command (its words), or null when it must always ask. */
 function commandKind(words: string[]): Kind | null {
-    if (words[0] === "git" && !GIT_READ.has(words[1] ?? "")) return null;
+    if (words[0] === "git" && !gitReadOk(words)) return null;
+    const pm = PACKAGE_SAFE[words[0]];
+    const info = words.length === 2 && ["--version", "-v", "-V", "--help", "-h"].includes(words[1]);
+    if (pm && !info && !pm.has(words[1] ?? "")) return null;
     const key = commandKey(words);
     if (!key || ALWAYS_ASK.has(words[0]) || INTERPRETER.test(words[0]) || ALWAYS_ASK_SUB.has(key) || ALWAYS_ASK_SUB.has(words[0])) return null;
     if (words.some((w) => EXEC_FLAG.test(w))) return null;
     const short = EXEC_SHORT[words[0]];
     if (short && words.slice(1).some((w) => !w.startsWith("--") && short.test(w))) return null;
     if (words[0] === "find" && words.some((w) => FIND_ACTS.test(w))) return null;
-    // Honest label: a build or test command runs the project's own scripts, which the AI can edit.
-    return { key: `command:${key}`, label: `\`${key}\` commands (they run whatever the project's files say; the sandbox still applies)` };
+    // Honest label: a build or test command runs the project's own scripts, which the AI can edit;
+    // git may run programs its config names.
+    const what = words[0] === "git" ? "git may run programs its config names" : "they run whatever the project's files say";
+    return { key: `command:${key}`, label: `\`${key}\` commands (${what}; the sandbox still applies)` };
 }
 
 function controllerKind(req: { tool: string; base?: string; input: Record<string, unknown> }): Kind | null {

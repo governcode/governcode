@@ -86,9 +86,13 @@ What a standing allow can cover is deliberately narrow:
   `cargo add`...), interpreters that run code given as an argument (`python`, `node`, `bash`...),
   launchers that run another program (`env`, `xargs`, `timeout`...), publishing, and every `git`
   command that changes the repository or reaches the network (commit, push, pull, fetch, reset,
-  checkout, config...). Reading the repository (`git status`, `diff`, `log`, `show`...) is a kind
-  like any other: it runs inside the sandbox, and the .git guard puts back anything a turn changed
-  in `.git`.
+  checkout, config...), and package-manager commands other than running the project's scripts or
+  listing (`npm test`, `npm run build` and `npm ls` are kinds; `npm i`, `npm it` and a bare `yarn`
+  install, so they ask). Reading the repository (`git status`, `diff`, `log`, `show`, with their
+  plain options; anything else, such as `--output` or `--open-files-in-pager`, asks) is a kind
+  like any other. It runs inside the sandbox, though git may run a program its own config names
+  (a diff driver, a pager), as `npm test` runs the project's scripts; the .git guard puts back
+  anything a turn changed in `.git`.
 - **A Runner's allows are its own.** Allowing a step inside a Spec's workspace never covers the
   Controller's steps in your real project.
 - **Handing work to a paid Runner always asks.** Handing it to a local model (no quota) is a

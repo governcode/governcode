@@ -19,7 +19,8 @@ const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\n
 exe("claude", `#!/usr/bin/env node
 const fs = require("node:fs");
 fs.writeFileSync(require("node:path").join(__dirname, "last-args.json"), JSON.stringify(process.argv.slice(2)));
-require("node:readline").createInterface({ input: process.stdin }).on("line", () => {
+require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+  fs.writeFileSync(require("node:path").join(__dirname, "last-input.json"), line);
   fs.writeFileSync("README.md", "# changed by the controller\\n");
   fs.writeFileSync("notes.txt", "new\\n");
   process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "edited" }) + "\\n");
@@ -55,13 +56,16 @@ test("a Controller turn's changes are checkpointed and can be undone exactly onc
   const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
   for (const t of ["Bash", "Edit", "Write", "WebFetch", "mcp__governcode__delegate"]) assert.ok(settings.permissions.ask.includes(t), t);
   // The next message carries the conversation so far; a reset starts clean.
+  // It rides in the user's message as a JSON record, never in the system prompt (security review).
+  const sent = () => JSON.stringify(JSON.parse(readFileSync(join(bin, "last-input.json"), "utf8")));
   const systemOf = () => { const a: string[] = JSON.parse(readFileSync(join(bin, "last-args.json"), "utf8")); return a[a.indexOf("--append-system-prompt") + 1]; };
-  assert.ok(!systemOf().includes("The conversation so far"), "the first message has no history");
+  assert.ok(!sent().includes("Earlier in this conversation"), "the first message has no history");
   await c.call("ask", { project: "proj", prompt: "and now?" });
-  assert.match(systemOf(), /User: edit things\nYou replied: edited/);
+  assert.ok(sent().includes("Earlier in this conversation") && sent().includes("edit things"), sent());
+  assert.ok(!systemOf().includes("edit things"), "history never reaches the system prompt");
   await c.call("conversation.reset", { project: "proj" });
   await c.call("ask", { project: "proj", prompt: "fresh start" });
-  assert.ok(!systemOf().includes("edit things"), "a reset forgets the earlier conversation");
+  assert.ok(!sent().includes("edit things"), "a reset forgets the earlier conversation");
   const { result: { turns } } = await c.call("turn.list", { project: "proj" });
   assert.equal(turns.length, 1);
   assert.deepEqual(turns[0].files.sort(), ["README.md", "notes.txt"]);

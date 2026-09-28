@@ -165,7 +165,7 @@ export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", 
 
 export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
-  mcp?: McpServer; history?: string; personal?: boolean;
+  mcp?: McpServer; personal?: boolean;
 }): { cancel(): void } {
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
@@ -179,7 +179,7 @@ export function runTurn(opts: {
     // Without personal instructions the user's hooks do not run either.
     "--settings", JSON.stringify({ permissions: { ask: ASK_TOOLS }, ...(opts.personal ? {} : { disableAllHooks: true }) }),
     "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : []),
-    "--append-system-prompt", opts.history ? `${CONTROLLER_CONTEXT}\n\n${opts.history}` : CONTROLLER_CONTEXT,
+    "--append-system-prompt", CONTROLLER_CONTEXT,
     // GovernCode's own tools for the Controller, and no other MCP servers from anywhere.
     ...(opts.mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { governcode: { command: opts.mcp.node, args: [opts.mcp.script, opts.mcp.socket, ...(opts.mcp.mode ? [opts.mcp.mode] : [])] } } }),
       "--strict-mcp-config"] : []),

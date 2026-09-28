@@ -37,9 +37,11 @@ const EFFORT_ORDER = ["low", "medium", "high", "max"] as const;
 export function specModel(input: { to: string; model: string; effort: SpecInput["effort"] }, s: Pick<SettingsValue, "runners" | "specModels"> | undefined):
     { model: string; effort: SpecInput["effort"]; note: string | null } {
   const def = s?.runners[input.to];
-  // "default", "auto" or nothing: the Runner's default (a Controller once guessed "default").
+  // "default", "auto" or nothing: the Runner's default (a Controller once guessed "default"),
+  // then the same policy as for a named model (security review: an empty model must not skip it).
   if (/^(default|auto)?$/i.test(input.model.trim())) {
-    return def ? { model: def.model, effort: input.effort ?? def.effort, note: null } : { model: "", effort: input.effort, note: null };
+    if (!def) return { model: "", effort: input.effort, note: null };
+    input = { ...input, model: def.model, effort: input.effort ?? def.effort };
   }
   if (!def || !s || s.specModels === "free") return { model: input.model, effort: input.effort, note: null };
   if (s.specModels === "defaults") {
