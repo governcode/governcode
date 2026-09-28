@@ -33,7 +33,13 @@ const ALWAYS_ASK = new Set(["rm", "rmdir", "sudo", "su", "doas", "curl", "wget",
   // Launchers run another program named later on the line, which this check would not see
   // (a Grok red-team review): they always ask, like env and xargs.
   "command", "builtin", "source", ".", "time", "nice", "nohup", "timeout", "stdbuf", "flock", "ionice", "setsid",
-  "watch", "enable", "toybox", "unbuffer", "chrt", "taskset", "cgexec", "firejail", "script", "strace", "ltrace"]);
+  "watch", "enable", "toybox", "unbuffer", "chrt", "taskset", "cgexec", "firejail", "script", "strace", "ltrace",
+  // More launchers (a Grok red-team, 2026-09-27): a kind for any of these would cover every
+  // program named after it.
+  "fakeroot", "setarch", "numactl", "nsenter", "runuser", "pkexec", "sshpass", "prlimit", "chroot", "setpriv",
+  "unshare", "systemd-run", "doas", "ssh-agent", "dbus-launch", "xvfb-run", "valgrind", "gdb",
+  // tar's options hide in its first word without a dash (tar xvfI a.tar ./prog runs ./prog).
+  "tar"]);
 // Program + subcommand pairs that always ask.
 const ALWAYS_ASK_SUB = new Set(["npm publish", "npm exec", "yarn publish", "pnpm publish", "pnpm exec",
   "cargo publish", "cargo install", "gh"]);
@@ -104,7 +110,11 @@ function commandKey(words: string[]): string | null {
 // (python3.13, perl5.38, gawk...).
 const INTERPRETER = /^(python|pypy|perl|ruby|node|nodejs|deno|bun|php|lua|luajit|tcl|tclsh|wish|awk|gawk|mawk|nawk|busybox|R|Rscript|julia|java|jshell|groovy|scala|dotnet|pwsh|powershell|osascript|expect|guile|racket|sbcl|ghci|runghc|elixir|erl|swift|kotlin)[0-9._-]*$/;
 // Flags that make an otherwise harmless program run something or write where it should not.
-const EXEC_FLAG = /^(--pre|--pre-glob|--to-command|--use-compress-program|--checkpoint-action|--rsh-command|--info-script|--new-volume-script|--exec|--execdir|--command|--shell|--editor|--pager|--output|-o|--script-shell|--hostname-bin|--use-compress|-I.*)(=|$)/;
+// A standing kind already runs the project's own scripts (the label says so), inside the sandbox;
+// these are the flags that would run something else, or read config that can.
+const EXEC_FLAG = /^(--pre|--pre-glob|--to-command|--use-compress-program|--checkpoint-action|--rsh-command|--info-script|--new-volume-script|--exec|--execdir|--command|--shell|--editor|--pager|--output|-o|--script-shell|--hostname-bin|--use-compress|-I.*|-exec|-execdir|-toolexec|--config|--eval|--compress-program|--userconfig|--globalconfig|--prefix|--manifest-path|--file|--makefile|--rcfile|--init-file)(=|$)/;
+// Short options that run or load a program for these tools only (grep -f and -I stay quiet).
+const EXEC_SHORT: Record<string, RegExp> = { make: /^-f/, gmake: /^-f/ };
 
 // Quiet reads: for each program, exactly the options known to only read (security review
 // 2026-09-27: a denylist missed rg --hostname-bin, tail -f, grep -f /dev/zero...). Anything
@@ -187,6 +197,8 @@ function controllerKind(req: { tool: string; base?: string; input: Record<string
     const key = commandKey(words);
     if (!key || ALWAYS_ASK.has(words[0]) || INTERPRETER.test(words[0]) || ALWAYS_ASK_SUB.has(key) || ALWAYS_ASK_SUB.has(words[0])) return null;
     if (words.some((w) => EXEC_FLAG.test(w))) return null;
+    const short = EXEC_SHORT[words[0]];
+    if (short && words.slice(1).some((w) => !w.startsWith("--") && short.test(w))) return null;
     if (words[0] === "find" && words.some((w) => FIND_ACTS.test(w))) return null;
     // Honest label: a build or test command runs the project's own scripts, which the AI can edit.
     return { key: `command:${key}`, label: `\`${key}\` commands (they run whatever the project's files say; the sandbox still applies)` };

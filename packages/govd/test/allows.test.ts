@@ -59,6 +59,12 @@ test("Codex's review: flags before the subcommand, versioned interpreters, awk a
   assert.equal(kindOf(bash("npm --prefix test exec -- sh -c id")), null);
   assert.equal(kindOf(bash("tar -I./payload")), null, "short spelling of --use-compress-program");
   assert.equal(kindOf(bash("npm test --script-shell=./payload")), null);
+  // Grok's red-team, 2026-09-27: launchers, and options that run or load something else.
+  for (const c of ["fakeroot bash -c id", "setarch linux64 bash -c id", "sshpass -p s ssh host id", "numactl -C 0 id",
+    "nsenter -t 1 sh", "go test -exec=./pwn", "go test -toolexec=./pwn", "cargo build --config 'build.rustc-wrapper=\"/usr/bin/id\"'",
+    "make test --eval='$(shell id)'", "make test -f Evil.mk", "sort --compress-program=./pwn", "tar -xf a.tar -I./pwn",
+    "tar xvfI a.tar ./pwn", "npm test --userconfig=./rc"]) assert.equal(kindOf(bash(c)), null, c);
+  assert.equal(kindOf(bash("make test"))!.key, "command:make test", "plain make test is still a kind");
   for (const c of ["python3.13 -c pass", "perl5.38 -e 1", "awk 'BEGIN {system(\"id\")}'", "gawk -f x.awk", "busybox sh",
     "rg --pre=sh pattern README.md", "rg --pre sh x", "tar --to-command=sh -xf a.tar", "npm --prefix /x test", "cat -o x",
     // Grok's red team: launchers that run the real program later on the line.
