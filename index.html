@@ -219,7 +219,7 @@ footer .row a:hover{color:var(--text)}
       <svg class="hero-mark" viewBox="0 0 64 64" role="img" aria-label="GovernCode logo"><rect width="64" height="64" rx="14" fill="#0b0f14"/><path d="M40 12H26A14 14 0 0 0 12 26V38A14 14 0 0 0 26 52H38A14 14 0 0 0 52 38V31" fill="none" stroke="#d8e0ea" stroke-width="8"/><path d="M56 28H28V36H56Z" fill="#d8e0ea"/><path d="M41 22H27A5 5 0 0 0 22 27V37A5 5 0 0 0 27 42H41" fill="none" stroke="#5eead4" stroke-width="4"/></svg>
       <h1>Govern<b>Code</b></h1>
       <p class="tag">Put your AI coding crew to work. Keep the keys.</p>
-      <p class="lede">Pick one AI tool to lead and talk to it in plain words. It hands bounded jobs to the others, cloud or local, and every one of them works inside a sandbox the <strong>operating system</strong> enforces. You choose how often they ask, the risky steps always wait for you, and their changes can be undone. The AI writes code faster than ever; GovernCode makes sure you are still the one steering.</p>
+      <p class="lede">Pick one AI tool to lead and talk to it in plain words. It hands bounded jobs to the others, cloud or local, and every coding tool among them works inside a sandbox the <strong>operating system</strong> enforces (a local model gets no tools at all). You choose how often they ask, the risky steps always wait for you, a Runner's work waits for your review, and the Controller's changes can be undone. The AI writes code faster than ever; GovernCode makes sure you are still the one steering.</p>
       <div class="cta">
         <a class="btn primary" href="https://github.com/governcode/governcode">
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -297,7 +297,7 @@ Allow? [y/t/p/N] <span class="b">t</span>
           <h3>Checkpoints</h3>
           <span class="pill accent sm">works today</span>
         </div>
-        <p><strong>Ctrl-Z for your whole crew.</strong> In a git project every change is snapshotted before and after (files over 100 MB excepted, and it tells you if a snapshot fails), so you can diff it and put it back exactly. Undo refuses if you have edited those files since: it will never "restore" over your own work. Everything lands in the Trace, an append-only history.</p>
+        <p><strong>Ctrl-Z for the lead, a diff for everyone else.</strong> A Runner's work never lands until you accept its diff. In a git project every Controller turn is snapshotted before and after (files over 100 MB excepted, and it tells you if a snapshot fails), so you can diff it and put it back exactly. Undo refuses if you have edited those files since: it will never "restore" over your own work. Everything lands in the Trace, an append-only history.</p>
         <p class="line"><code>gov undo T-12</code> <span class="d">· restored 2 files</span></p>
       </li>
       <li class="tile">
@@ -306,7 +306,7 @@ Allow? [y/t/p/N] <span class="b">t</span>
           <h3>Limits</h3>
           <span class="pill accent sm">works today</span>
         </div>
-        <p><strong>Your quota's bodyguard.</strong> Each provider keeps the reserve you set, measured before a job starts and while it runs. Unknown usage counts as "no". Paid overage is never switched on for you. Local models get a machine limit instead: how many at once, how many minutes each.</p>
+        <p><strong>Your quota's bodyguard.</strong> A Runner's job doesn't start if it would reach into the reserve you set for its provider, and it is stopped if the provider crosses it while it runs (usage reports lag, so a little overshoot is possible). Unknown usage counts as "no". Paid overage is never switched on for you. Local models get a machine limit instead: how many at once, how many minutes each.</p>
         <p class="line"><code>gov reserve codex weekly 15</code></p>
       </li>
       <li class="tile">
@@ -336,7 +336,7 @@ Allow? [y/t/p/N] <span class="b">t</span>
       </div>
     </div>
     <ul class="creed">
-      <li><b><span>1</span>You hold the controls.</b><p>AI does the work; you make the calls. You choose how often it asks; risky steps always wait for your yes, and changes can be undone.</p></li>
+      <li><b><span>1</span>You hold the controls.</b><p>AI does the work; you make the calls. You choose how often it asks; risky steps always wait for your yes, other AIs' work waits for your review, and the Controller's changes can be undone.</p></li>
       <li><b><span>3</span>Deny by default, fail closed.</b><p>Enforced by the operating system, not by asking the AI nicely.</p></li>
       <li><b><span>4</span>Any model can lead.</b><p>Claude, Codex, Gemini, Grok, or the one on your own GPU. No favourite vendor in the design.</p></li>
       <li><b><span>5</span>Honest about limits.</b><p>We say what we measure, how, and where the edges are. Especially the edges.</p></li>
