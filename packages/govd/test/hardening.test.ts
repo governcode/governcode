@@ -107,6 +107,13 @@ test("project paths: home, dot-folders, govd's own dirs and symlinks to them are
   mkdirSync(join(root, "ok-project"));
   const r = await call("project.open", { path: join(root, "ok-project") }, () => {}, null);
   assert.equal(r.project.name, "ok-project");
+  // Opening it again is not an error: the same project comes back (first fresh-install test).
+  const again = await call("project.open", { path: join(root, "ok-project") }, () => {}, null);
+  assert.equal(again.project.name, "ok-project");
+  assert.equal(again.existing, true);
+  // A name already in use says so plainly, never as a database error.
+  mkdirSync(join(root, "other"));
+  await assert.rejects(call("project.open", { path: join(root, "other"), name: "ok-project" }, () => {}, null), /already a project called ok-project/);
   d.close();
 });
 

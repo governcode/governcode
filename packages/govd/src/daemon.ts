@@ -70,6 +70,12 @@ export class Daemon {
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
   }
 
+  /** A project name must be new; say which folder already has it, never a database error. */
+  private nameFree(name: string): void {
+    const taken = this.ledger.projects().find((x) => x.name === name);
+    if (taken) throw new RpcError(Errors.badParams, `there is already a project called ${name} (${taken.path}); choose another name`);
+  }
+
   /** Settings live in govd's own state, which no AI tool can reach. A broken file is ignored (defaults). */
   private settings(): SettingsValue {
     try { return Settings.parse(JSON.parse(readFileSync(join(this.stateDir(), "settings.json"), "utf8"))); }
@@ -254,6 +260,7 @@ export class Daemon {
       case "project.list":
         return { projects: L.projects() };
       case "project.new": {
+        this.nameFree(p.name);
         const path = this.newProjectPath(p.name, p.path);
         mkdirSync(path, { recursive: true });
         if (p.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
@@ -283,8 +290,12 @@ export class Daemon {
         if (!existsSync(resolve(p.path)) || !statSync(resolve(p.path)).isDirectory()) throw new RpcError(Errors.notFound, `${resolve(p.path)} is not a folder`);
         const path = realpathSync(resolve(p.path));   // a symlink must not smuggle in another folder
         this.checkProjectPath(path);
+        // Opening a folder that is already a project is not an error: here it is.
+        const already = L.projects().find((x) => x.path === path);
+        if (already) return { project: already, existing: true };
         const name = p.name ?? path.split("/").pop()!.toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/^[^a-z0-9]+/, "");
         if (!ProjectName.safeParse(name).success) throw new RpcError(Errors.badParams, `cannot derive a project name from ${path}; pass one`);
+        this.nameFree(name);
         return { project: L.addProject(name, path, "project.opened") };
       }
       case "controller.set":
