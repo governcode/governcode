@@ -180,3 +180,16 @@ test("personal instructions: off, the Controller cannot even read them; on, it c
   const codexOn = codexPolicy("/tmp/wt", "/tmp/t", "/tmp/ch", "/usr/bin/true", false, undefined, undefined, true);
   if (existsSync(join(user, "AGENTS.md"))) assert.ok(codexOn.read.includes(join(user, "AGENTS.md")));
 });
+
+test("the Codex home keeps only the login, Codex's state and GovernCode's connected mark between runs", async () => {
+  const { prepareCodexHome } = await import("../src/codex.ts");
+  const { mkdtempSync, mkdirSync, writeFileSync, readdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const state = mkdtempSync(join(tmpdir(), "gc-codexhome-"));
+  const home = join(state, "tools", "codex", "home");
+  mkdirSync(join(home, "rules"), { recursive: true });
+  for (const f of [".governcode-connected", "auth.json", "state_5.sqlite", "config.toml", "AGENTS.md", "rules/allow.rules"]) writeFileSync(join(home, f), "x");
+  prepareCodexHome(state, false);
+  assert.deepEqual(readdirSync(home).sort(), [".governcode-connected", "auth.json", "state_5.sqlite"]);
+});

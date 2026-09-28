@@ -8,9 +8,9 @@ import type { AskEvent } from "../../shared/contract.ts";
 import { Pill } from "../ui.tsx";
 
 type Reading = { window: string; usedPercent: number };
-type Tool = { tool: string; name: string; flow: "paste" | "device"; installed: boolean; connected: boolean; problem: string | null;
+type Tool = { tool: string; name: string; flow: "paste" | "browser"; installed: boolean; connected: boolean; problem: string | null;
   usage: { readings: Reading[] } | null };
-type SignIn = { streamId: string; flow: "paste" | "device"; name: string; id: string | null; url: string | null; lines: string[]; code: string; sent: boolean };
+type SignIn = { streamId: string; flow: "paste" | "browser"; name: string; id: string | null; url: string | null; lines: string[]; code: string; sent: boolean };
 
 export function Tools() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -85,13 +85,13 @@ export function Tools() {
         <div className="checkpoint" role="dialog" aria-label="Sign in">
           <div className="row"><b>Signing in</b><span className="spacer" /><button className="btn" onClick={cancel} disabled={!signIn.id}>Cancel</button></div>
           {!signIn.url && <p className="dim small">Starting the tool's sign-in inside the sandbox…</p>}
-          {signIn.url && signIn.flow === "device" && <>
+          {signIn.url && signIn.flow === "browser" && <>
             <p className="small">1. Open the sign-in page and sign in with the account {signIn.name} should use.</p>
             <div className="row">
               <button className="btn btn-accent" onClick={() => void api().openSignIn(signIn.url!)}>Open sign-in page</button>
               <button className="btn" onClick={() => void navigator.clipboard.writeText(signIn.url!)}>Copy link</button>
             </div>
-            <p className="small">2. Enter the one-time code shown below on that page. This screen finishes by itself when you are done.</p>
+            <p className="small">2. That's all: when you finish, your browser hands the sign-in back to {signIn.name} on this computer, and this screen finishes by itself.</p>
           </>}
           {signIn.url && signIn.flow === "paste" && !signIn.sent && <>
             <p className="small">1. Open the sign-in page and sign in with the account {signIn.name} should use. Go straight through: some tools wait only about a minute; if it runs out, choose Connect again.</p>

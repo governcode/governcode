@@ -350,14 +350,14 @@ async function main(argv: string[]): Promise<number> {
           return 0;
         }
         if (!["agy", "claude", "codex"].includes(tool)) throw new Error("usage: gov connect [agy|claude|codex]");
-        const device = tool === "codex";   // Codex shows a code to type on its page; nothing to paste back here
+        const device = tool === "codex";   // Codex: the browser hands the login back by itself; nothing to paste here
         const tty = answers();
         let id = "";
         api.onEvent(async (ev) => {
           if (ev.kind !== "connect") return;
           id = ev.id;
           if (ev.url && device) {
-            console.log(warn("\nOpen this link, sign in, and enter the code shown below it:"));
+            console.log(warn("\nOpen this link and sign in; this finishes by itself when you are done:"));
             console.log(ev.url);
           } else if (ev.url) {
             console.log(warn("\nOpen this link and sign in:"));

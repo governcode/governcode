@@ -15,13 +15,14 @@ export type Tool = "agy" | "claude" | "codex";
 type Opts = { supervisor: string; policyDir: string; stateDir: string };
 
 /** How each tool signs in, in its GovernCode home. flow: "paste" = the user pastes a code back;
- *  "device" = the user types the shown code on the vendor's page, nothing comes back here. */
-type Spec = { name: string; revoke: string; flow: "paste" | "device"; binary(): string; signIn: string[];
-  env(tmp: string, home: string): Record<string, string>; bind?: boolean; writable(home: string): string[];
+ *  "browser" = the browser hands the login back to the tool on this machine, nothing to paste.
+ *  bind: the local ports its sign-in listens on for that (0: one the kernel picks). */
+type Spec = { name: string; revoke: string; flow: "paste" | "browser"; binary(): string; signIn: string[];
+  env(tmp: string, home: string): Record<string, string>; bind?: number[]; writable(home: string): string[];
   check(o: Opts, home: string): Promise<boolean> };
 
 /** The tool's own status command, sandboxed in its home: signed in or not. */
-async function status(o: Opts, t: Tool, home: string, args: string[], ok: (out: { stdout: string; code: number | null }) => boolean): Promise<boolean> {
+async function status(o: Opts, t: Tool, home: string, args: string[], ok: (out: { stdout: string; stderr: string; code: number | null }) => boolean): Promise<boolean> {
   const spec = TOOLS[t];
   let bin: string;
   try { bin = spec.binary(); } catch { return false; }
@@ -31,7 +32,7 @@ async function status(o: Opts, t: Tool, home: string, args: string[], ok: (out: 
   mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
   const pf = join(o.policyDir, `status-${process.pid}-${Date.now()}.json`);
   try {
-    writeFileSync(pf, JSON.stringify(signInPolicy({ work, tmp, home, bin, writable: spec.writable(home), bind: false })), { mode: 0o600 });
+    writeFileSync(pf, JSON.stringify(signInPolicy({ work, tmp, home, bin, writable: spec.writable(home), bind: [] })), { mode: 0o600 });
     return ok(await run(o.supervisor, pf, bin, args, spec.env(tmp, home), work, 30_000));
   } catch { return false; } finally { rmSync(pf, { force: true }); rmSync(tmp, { recursive: true, force: true }); }
 }
@@ -41,18 +42,21 @@ export const TOOLS: Record<Tool, Spec> = {
     signIn: ["-p", "/quota", "--output-format", "json"], env: (tmp, home) => agyEnv(tmp, home), writable: (home) => [join(home, ".gemini")],
     check: async (o, home) => (await quotaIn(o, home)).m !== null },
   claude: { name: "Claude Code", revoke: "https://claude.ai/settings", flow: "paste", binary: () => realpathSync(which("claude")),
-    signIn: ["auth", "login", "--claudeai"], bind: true,   // its sign-in also listens on localhost for the browser's callback
+    signIn: ["auth", "login", "--claudeai"], bind: [0],   // its sign-in also listens on localhost for the browser's callback
     env: (tmp, home) => agyEnv(tmp, home, { CLAUDE_CONFIG_DIR: home }), writable: (home) => [home],
     check: (o, home) => status(o, "claude", home, ["auth", "status", "--json"], (r) => {
       try { return r.code === 0 && JSON.parse(r.stdout).loggedIn === true; } catch { return false; } }) },
-  codex: { name: "Codex", revoke: "https://chatgpt.com/#settings/Security", flow: "device", binary: codexBinary,
-    signIn: ["login", "--device-auth"], env: (tmp, home) => agyEnv(tmp, home, { CODEX_HOME: home }), writable: (home) => [home],
-    check: (o, home) => status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in/i.test(r.stdout)) },
+  // The browser sign-in (its callback on localhost:1455), not --device-auth: device-code sign-in
+  // is off by default in ChatGPT's security settings (found in the first real Connect).
+  codex: { name: "Codex", revoke: "https://chatgpt.com/#settings/Security", flow: "browser", binary: codexBinary,
+    signIn: ["login"], bind: [1455], env: (tmp, home) => agyEnv(tmp, home, { CODEX_HOME: home }), writable: (home) => [home],
+    // Codex prints its status on stderr ("Logged in using ChatGPT"), found in the first real Connect.
+    check: (o, home) => status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in/i.test(r.stdout + r.stderr) && !/not logged in/i.test(r.stdout + r.stderr)) },
 };
 
 /** What a sign-in (or its status check) may touch: its own home, the network on 443, no keyring,
  *  and a listening port only for a sign-in whose browser calls back to localhost. */
-export function signInPolicy(o: { work: string; tmp: string; home: string; bin: string; writable: string[]; bind: boolean }): Policy {
+export function signInPolicy(o: { work: string; tmp: string; home: string; bin: string; writable: string[]; bind: number[] }): Policy {
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom", "/dev/random",
@@ -60,7 +64,7 @@ export function signInPolicy(o: { work: string; tmp: string; home: string; bin: 
     write: [...o.writable, o.tmp, "/dev/null"],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(o.bin), ...toolchainDirs()],
     tcp_connect: [443],
-    ...(o.bind ? { tcp_bind: [0] } : {}),
+    ...(o.bind.length ? { tcp_bind: o.bind } : {}),
     unix_connect: ["/run/systemd/resolve/io.systemd.Resolve"].filter(existsSync),
     cwd: o.work,
   };
@@ -100,6 +104,21 @@ export class Connector {
     try { bin = spec.binary(); } catch { return Promise.resolve({ id, connected: false, note: `${spec.name} is not installed` }); }
     const home = toolHome(this.o.stateDir, tool);
     mkdirSync(home, { recursive: true, mode: 0o700 });
+    return this.alreadySignedIn(tool, home).then((yes) => yes
+      ? { id, connected: true, note: `${spec.name} is connected for GovernCode (it was already signed in here)` }
+      : this.signIn(id, tool, bin, home, notify));
+  }
+
+  /** Signed in already (a sign-in that finished but was not recorded, or a re-Connect)? The tool's
+   *  own status command decides; then no new sign-in is needed. */
+  private async alreadySignedIn(tool: Tool, home: string): Promise<boolean> {
+    if (!existsSync(home) || !(await TOOLS[tool].check(this.o, home).catch(() => false))) return false;
+    safeWrite(join(home, CONNECTED_MARK), "Connected for GovernCode. GovernCode never reads the login the tool keeps here.\n");
+    return true;
+  }
+
+  private signIn(id: string, tool: Tool, bin: string, home: string, notify: (n: unknown) => void): Promise<{ id: string; connected: boolean; note: string }> {
+    const spec = TOOLS[tool];
     const tmp = mkdtempSync(join(tmpdir(), "governcode-connect-"));
     const work = join(tmp, "work");
     mkdirSync(work);
@@ -108,7 +127,7 @@ export class Connector {
     // Signing in needs the tool's home writable (it creates its folders and login there); no agent
     // runs, only the tool's own sign-in command.
     for (const w of spec.writable(home)) mkdirSync(w, { recursive: true, mode: 0o700 });
-    writeFileSync(policyFile, JSON.stringify(signInPolicy({ work, tmp, home, bin, writable: spec.writable(home), bind: spec.bind === true })), { mode: 0o600 });
+    writeFileSync(policyFile, JSON.stringify(signInPolicy({ work, tmp, home, bin, writable: spec.writable(home), bind: spec.bind ?? [] })), { mode: 0o600 });
     const env = spec.env(tmp, home);
     const release = hold(this.o.stateDir, tool);
     const sent = new Set<string>();           // what the user pasted is echoed by the terminal: not shown back

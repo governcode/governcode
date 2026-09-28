@@ -26,7 +26,7 @@ export function codexBinary(): string {
 // What may stay in GovernCode's Codex home between runs: the login Connect made and Codex's own
 // state. Everything else (config.toml, rules/ that can pre-approve commands, prompts, skills,
 // hooks, AGENTS.md...) is removed before every run, so nothing a run writes there reaches the next.
-const CODEX_KEEP = /^(auth\.json|installation_id|version\.json|models_cache\.json|history\.jsonl|sessions|log|logs|cache|tmp|shell_snapshots|[a-z_]+_\d+\.sqlite(-wal|-shm)?)$/;
+const CODEX_KEEP = /^(\.governcode-connected|auth\.json|installation_id|version\.json|models_cache\.json|history\.jsonl|sessions|log|logs|cache|tmp|shell_snapshots|[a-z_]+_\d+\.sqlite(-wal|-shm)?)$/;
 
 /** GovernCode's Codex home (Connect signed Codex in there), cleaned before each run; the user's
  *  AGENTS.md is linked in, read-only, only when they chose to bring it. The user's own ~/.codex
