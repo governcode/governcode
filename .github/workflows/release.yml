@@ -1,0 +1,39 @@
+name: release
+# A tag vX.Y.Z-motion.N (release candidate) or vX.Y.Z (stable) builds the Linux release and
+# attaches it to a DRAFT GitHub release. Nothing is published until a maintainer reviews the
+# draft and presses Publish.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check the tag
+        run: |
+          case "$GITHUB_REF_NAME" in
+            v[0-9]*.[0-9]*.[0-9]*-motion.[0-9]*|v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::tags are vX.Y.Z-motion.N (Motion) or vX.Y.Z (Decree)"; exit 1;;
+          esac
+      - name: Test before building
+        run: npm ci && npm run typecheck && npm test && cargo test --release --locked
+      - name: Build the release
+        run: scripts/package-release.sh "${GITHUB_REF_NAME#v}"
+      - name: Draft the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          notes="docs/releases/$ver.md"
+          [ -f "$notes" ] || { echo "::error::write $notes first"; exit 1; }
+          pre=""; case "$ver" in *-motion.*) pre="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" --draft $pre --title "GovernCode $ver" --notes-file "$notes" \
+            "dist-release/governcode-$ver-linux-x86_64.tar.gz" dist-release/SHA256SUMS

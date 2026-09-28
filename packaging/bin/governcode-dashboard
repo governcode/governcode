@@ -1,0 +1,4 @@
+#!/bin/sh
+# GovernCode Dashboard: a thin desktop client of govd (release layout).
+here=$(dirname "$(readlink -f "$0")")
+exec "$here/../node_modules/electron/dist/electron" "$here/../apps/dashboard" "$@"

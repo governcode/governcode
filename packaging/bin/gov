@@ -1,0 +1,4 @@
+#!/bin/sh
+# GovernCode gov (release layout). Needs Node 22.18 or newer.
+here=$(dirname "$(readlink -f "$0")")
+exec node "$here/../packages/gov/src/main.ts" "$@"
