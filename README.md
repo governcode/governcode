@@ -12,9 +12,9 @@ Free and open source (MIT). Runs on your own machine; no hosted service.
 
 ## What we stand for
 
-1. **You hold the controls.** 2. **Deny by default, fail closed.** 3. **Any model can lead.**
-4. **Honest about limits.** 5. **Free and open, forever.** 6. **Built with AI, openly.**
-7. **Small, boring, verifiable.** 8. **Respect, always.** What each one means:
+1. **You hold the controls.** 2. **You ship it, you own it.** 3. **Deny by default, fail closed.**
+4. **Any model can lead.** 5. **Honest about limits.** 6. **Free and open, forever.**
+7. **Built with AI, openly.** 8. **Small, boring, verifiable.** 9. **Respect, always.** What each one means:
 [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md).
 
 ## Release channels
