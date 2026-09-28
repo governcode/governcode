@@ -26,43 +26,34 @@ const bin = join(root, "bin");
 mkdirSync(bin);
 const exe = (name: string, body: string) => { const p = join(bin, name); writeFileSync(p, body); chmodSync(p, 0o755); return p; };
 const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\nshift 4\nexec "$@"\n`);
+// The Runners' tools fail at once: a handoff that gets past govd's Gate is then held (no usage).
+process.env.GOVERNCODE_CODEX_BIN = exe("codex-fake", "#!/bin/sh\nexit 1\n");
+process.env.GOVERNCODE_AGY_BIN = exe("agy-fake", "#!/bin/sh\nexit 1\n");
+// A Controller that posts a plan, then calls the delegate tool for each Runner in HANDOFFS, as
+// Claude Code does now: straight through GovernCode's MCP server (no permission prompt of its
+// own; govd decides the handoff inside the call). It reports each call's outcome.
 exe("claude", `#!/usr/bin/env node
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 const cfg = JSON.parse(process.argv[process.argv.indexOf("--mcp-config") + 1]).mcpServers.governcode;
-let handoffs = [], got = [], planAnswer = "";
-require("node:readline").createInterface({ input: process.stdin }).on("line", (l) => {
-  const m = JSON.parse(l);
-  if (m.type === "user") {
-    const t = JSON.stringify(m);
-    handoffs = JSON.parse(/HANDOFFS=(\\[[^\\]]*\\])/.exec(t)[1].replace(/\\\\"/g, '"'));
-    const s = require("node:net").connect(cfg.args[1]);
-    require("node:readline").createInterface({ input: s }).once("line", (r) => {
-      const res = JSON.parse(r);
-      planAnswer = res.result ? res.result.answer : "error";
-      // "just you": try the delegate tool directly (the socket refuses); else ask to hand off.
-      if (planAnswer === "just-you") {
-        const s2 = require("node:net").connect(cfg.args[1]);
-        require("node:readline").createInterface({ input: s2 }).once("line", (r2) => {
-          out({ type: "result", is_error: false, result: "plan:just-you|direct:" + JSON.parse(r2).error.message });
-          process.exit(0);
-        });
-        s2.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.delegate", params: { to: "codex", brief: "b", result: "r", scope: { read: [], write: [] }, reason: "r" } }) + "\\n");
-        return;
-      }
-      next();
-    });
-    s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "controller.plan", params: { items: [{ who: "codex", what: "write tests" }, { who: "agy", what: "write docs" }] } }) + "\\n");
-  } else if (m.type === "control_response") {
-    got.push(m.response.response.behavior);
-    next();
-  }
+const net = require("node:net"), rl = require("node:readline");
+const rpc = (method, params) => new Promise((ok) => {
+  const s = net.connect(cfg.args[1]);
+  rl.createInterface({ input: s }).once("line", (r) => { ok(JSON.parse(r)); s.end(); });
+  s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\\n");
 });
-function next() {
-  if (got.length < handoffs.length) return out({ type: "control_request", request_id: "d" + got.length, request: { subtype: "can_use_tool",
-    tool_name: "mcp__governcode__delegate", input: { to: handoffs[got.length], brief: "b", result: "r", scope: { read: [], write: [] }, reason: "r" } } });
-  out({ type: "result", is_error: false, result: "plan:" + planAnswer + "|" + got.join(",") });
+rl.createInterface({ input: process.stdin }).on("line", async (l) => {
+  const m = JSON.parse(l);
+  if (m.type !== "user") return;
+  const handoffs = JSON.parse(/HANDOFFS=(\\[[^\\]]*\\])/.exec(JSON.stringify(m))[1].replace(/\\\\"/g, '"'));
+  const plan = await rpc("controller.plan", { items: [{ who: "codex", what: "write tests" }, { who: "agy", what: "write docs" }] });
+  const got = [];
+  for (const to of handoffs) {
+    const r = await rpc("controller.delegate", { to, brief: "b", result: "r", scope: { read: [], write: ["x"] }, reason: "r" });
+    got.push(r.result ? "ok" : /declined/.test(r.error.message) ? "declined" : r.error.message);
+  }
+  out({ type: "result", is_error: false, result: "plan:" + (plan.result ? plan.result.answer : "error") + "|" + got.join(",") });
   process.exit(0);
-}
+});
 `);
 
 async function run(crew: object, planReply: Record<string, unknown>, handoffs: string[]) {
@@ -100,18 +91,25 @@ async function run(crew: object, planReply: Record<string, unknown>, handoffs: s
 
 test("follow the plan: an approved item lets one handoff through; a second, or an unapproved one, asks", async () => {
   const r = await run({ handoff: "plan" }, { answer: "approve", items: [1] }, ["codex", "codex", "agy"]);
-  assert.equal(r.summary, "plan:approve|allow,deny,deny");
+  assert.equal(r.summary, "plan:approve|ok,declined,declined");
   assert.equal(r.gates.length, 2, "the second codex handoff and the agy one asked");
   assert.ok(r.events.includes("plan.proposed") && r.events.includes("plan.answered"));
 });
 
 test("'just you': the Controller cannot hand off for the rest of the turn", async () => {
-  const r = await run({ handoff: "plan" }, { answer: "just-you" }, []);
-  assert.match(r.summary, /^plan:just-you\|direct:the user answered your plan with "just you"/);
+  const r = await run({ handoff: "plan" }, { answer: "just-you" }, ["codex"]);
+  assert.match(r.summary, /^plan:just-you\|the user answered your plan with "just you"/);
+  assert.equal(r.gates.length, 0, "refused before any Gate");
 });
 
 test("ask each time: an approved plan is shown, and every handoff still asks", async () => {
   const r = await run({ handoff: "ask" }, { answer: "approve" }, ["codex"]);
-  assert.equal(r.summary, "plan:approve|deny");
+  assert.equal(r.summary, "plan:approve|declined");
+  assert.equal(r.gates.length, 1);
+});
+
+test("review: an empty selection approves nothing, so the handoff asks", async () => {
+  const r = await run({ handoff: "plan" }, { answer: "approve", items: [] }, ["codex"]);
+  assert.equal(r.summary, "plan:approve|declined");
   assert.equal(r.gates.length, 1);
 });

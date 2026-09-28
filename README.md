@@ -198,12 +198,15 @@ enforces it, and the Controller is told it each turn:
   *follow the approved plan*, or *off* (the Controller works alone).
 - **Runners**: which ones this project may use, and the most one job may reserve of each.
 - **Subagents**, for the Controller and for Runners: off removes Claude Code's subagent tool,
-  switches Codex's multi-agent features off, and refuses Antigravity's subagent tools.
+  switches Codex's multi-agent features off, and refuses Antigravity's subagent tools. That covers
+  each tool's own subagent features; starting another AI program from a command is a step that
+  always asks, whatever the card says.
 
 Before bigger work the Controller can post a **game plan** with GovernCode's `plan` tool: who
 does what. You approve it (all or some items), answer "just you" (it does everything itself and
-cannot hand off for the rest of the turn), or reject it. With *follow the approved plan*, each
-approved item lets one handoff to that Runner through without asking again; the Runner's own
+cannot hand off for the rest of the turn), or reject it. govd decides every handoff itself,
+however the Controller reaches it. With *follow the approved plan*, each approved item lets one
+handoff to that Runner through without asking again; the Runner's own
 steps still stop at their Gates. Only a Controller hands work to other tools: Runners get no
 delegate tool.
 

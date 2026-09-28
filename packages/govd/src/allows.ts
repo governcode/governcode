@@ -27,6 +27,8 @@ const ALWAYS_ASK = new Set(["rm", "rmdir", "sudo", "su", "doas", "curl", "wget",
   "bun", "perl", "ruby", "php", "lua", "osascript", "open", "xdg-open", "npx", "pnpx", "bunx",
   // sed scripts can write files (w) or run commands (e); only printing line ranges is quiet.
   "sed",
+  // Another AI coding tool started from a command would be a handoff GovernCode does not see.
+  "claude", "codex", "agy", "gemini", "grok", "ollama", "aider", "opencode", "cursor-agent", "goose", "amp", "crush", "qwen",
   // Launchers run another program named later on the line, which this check would not see
   // (a Grok red-team review): they always ask, like env and xargs.
   "command", "builtin", "source", ".", "time", "nice", "nohup", "timeout", "stdbuf", "flock", "ionice", "setsid",

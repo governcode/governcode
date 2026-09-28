@@ -71,7 +71,7 @@ function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settin
   const ctx = { project: { name: "p", path: proj }, ledger, limits,
     usage: { codex: codexUsage({ supervisor, policyDir: join(state, "pol"), stateDir: state, scratch: join(state, "scratch") }) },
     runtimeDir: join(state, "run"), supervisor, policyDir: join(state, "pol"), stateDir: state,
-    gate: async (r: { canonical: string }) => { gates.push(r.canonical); return gateAnswer; }, notify: () => {},
+    gate: async (r: { tool?: string; canonical: string }) => { if (r.tool === "governcode delegate") return "allow" as const; gates.push(r.canonical); return gateAnswer; }, notify: () => {},
     ...(settings ? { settings: () => settings } : {}) };
   const sock = openControllerSocket(ctx);
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {

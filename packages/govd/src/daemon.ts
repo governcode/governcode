@@ -274,7 +274,8 @@ export class Daemon {
     const pl = this.plans.get(id);
     if (!pl) return false;
     this.plans.delete(id);
-    const approved = answer !== "approve" ? [] : items?.length ? pl.items.filter((_, i) => items.includes(i + 1)) : pl.items;
+    // No selection: all items. A selection (even an empty one): only those.
+    const approved = answer !== "approve" ? [] : items === undefined ? pl.items : pl.items.filter((_, i) => items.includes(i + 1));
     const state = this.turnPlans.get(pl.turn) ?? { approved: [], justYou: false };
     state.approved.push(...approved.map((x) => ({ ...x })));
     if (answer === "just-you") state.justYou = true;
@@ -561,6 +562,7 @@ export class Daemon {
     const store = found && files && files.length <= MAX_CHECKPOINT_FILES ? turnStore(this.stateDir(), found.name, found.path) : null;
     let before: string | null = null;
     try { if (store && files) before = snapshot(store, `turns/${turnId}/before`, null, files); } catch { before = null; }
+    let alive = true;   // false once the turn is done: late handoffs and plans are refused
     return new Promise((done) => {
       const hooks: TurnHooks = {
           text: (t) => { notify({ kind: "text", text: t }); L.append(project.name, "turn.text", actor, { text: t.slice(0, 4000) }); },
@@ -604,6 +606,7 @@ export class Daemon {
               scopes, level, suggest: level === "balanced" && scopes.includes("project") ? "project" : null });
           }),
           done: (r) => {
+            alive = false;
             this.turning.set(turnKey, (this.turning.get(turnKey) ?? 1) - 1);
             // A Gate of this turn still waiting is denied (its request is gone), and turn and
             // Spec rules end with the turn.
@@ -648,9 +651,11 @@ export class Daemon {
       // Either Controller gets GovernCode's tools on a socket that exists only for this turn:
       // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
       const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, provider: project.controller.provider,
-        crew: () => crewOf(L, found.name), ledger: L, limits: this.limits,
+        crew: () => crewOf(L, found.name), alive: () => alive, ledger: L, limits: this.limits,
         plan: {
           propose: (items, note) => new Promise((answer) => {
+            // Nobody left to answer, or the turn is over: rejected at once, never left waiting.
+            if (!alive || sock.destroyed) return answer({ answer: "reject", approved: [] });
             const id = `GP-${++this.planSeq}`;
             this.plans.set(id, { id, project: found.name, turn: turnId, items, owner: sock, answer });
             L.append(found.name, "plan.proposed", actor, { plan: id, items, note, turn: turnId });

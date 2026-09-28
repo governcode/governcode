@@ -29,7 +29,8 @@ function socketFor(L: Ledger, root: string, crew: () => any) {
   const usage = { codex: { provider: "codex", read: async () => ({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 5, resetsAt: null }] }) },
     agy: { provider: "agy", read: async () => ({ provider: "agy", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 5, resetsAt: null }] }) } };
   const sock = openControllerSocket({ project: { name: "p", path: join(root, "p") }, provider: "claude-code", crew, ledger: L, limits: new LimitGate(), usage,
-    runtimeDir: join(root, "run"), supervisor: "/bin/false", policyDir: join(root, "pol"), stateDir: join(root, "state"), gate: async () => "deny", notify: () => {} });
+    runtimeDir: join(root, "run"), supervisor: "/bin/false", policyDir: join(root, "pol"), stateDir: join(root, "state"),
+    gate: async (r: { tool: string }) => (r.tool === "governcode delegate" ? "allow" : "deny"), notify: () => {} });
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {
     const s = connect(sock.path);
     createInterface({ input: s }).once("line", (l) => { ok(JSON.parse(l)); s.end(); });
@@ -117,5 +118,22 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   } finally {
     d.close();
     process.env.PATH = PATH;
+  }
+});
+
+test("review: a closed turn socket refuses new connections and requests; another AI program from a command always asks", async () => {
+  const { openTurnSocket } = await import("../src/delegate.ts");
+  const { analyze } = await import("../src/allows.ts");
+  const root = scratch("gc-crew-closed-");
+  const sock = openTurnSocket(join(root, "run"), async () => ({ ok: true }));
+  const s = connect(sock.path);
+  await new Promise((r) => s.once("connect", r));
+  const closedEarly = new Promise((r) => s.once("close", r));
+  sock.close();
+  await closedEarly;   // an open connection is dropped when the turn ends
+  const again = connect(sock.path);
+  assert.equal(await new Promise((ok) => { again.once("error", () => ok("refused")); again.once("connect", () => ok("connected")); }), "refused");
+  for (const cmd of ["codex exec hi", "claude -p hi", "agy -p hi", "gemini", "ollama run qwen", "aider"]) {
+    assert.equal(analyze({ tool: "Bash", input: { command: cmd } }).ask, true, cmd);
   }
 });

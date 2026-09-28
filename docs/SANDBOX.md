@@ -84,7 +84,8 @@ What a standing allow can cover is deliberately narrow:
 - **The always-ask list**, at every level, whatever you allowed: deleting (`rm`), privilege
   (`sudo`), network (`curl`, `ssh`...), installing packages (`npm install`, `pip install`,
   `cargo add`...), interpreters that run code given as an argument (`python`, `node`, `bash`...),
-  launchers that run another program (`env`, `xargs`, `timeout`...), publishing, and every `git`
+  launchers that run another program (`env`, `xargs`, `timeout`...), another AI coding tool
+  (`claude`, `codex`, `agy`, `gemini`, `grok`, `ollama`, `aider`...), publishing, and every `git`
   command that changes the repository or reaches the network (commit, push, pull, fetch, reset,
   checkout, config...), and package-manager commands other than running the project's scripts or
   listing (`npm test`, `npm run build` and `npm ls` are kinds; `npm i`, `npm it` and a bare `yarn`
@@ -95,9 +96,11 @@ What a standing allow can cover is deliberately narrow:
   anything a turn changed in `.git`.
 - **A Runner's allows are its own.** Allowing a step inside a Spec's workspace never covers the
   Controller's steps in your real project.
-- **Handing work to a paid Runner always asks.** Handing it to a local model (no quota) is a
-  kind of step like any other. A Controller may throw away a Spec it proposed; accepting one is
-  always yours.
+- **Handing work to a paid Runner asks,** unless the project's Crew card follows the approved
+  plan and an item you approved covers it (one handoff per item). govd decides this inside the
+  handoff itself, however the Controller reached it. Handing work to a local model (no quota) is
+  a kind of step like any other. A Controller may throw away a Spec it proposed (also decided by
+  govd); accepting one is always yours.
 
 Be aware of one honest limit: allowing a build or test command (`npm test`) means allowing
 whatever the project's scripts say, and the AI can edit those scripts. The sandbox still bounds

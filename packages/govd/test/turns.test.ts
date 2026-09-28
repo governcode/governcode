@@ -54,7 +54,9 @@ test("a Controller turn's changes are checkpointed and can be undone exactly onc
   // back to GovernCode with an "ask" rule (first fresh-install test, 2026-09-27).
   const args: string[] = JSON.parse(readFileSync(join(bin, "last-args.json"), "utf8"));
   const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
-  for (const t of ["Bash", "Edit", "Write", "WebFetch", "mcp__governcode__delegate"]) assert.ok(settings.permissions.ask.includes(t), t);
+  for (const t of ["Bash", "Edit", "Write", "WebFetch"]) assert.ok(settings.permissions.ask.includes(t), t);
+  // Handing off is decided inside govd (a Gate in the delegate call), so the tool itself is allowed.
+  assert.ok(args[args.indexOf("--allowedTools") + 1].split(",").includes("mcp__governcode__delegate"));
   // The next message carries the conversation so far; a reset starts clean.
   // It rides in the user's message as a JSON record, never in the system prompt (security review).
   const sent = () => JSON.stringify(JSON.parse(readFileSync(join(bin, "last-input.json"), "utf8")));

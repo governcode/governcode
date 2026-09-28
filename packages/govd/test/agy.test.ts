@@ -78,10 +78,11 @@ function setup(answer: "allow" | "deny", calls: (work: string) => object[], extr
   const ledger = new Ledger(":memory:");
   const limits = new LimitGate();
   const gates: Array<{ tool: string; canonical: string }> = [];
+  const handoffs: string[] = [];   // govd's own handoff Gate, inside delegate
   const ctx = { project: { name: "p", path: proj }, ledger, limits,
     usage: { agy: agyUsage({ supervisor, policyDir: join(state, "pol"), stateDir: state }) },
     runtimeDir: join(state, "run"), supervisor, policyDir: join(state, "pol"), stateDir: state,
-    gate: async (r: { tool: string; canonical: string }) => { gates.push(r); return answer; }, notify: () => {},
+    gate: async (r: { tool: string; canonical: string }) => { if (r.tool === "governcode delegate") { handoffs.push(r.canonical); return "allow"; } gates.push(r); return answer; }, notify: () => {},
     ...(crew ? { crew: () => crew } : {}) };
   const sock = openControllerSocket(ctx as any);
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {

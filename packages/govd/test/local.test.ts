@@ -187,7 +187,7 @@ test("delegate to ollama: crew lists its models; the Spec's change is offered fo
   const gates: string[] = [];
   const ctx = { project: { name: "p", path: proj }, ledger, limits: new LimitGate(), usage: { ollama: ollamaUsage(f.host) },
     runtimeDir: join(state, "run"), supervisor: "/nonexistent", policyDir: join(state, "pol"), stateDir: state,
-    gate: async (r: { canonical: string }) => { gates.push(r.canonical); return "allow" as const; }, notify: () => {} };
+    gate: async (r: { tool?: string; canonical: string }) => { if (r.tool !== "governcode delegate") gates.push(r.canonical); return "allow" as const; }, notify: () => {} };
   const sock = openControllerSocket(ctx);
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {
     const s = connect(sock.path);

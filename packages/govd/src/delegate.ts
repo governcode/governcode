@@ -2,7 +2,7 @@
 // serves only these calls (no Gate answers, no undo); govd checks the Limit, makes a git
 // worktree, records Checkpoints, runs the Runner sandboxed to the Spec's scope, and returns the
 // result for review. The Runner's own Gates go to the same user terminal as the Controller's.
-import { createServer, type Server } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, chmodSync, existsSync, statSync, writeFileSync } from "node:fs";
@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { SpecInput, type SettingsValue } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
 import type { LimitGate, UsageSource } from "./limits.ts";
-import type { GateRequest } from "./claude.ts";
+import { canonical, type GateRequest } from "./claude.ts";
 import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
@@ -48,6 +48,7 @@ export type DelegationContext = {
   project: { name: string; path: string };
   provider?: string;                       // the Controller's provider (project memory consent)
   crew?: () => CrewValue;                  // the project's Crew card, read at each call
+  alive?: () => boolean;                   // false once the Controller's turn has ended
   plan?: {                                 // this turn's game plan (govd asks the user)
     propose(items: PlanItem[], note: string): Promise<{ answer: string; approved: PlanItem[] }>;
     justYou(): boolean;
@@ -111,6 +112,10 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
       const s = ctx.ledger.spec(String((params as any)?.id));
       if (!s || s.project !== ctx.project.name || !mine(ctx, s.id)) throw new Error("no such Spec in this project");
       if (!["needs-review", "failed", "held"].includes(s.status)) throw new Error(`${s.id} is ${s.status}; only a Spec waiting for review, failed or held can be discarded`);
+      const shown = { id: s.id, runner: s.to, brief: s.brief };
+      if ((await ctx.gate({ id: `discard-${Date.now()}`, tool: "governcode spec_discard", input: shown, canonical: canonical({ tool: "governcode spec_discard", input: shown }) })) !== "allow") {
+        throw new Error("the user declined discarding it");
+      }
       discard(ctx.stateDir, s.id);
       ctx.ledger.updateSpec(s.id, { status: "undone", note: "discarded by the Controller" }, "controller");
       return { id: s.id, discarded: true };
@@ -143,7 +148,12 @@ export function openTurnSocket(runtimeDir: string, handle: (method: string, para
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const path = join(dir, `${randomBytes(12).toString("hex")}.sock`);
+  let closed = false;
+  const conns = new Set<Socket>();
   const server: Server = createServer((sock) => {
+    if (closed) return sock.destroy();
+    conns.add(sock);
+    sock.on("close", () => conns.delete(sock));
     sock.on("error", () => sock.destroy());
     // Whatever a tool sends here is untrusted: a line over 1 MB ends the connection, and anything
     // that is not a JSON object with a method gets no reply (never a crash).
@@ -165,6 +175,7 @@ export function openTurnSocket(runtimeDir: string, handle: (method: string, para
         const id = typeof m.id === "number" || typeof m.id === "string" ? m.id : null;
         const reply = (o: object) => { if (sock.writable) sock.write(JSON.stringify({ jsonrpc: "2.0", id, ...o }) + "\n"); };
         try {
+          if (closed) throw new Error("this turn has ended");
           reply({ result: await handle(m.method, m.params) });
         } catch (e) {
           reply({ error: { code: 1001, message: e instanceof Error ? e.message : String(e) } });
@@ -173,7 +184,7 @@ export function openTurnSocket(runtimeDir: string, handle: (method: string, para
     });
   });
   server.listen(path, () => chmodSync(path, 0o600));
-  return { path, close: () => { server.close(); rmSync(path, { force: true }); } };
+  return { path, close: () => { closed = true; server.close(); for (const c of conns) c.destroy(); conns.clear(); rmSync(path, { force: true }); } };
 }
 
 async function measured(ctx: DelegationContext, provider: string): Promise<void> {
@@ -212,15 +223,20 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   const input = SpecInput.parse(raw);
   const L = ctx.ledger;
   if (!ctx.usage[input.to]) throw new Error(`${input.to} is not a Runner GovernCode can use (known: ${Object.keys(ctx.usage).join(", ") || "none"})`);
-  if (ctx.plan?.justYou()) throw new Error("the user answered your plan with \"just you\": do this yourself, do not hand off in this turn");
-  // The Crew card: which Runners, whether handing off at all, and the most one Spec may reserve.
-  const crewCard = ctx.crew?.();
-  if (crewCard) {
-    const no = runnerAllowed(crewCard, input.to);
+  // The Crew card, "just you" and the turn itself are checked now and again after every wait:
+  // an answer or a setting can change while this call is waiting.
+  const stillAllowed = () => {
+    if (ctx.alive && !ctx.alive()) throw new Error("the Controller's turn has ended");
+    if (ctx.plan?.justYou()) throw new Error("the user answered your plan with \"just you\": do this yourself, do not hand off in this turn");
+    const card = ctx.crew?.();
+    const no = card ? runnerAllowed(card, input.to) : null;
     if (no) throw new Error(no);
-    const cap = crewCard.maxPercent[input.to];
-    if (cap !== undefined && input.budgetPercent > cap) input.budgetPercent = cap;
-  }
+    return card;
+  };
+  const crewCard = stillAllowed();
+  let capNote: string | null = null;
+  const cap = crewCard?.maxPercent[input.to];
+  if (cap !== undefined && input.budgetPercent > cap) { capNote = `budget capped at ${cap}% by the Crew card (asked ${input.budgetPercent}%)`; input.budgetPercent = cap; }
   const picked = specModel(input, ctx.settings?.());
   input.model = picked.model; input.effort = picked.effort;
   // ponytail: the Antigravity Runner's Limit reads its Gemini pool, so it runs Gemini models only;
@@ -228,12 +244,23 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   if (input.to === "agy" && input.model && !/^gemini[a-z0-9.\- ()]*$/i.test(input.model)) {
     throw new Error("the Antigravity Runner runs Gemini models (its Limit reads the Gemini pool); name a Gemini model or leave model empty");
   }
+  // The handoff itself is decided here, in govd, however the call arrived (the tool's own
+  // permission prompt is not the boundary: Codex's review). A local model is a kind the user can
+  // allow; a paid Runner asks, unless an item of the plan the user approved covers it.
+  const shown = { to: input.to, brief: input.brief, result: input.result, scope: input.scope, budgetPercent: input.budgetPercent,
+    model: input.model || "(the Runner's default)", effort: input.effort, reason: input.reason };
+  if ((await ctx.gate({ id: `handoff-${Date.now()}`, tool: "governcode delegate", input: shown, canonical: canonical({ tool: "governcode delegate", input: shown }) })) !== "allow") {
+    throw new Error("the user declined this handoff");
+  }
+  stillAllowed();
   const spec = L.createSpec(ctx.project.name, input, ctx.provider ? `controller · ${ctx.provider}` : "controller");
-  if (picked.note) L.updateSpec(spec.id, { note: picked.note }, "govd");
+  const notes = [capNote, picked.note].filter(Boolean).join("; ");
+  if (notes) L.updateSpec(spec.id, { note: notes }, "govd");
   ctx.notify({ kind: "spec", id: spec.id, to: spec.to, brief: spec.brief });
 
   // 1. The Limit, from a fresh measurement.
   await measured(ctx, input.to);
+  try { stillAllowed(); } catch (e) { L.updateSpec(spec.id, { status: "failed", note: e instanceof Error ? e.message : String(e) }, "govd"); throw e; }
   const verdict = ctx.limits.admit(spec.id, input.to, input.budgetPercent);
   if (!verdict.ok) {
     L.updateSpec(spec.id, { status: "held", note: verdict.reason }, "govd");

@@ -162,8 +162,9 @@ function which(cmd: string): string {
  *  skip GovernCode's Gate; GovernCode then applies its own rules (quiet reads, standing allows).
  *  Found in the first fresh-install test, 2026-09-27: `npm test` ran with no Gate. Reads
  *  (Read, Glob, Grep) are not listed: Claude Code does not ask for them, the sandbox bounds them. */
-export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "mcp__governcode__delegate",
-  "mcp__governcode__spec_discard"];
+// GovernCode's delegate and spec_discard are not here: govd itself decides them (a Gate inside the
+// call), so a Controller reaching the turn socket some other way gains nothing.
+export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch"];
 
 export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
@@ -187,7 +188,7 @@ export function runTurn(opts: {
       "--strict-mcp-config"] : []),
     // Proposing a project creates nothing (the user's Create does), so it needs no Gate of its own;
     // listing the Runners and reading a Spec's status only read.
-    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status,mcp__governcode__project_notes,mcp__governcode__plan",
+    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status,mcp__governcode__project_notes,mcp__governcode__plan,mcp__governcode__delegate,mcp__governcode__spec_discard",
     // The Crew card's "no subagents": Claude Code's subagent tool is not available at all.
     ...(opts.noSubagents ? ["--disallowedTools", "Task,Agent"] : [])];
   // A clean environment: govd's own variables (and anything else in the user's shell) are
