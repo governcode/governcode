@@ -1,0 +1,13 @@
+{
+  "name": "tidepool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A tiny tide-table tool: the GovernCode demo project",
+  "type": "module",
+  "bin": { "tidepool": "./src/cli.js" },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/cli.js data/harbor.csv"
+  },
+  "license": "MIT"
+}

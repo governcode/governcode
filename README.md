@@ -41,6 +41,10 @@ govd &
 gov demo
 ```
 
+For a longer tour, [examples/tidepool](examples/tidepool) is a small project with a real bug and
+a missing feature, and [DEMO.md](examples/tidepool/DEMO.md) walks through every part of
+GovernCode with it in about fifteen minutes.
+
 ## Try it (developers, Linux)
 
 You need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, and
