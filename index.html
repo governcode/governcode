@@ -297,7 +297,7 @@ Allow? [y/t/p/N] <span class="b">t</span>
           <h3>Checkpoints</h3>
           <span class="pill accent sm">works today</span>
         </div>
-        <p><strong>Ctrl-Z for your whole crew.</strong> Every change is snapshotted before and after, so you can diff it and put it back exactly. Undo refuses if you have edited those files since: it will never "restore" over your own work. Everything lands in the Trace, an append-only history.</p>
+        <p><strong>Ctrl-Z for your whole crew.</strong> In a git project every change is snapshotted before and after (files over 100 MB excepted, and it tells you if a snapshot fails), so you can diff it and put it back exactly. Undo refuses if you have edited those files since: it will never "restore" over your own work. Everything lands in the Trace, an append-only history.</p>
         <p class="line"><code>gov undo T-12</code> <span class="d">· restored 2 files</span></p>
       </li>
       <li class="tile">
@@ -359,15 +359,13 @@ Allow? [y/t/p/N] <span class="b">t</span>
     </div>
     <div>
       <div class="term try">
-        <div class="bar"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>try it (developers, Linux)</span><button class="copy" type="button" data-copy="try-cmd" hidden>copy</button></div>
-<pre id="try-cmd" tabindex="0" aria-label="Build from source commands"><span class="p" aria-hidden="true">$ </span>git clone https://github.com/governcode/governcode
-<span class="p" aria-hidden="true">$ </span>cd governcode
-<span class="p" aria-hidden="true">$ </span>npm ci &amp;&amp; cargo build --release
-<span class="p" aria-hidden="true">$ </span>./target/release/govern-sup selftest
-<span class="p" aria-hidden="true">$ </span>npm run govd &amp;  # the daemon
-<span class="p" aria-hidden="true">$ </span>npm run gov -- demo</pre>
+        <div class="bar"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>try it (Linux, release candidate)</span><button class="copy" type="button" data-copy="try-cmd" hidden>copy</button></div>
+<pre id="try-cmd" tabindex="0" aria-label="Install commands"><span class="p" aria-hidden="true">$ </span>tar xzf governcode-*-linux-x86_64.tar.gz
+<span class="p" aria-hidden="true">$ </span>cd governcode-*-linux-x86_64
+<span class="p" aria-hidden="true">$ </span>./install.sh --service   # under ~/.local, no root
+<span class="p" aria-hidden="true">$ </span>gov demo</pre>
       </div>
-      <p class="req">Developers only, for now. Needs Linux 6.12+ (Landlock ABI 6), Node 22.18+, Rust and git, plus Claude Code or Codex logged in. <code>gov demo</code> walks you through a real task in about five minutes. <span id="copy-status" class="vh" aria-live="polite"></span></p>
+      <p class="req">Download the latest release candidate from <a href="https://github.com/governcode/governcode/releases">Releases</a> (Linux x86_64). Needs Linux 6.12+ (Landlock ABI 6), Node 22.18+ and git, plus Claude Code or Codex logged in. <code>gov demo</code> walks you through a real task in about five minutes; the Dashboard is in your app launcher. <span id="copy-status" class="vh" aria-live="polite"></span></p>
     </div>
   </div>
 </section>
