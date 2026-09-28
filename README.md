@@ -41,7 +41,7 @@ sha256sum -c SHA256SUMS
 tar xzf governcode-0.1.0-motion.7-linux-x86_64.tar.gz
 cd governcode-0.1.0-motion.7-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
 govd &
-gov connect claude   # sign Claude Code in for GovernCode (once)
+gov connect claude   # sign Claude Code in for GovernCode (once); gov connect codex too, for the demo's Runner steps
 gov demo
 ```
 
@@ -122,8 +122,8 @@ so you can switch Controllers without losing the story. Each turn the Controller
   kept, and they stay in GovernCode, never in your repository;
 - the project's **record**, built from the Trace with no AI: recent Specs, Checkpoints and what
   you have allowed for the project;
-- the **recent conversation**: the last 10 exchanges, up to about 12,000 characters, until you
-  start a new one (`gov reset`, or **New conversation** in the Dashboard).
+- the **recent conversation**: the last 10 exchanges, up to about 12,000 characters (long
+  messages shortened), until you start a new one (`gov reset`, or **New conversation** in the Dashboard).
 
 All of it goes into the message as information, never as instructions. When you switch a
 project to a Controller from another provider (`gov controller codex`, or Change in the
@@ -131,8 +131,9 @@ Dashboard), GovernCode shows what it would share and asks once: share, and the n
 picks up where the last one left off; or start fresh, and it sees only its own turns. What
 carries over is what was said, decided and done, not a tool's private working state. The first time a Controller works, GovernCode asks
 whether it should bring **your own instructions** (for Claude Code: your CLAUDE.md, skills,
-agents, commands, plugins and hooks, plus your settings without their `env` section or credential
-helpers; for Codex: your AGENTS.md). They are linked into the run's home read-only. Off by
+agents, commands, plugins and hooks, linked into the run's home read-only, plus a few behaviour
+settings copied from your settings.json (hooks, plugins, output style, permissions), never its
+`env` section or credential helpers; for Codex: your AGENTS.md). Off by
 default: it starts clean, with no settings file at all. Change it any time with
 `gov personal claude on|off` or in Settings.
 
@@ -229,12 +230,13 @@ enforces it, and the Controller is told it each turn:
   each tool's own subagent features; starting another AI program from a command is a step that
   always asks, whatever the card says.
 
-Before bigger work the Controller can post a **game plan** with GovernCode's `plan` tool: who
-does what. You approve it (all or some items), answer "just you" (it does everything itself and
+Before bigger work the Controller is asked to post a **game plan** with GovernCode's `plan` tool
+(it is not forced to): who does what. You approve it (all or some items), answer "just you" (it does everything itself and
 cannot hand off for the rest of the turn), or reject it. govd decides every handoff itself,
 however the Controller reaches it. With *follow the approved plan*, each approved item lets one
-handoff to that Runner through without asking again; the Runner's own
-steps still stop at their Gates. Only a Controller hands work to other tools: Runners get no
+handoff to that Runner through without asking again (the Runner is matched, not the item's
+wording; the handoff is on the record with exactly what it handed over); the Runner's own steps
+still stop at their Gates. Only a Controller hands work to other tools: Runners get no
 delegate tool.
 
 ### The Dashboard (desktop app, early)
