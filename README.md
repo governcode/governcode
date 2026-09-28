@@ -163,4 +163,8 @@ messages. Some designs are adapted from [T3 Code](https://github.com/pingdotgg/t
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Free, and it always will be: no paid tier, no catch.
+
+*Oh, by the way:* if GovernCode saves you an afternoon and you feel like saying thanks, you can
+[buy Dave a coffee](https://buymeacoffee.com/onelegdave). The crew runs on tokens; Dave runs
+on coffee. Only one of them has a button. Zero pressure: the code is yours either way.
