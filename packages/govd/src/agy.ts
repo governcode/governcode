@@ -133,10 +133,12 @@ export function agyRunHome(stateDir: string) {
   // may not write (the Gate hook lives there): copied from the GovernCode home, where Connect's
   // sign-in created them. Runs never write that folder, so nothing reaches the next run this way.
   const from = join(toolHome(stateDir, "agy"), ".gemini", "config"), to = join(rh.home, ".gemini", "config");
-  mkdirSync(to, { recursive: true, mode: 0o700 });
-  for (const name of ["projects", ".migrated"]) {
-    if (existsSync(join(from, name))) cpSync(join(from, name), join(to, name), { recursive: true, dereference: false, errorOnExist: false });
-  }
+  try {
+    mkdirSync(to, { recursive: true, mode: 0o700 });
+    for (const name of ["projects", ".migrated"]) {
+      if (existsSync(join(from, name))) cpSync(join(from, name), join(to, name), { recursive: true, dereference: false, errorOnExist: false });
+    }
+  } catch (e) { rh.finish(); throw e; }
   return rh;
 }
 
@@ -265,6 +267,8 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
     for (const c of cleanups.reverse()) { try { c(); } catch { /* best effort */ } }
     o.hooks.done(r);
   };
+  // Any failure while setting up (before or after the run's home exists) still cleans up.
+  try {
   let bin: string;
   try { bin = agyBinary(); } catch (e) { return finish({ ok: false, summary: String(e instanceof Error ? e.message : e) }); }
   const rh = agyRunHome(o.stateDir);
@@ -351,4 +355,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
     }
     finish({ ok: false, summary: `agy ended (${code}): ${String(result?.response ?? stderr.trim().split("\n").slice(-2).join(" | ")).slice(0, 300)}` });
   });
+  } catch (e) {
+    finish({ ok: false, summary: `the Antigravity Runner could not start: ${e instanceof Error ? e.message : e}` });
+  }
 }

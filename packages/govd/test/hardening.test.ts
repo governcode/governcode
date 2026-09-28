@@ -225,3 +225,28 @@ test("tool homes: every run starts empty but for the login link, leaves nothing 
   d.finish();
   assert.equal(readFileSync(shared, "utf8"), "login-2");
 });
+
+test("tool homes: a run that chmods what it shares, or its own folders, cannot break the next run or govd", async () => {
+  const { runHome, toolHome } = await import("../src/homes.ts");
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, statSync, readFileSync, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const state = mkdtempSync(join(tmpdir(), "gc-runhome-modes-"));
+  const home = toolHome(state, "agy");
+  mkdirSync(join(home, "bin"), { recursive: true });
+  writeFileSync(join(home, "bin", "helper"), "#!/bin/sh\n"); chmodSync(join(home, "bin", "helper"), 0o755);
+  writeFileSync(join(home, "token"), "login");
+  const a = runHome(state, "agy", "token", ["bin"]);
+  // What a run can do with ownership alone: lock the shared files, and leave a locked folder.
+  chmodSync(join(home, "token"), 0o000); chmodSync(join(home, "bin", "helper"), 0o000); chmodSync(join(home, "bin"), 0o000);
+  mkdirSync(join(a.home, "trap", "inner"), { recursive: true }); writeFileSync(join(a.home, "trap", "inner", "f"), "x");
+  chmodSync(join(a.home, "trap", "inner"), 0o000); chmodSync(join(a.home, "trap"), 0o000);
+  assert.doesNotThrow(() => a.finish());
+  assert.ok(!existsSync(a.home), "the locked run home is still removed");
+  const b = runHome(state, "agy", "token", ["bin"]);
+  assert.equal(statSync(join(home, "token")).mode & 0o777, 0o600);
+  assert.equal(statSync(join(home, "bin")).mode & 0o777, 0o755);
+  assert.equal(statSync(join(home, "bin", "helper")).mode & 0o777, 0o755, "the helper is readable and runnable again");
+  assert.equal(readFileSync(join(b.home, "token"), "utf8"), "login");
+  b.finish();
+});

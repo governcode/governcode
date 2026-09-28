@@ -5,8 +5,8 @@
 // run, in this project or any other, even when runs overlap. If the tool replaced its login file
 // (a token refresh written by rename), govd copies the new file back byte for byte, never parsing it.
 // Whether a tool is connected is recorded outside every home a tool can write.
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, mkdtempSync, openSync,
-  readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync,
+  readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 
@@ -42,6 +42,10 @@ export function setConnected(stateDir: string, tool: string, yes: boolean): void
 export function runHome(stateDir: string, tool: string, loginFile: string, readOnlyLinks: string[] = []):
     { home: string; login: string; linked: string[]; finish(): void } {
   const shared = join(toolHome(stateDir, tool), loginFile);
+  // A run cannot change what it shares, but it can change its permissions (chmod needs only
+  // ownership): put them back before every run, so one run cannot lock the next one out.
+  repairModes(shared, 0o600, 0o700);
+  for (const rel of readOnlyLinks) repairModes(join(toolHome(stateDir, tool), rel), 0o755, 0o755);   // helper programs
   const runs = join(toolDir(stateDir, tool), "runs");
   mkdirSync(runs, { recursive: true, mode: 0o700 });
   const home = mkdtempSync(join(runs, "run-"));
@@ -79,7 +83,36 @@ export function runHome(stateDir: string, tool: string, loginFile: string, readO
         const out = openSync(shared, constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW);
         try { writeSync(out, body); fsyncSync(out); } finally { closeSync(out); }
       } catch { /* still our link (written in place, or not at all), stale, or not a file: nothing to put back */ }
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     },
   };
+}
+
+/** Put back sane permissions on a file or a folder tree, never following a link. fileMode null:
+ *  keep each file's mode but make sure the owner can read it (and run it, if anyone could). */
+function repairModes(path: string, fileMode: number | null, dirMode: number): void {
+  let st;
+  try { st = lstatSync(path); } catch { return; }
+  if (st.isSymbolicLink()) return;
+  try {
+    if (st.isDirectory()) {
+      chmodSync(path, dirMode);
+      for (const name of readdirSync(path)) repairModes(join(path, name), fileMode, dirMode);
+    } else if (st.isFile()) {
+      chmodSync(path, fileMode ?? ((st.mode & 0o777) | 0o400 | (st.mode & 0o111 ? 0o500 : 0)));
+    }
+  } catch { /* best effort */ }
+}
+
+/** Remove a run's home even if the run left folders without permissions; never throws, never
+ *  follows a link. What cannot be removed is left, and reported to govd's log. */
+export function removeTree(path: string): void {
+  const open = (p: string) => {
+    let st;
+    try { st = lstatSync(p); } catch { return; }
+    if (!st.isDirectory()) return;
+    try { chmodSync(p, 0o700); for (const name of readdirSync(p)) open(join(p, name)); } catch { /* best effort */ }
+  };
+  open(path);
+  try { rmSync(path, { recursive: true, force: true }); } catch (e) { console.error(`govd: could not remove ${path}: ${e instanceof Error ? e.message : e}`); }
 }
