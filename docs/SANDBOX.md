@@ -98,7 +98,8 @@ once, how many minutes each), since there is no quota to measure.
   tool can change the permission bits of a file it can name by path, even outside its
   allowlist. It cannot read or write such a file; it could make one unreadable to you.
 - If `govern-sup` itself is killed with SIGKILL (not how `govd` stops a run), the tool dies
-  with it, but processes the tool started are not collected. A per-run cgroup would close
+  with it (unless it cleared that itself), but processes the tool started are not collected.
+  A stopped run gets 3 seconds to end on its own; then everything it started is killed. A per-run cgroup would close
   that; it is not needed for how GovernCode runs tools today.
 - The tool can read its own credentials (it needs them) and reach any address on port
   443, so a misbehaving tool could send its own credentials away. The sandbox protects

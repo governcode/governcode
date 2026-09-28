@@ -14,7 +14,7 @@
 //! set, as the kernel requires, so setuid programs (sudo) do not elevate inside.
 
 use landlock::{
-    Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+    Access, AccessFs, CompatLevel, Compatible, PathBeneath, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus, ABI,
 };
 use serde::Deserialize;
@@ -102,6 +102,35 @@ pub fn rules(p: &Protect) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     Ok((full, on_way.into_iter().collect()))
 }
 
+/// O_PATH, not following a final symlink, and refusing symlinks on the way (openat2).
+fn open_nofollow(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
+    let fd = unsafe { libc::syscall(libc::SYS_openat2, libc::AT_FDCWD, c.as_ptr(), &how as *const libc::open_how, std::mem::size_of::<libc::open_how>()) };
+    if fd < 0 {
+        // ELOOP: the final component is a symlink. Open the link itself so the caller sees it.
+        if std::io::Error::last_os_error().raw_os_error() == Some(libc::ELOOP) {
+            let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+            if fd >= 0 {
+                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+                // Only the final link itself is acceptable here; a link earlier on the way is not.
+                let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                use std::os::fd::AsRawFd;
+                if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } == 0 && st.st_mode & libc::S_IFMT == libc::S_IFLNK {
+                    return Ok(fd);
+                }
+                return Err(std::io::Error::from_raw_os_error(libc::ELOOP));
+            }
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) })
+}
+
 pub fn apply(p: &Protect, abi: i32) -> Result<(), String> {
     if abi < 1 {
         return Err("cannot enforce protect mode: this kernel has no Landlock".into());
@@ -116,13 +145,19 @@ pub fn apply(p: &Protect, abi: i32) -> Result<(), String> {
         .create()
         .map_err(|e| err(&e))?;
     for path in &full {
-        // Entries can vanish between listing and here (temp files): skip those, not fail.
-        let Ok(fd) = PathFd::new(path) else { continue };
-        let access = if path.is_dir() { all } else { all & AccessFs::from_file(ABI::V6) };
+        // Opened without following a final symlink: an entry that became a link after it was
+        // listed is skipped here, never granted (its target may be the protected directory).
+        // Entries can also vanish between listing and here (temp files): skip those, not fail.
+        let Ok(fd) = open_nofollow(path) else { continue };
+        let Ok(meta) = std::fs::File::from(fd.try_clone().map_err(|e| err(&e))?).metadata() else { continue };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let access = if meta.is_dir() { all } else { all & AccessFs::from_file(ABI::V6) };
         ruleset = ruleset.add_rule(PathBeneath::new(fd, access)).map_err(|e| err(&format!("{}: {e}", path.display())))?;
     }
     for dir in &on_way {
-        let fd = PathFd::new(dir).map_err(|e| err(&format!("{}: {e}", dir.display())))?;
+        let fd = open_nofollow(dir).map_err(|e| err(&format!("{}: {e}", dir.display())))?;
         ruleset = ruleset
             .add_rule(PathBeneath::new(fd, AccessFs::ReadDir | AccessFs::Execute))
             .map_err(|e| err(&format!("{}: {e}", dir.display())))?;

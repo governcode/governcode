@@ -66,15 +66,23 @@ pub fn close_inherited() -> Result<(), String> {
     if rc == 0 {
         return Ok(());
     }
-    // Kernels before 5.11: mark each open descriptor by hand.
-    let fds: Vec<i32> = std::fs::read_dir("/proc/self/fd")
-        .map_err(|e| format!("cannot list open descriptors: {e}"))?
-        .flatten()
-        .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse().ok()))
-        .filter(|&fd| fd > 2)
-        .collect();
+    // Kernels before 5.11: mark each open descriptor by hand. Any failure stops the run.
+    let err = |e: &dyn std::fmt::Display| format!("cannot close inherited descriptors: {e}");
+    let mut fds = Vec::new();
+    for entry in std::fs::read_dir("/proc/self/fd").map_err(|e| err(&e))? {
+        let name = entry.map_err(|e| err(&e))?.file_name();
+        let fd: i32 = name.to_str().and_then(|n| n.parse().ok()).ok_or_else(|| err(&"unreadable descriptor list"))?;
+        if fd > 2 {
+            fds.push(fd);
+        }
+    }
     for fd in fds {
-        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        // The directory listing's own descriptor is already gone (EBADF); anything else fails.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0
+            && std::io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+        {
+            return Err(err(&std::io::Error::last_os_error()));
+        }
     }
     Ok(())
 }

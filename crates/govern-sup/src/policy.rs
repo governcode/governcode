@@ -77,30 +77,56 @@ pub fn read_bounded(file: &Path) -> Result<String, String> {
     Ok(text)
 }
 
-/// Opens `path` as an O_PATH descriptor. Write paths may not pass through any symlink at
-/// all (the kernel resolves with RESOLVE_NO_SYMLINKS, so there is no check-then-open gap).
-/// Read and exec paths may pass through symlinks only if root owns them (/bin -> usr/bin):
-/// a symlink the user owns could have been planted by an earlier run (security review
-/// 2026-09-27). ponytail: that ownership walk and the open are two steps; only a process
-/// running as the user outside any sandbox could swap a folder in between, and the
-/// supervisor now kills everything a run leaves behind. Upgrade: resolve component by
-/// component with openat(O_NOFOLLOW) if that assumption ever changes.
+/// Where a read or exec path really leads, following symlinks one at a time, each of which
+/// must be owned by root (/bin -> usr/bin): a symlink the user owns, anywhere on the way,
+/// including inside a root-owned link's target, could have been planted by an earlier run
+/// (security review 2026-09-27).
+fn resolve_root_links(path: &Path) -> Result<PathBuf, std::io::Error> {
+    let mut todo: Vec<std::ffi::OsString> = path.components().rev()
+        .filter_map(|c| match c { Component::Normal(n) => Some(n.to_os_string()), _ => None }).collect();
+    let mut real = PathBuf::from("/");
+    let mut links = 0;
+    while let Some(name) = todo.pop() {
+        if name == ".." {
+            real.pop();
+            continue;
+        }
+        let next = real.join(&name);
+        let meta = match std::fs::symlink_metadata(&next) {
+            Ok(m) => m,
+            Err(e) => return Err(e),
+        };
+        if !meta.file_type().is_symlink() {
+            real = next;
+            continue;
+        }
+        links += 1;
+        if meta.uid() != 0 || links > 40 {
+            return Err(std::io::Error::other(format!("{} is a symlink you own (or a loop); list its real path instead", next.display())));
+        }
+        let target = std::fs::read_link(&next)?;
+        if target.is_absolute() {
+            real = PathBuf::from("/");
+        }
+        todo.extend(target.components().rev().filter_map(|c| match c {
+            Component::Normal(n) => Some(n.to_os_string()),
+            Component::ParentDir => Some("..".into()),
+            _ => None,
+        }));
+    }
+    Ok(real)
+}
+
+/// Opens `path` as an O_PATH descriptor, never through a symlink the user owns. Write paths
+/// may not pass through any symlink at all. Read and exec paths are first resolved through
+/// root-owned links only, and the result is then opened with no symlinks allowed, so a link
+/// swapped in after that check makes the open fail instead of redirecting it.
 fn open_path(path: &Path, kind: Kind) -> Result<(OwnedFd, std::fs::Metadata), std::io::Error> {
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let real = if kind == Kind::Write { path.to_path_buf() } else { resolve_root_links(path)? };
+    let c = std::ffi::CString::new(real.as_os_str().as_bytes()).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
     let mut how: libc::open_how = unsafe { std::mem::zeroed() };
     how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
-    how.resolve = libc::RESOLVE_NO_MAGICLINKS;
-    if kind == Kind::Write {
-        how.resolve |= libc::RESOLVE_NO_SYMLINKS;
-    } else {
-        for a in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
-            if let Ok(m) = std::fs::symlink_metadata(a) {
-                if m.file_type().is_symlink() && m.uid() != 0 {
-                    return Err(std::io::Error::other(format!("{} is a symlink you own; list its real path instead", a.display())));
-                }
-            }
-        }
-    }
+    how.resolve = libc::RESOLVE_NO_MAGICLINKS | libc::RESOLVE_NO_SYMLINKS;
     let fd = unsafe { libc::syscall(libc::SYS_openat2, libc::AT_FDCWD, c.as_ptr(), &how as *const libc::open_how, std::mem::size_of::<libc::open_how>()) };
     if fd < 0 {
         let e = std::io::Error::last_os_error();
