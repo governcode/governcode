@@ -13,7 +13,7 @@
 //   customizations is refused, and a Runner that creates one fails its Spec.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -44,7 +44,7 @@ export function hold(stateDir: string, tool: string): () => void {
 
 // Where a tool is signed in, and whether it is connected: see homes.ts.
 export { isConnected, toolHome } from "./homes.ts";
-import { isConnected, toolHome } from "./homes.ts";
+import { isConnected, runHome, toolHome } from "./homes.ts";
 
 // Antigravity's customization roots; a project copy holding one is refused (see above).
 const CUSTOM_ROOTS = [".agents", ".agent", "_agents", "_agent"];
@@ -120,17 +120,38 @@ export function writeAgyConfig(home: string, hook: { node: string; script: strin
   return name;
 }
 
+// Antigravity's login file in its GovernCode home (named by a listing of that home, never read),
+// and its helper programs, which a run links read-only instead of downloading them again.
+export const AGY_LOGIN = ".gemini/antigravity-cli/antigravity-oauth-token";
+const AGY_SHARED = [".gemini/antigravity-cli/bin"];
+
+/** A fresh Antigravity home for one run (homes.ts): the login and helper programs linked in;
+ *  nothing of an earlier run (conversations, knowledge, its "brain") is there. */
+export function agyRunHome(stateDir: string) {
+  const rh = runHome(stateDir, "agy", AGY_LOGIN, AGY_SHARED);
+  // Antigravity needs its project registry and migration mark in the config folder, which a run
+  // may not write (the Gate hook lives there): copied from the GovernCode home, where Connect's
+  // sign-in created them. Runs never write that folder, so nothing reaches the next run this way.
+  const from = join(toolHome(stateDir, "agy"), ".gemini", "config"), to = join(rh.home, ".gemini", "config");
+  mkdirSync(to, { recursive: true, mode: 0o700 });
+  for (const name of ["projects", ".migrated"]) {
+    if (existsSync(join(from, name))) cpSync(join(from, name), join(to, name), { recursive: true, dereference: false, errorOnExist: false });
+  }
+  return rh;
+}
+
 export function agyPolicy(o: { work: string; tmp: string; home: string; bin: string; writePaths: string[]; gitDir?: string;
-                               node: string; socket: string }): Policy {
+                               node: string; socket: string; login?: string; linked?: string[] }): Policy {
   const state = join(o.home, ".gemini", "antigravity-cli");
   mkdirSync(state, { recursive: true, mode: 0o700 });
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom", "/dev/random",
-      o.bin, o.home, dirname(HOOK_SCRIPT), dirname(o.node), ...resolverFiles(), o.work, ...(o.gitDir ? [o.gitDir] : [])]
+      o.bin, o.home, ...(o.login ? [o.login] : []), ...(o.linked ?? []), dirname(HOOK_SCRIPT), dirname(o.node), ...resolverFiles(), o.work, ...(o.gitDir ? [o.gitDir] : [])]
       .filter((p) => p === o.work || existsSync(p)),
-    // The config folder that holds the hook is NOT here: only Antigravity's own state is writable.
-    write: [...o.writePaths, o.tmp, state, "/dev/null"],
+    // The config folder that holds the hook is NOT here: only Antigravity's own state is writable
+    // (and the shared login file, which a token refresh may write in place).
+    write: [...o.writePaths, o.tmp, state, "/dev/null", ...(o.login && existsSync(o.login) ? [o.login] : [])],
     exec: ["/usr/bin", "/bin", "/usr/lib", o.bin, dirname(o.node), ...toolchainDirs()],
     tcp_connect: [443],
     // No D-Bus: the desktop keyring stays out of reach, so the tool uses the login Connect made.
@@ -173,7 +194,7 @@ function parseQuotaUnsafe(out: string, model: string): Measurement | null {
 /** The usage source: `agy -p /quota` in the private home, sandboxed, no agent turn. */
 /** Antigravity's usage, read in a home with `agy -p /quota` (sandboxed, no agent turn, no quota
  *  spent, no terminal: it never signs in here). */
-export async function quotaIn(o: { supervisor: string; policyDir: string }, home: string): Promise<{ m: Measurement | null; why: string | null }> {
+export async function quotaIn(o: { supervisor: string; policyDir: string }, home: string, shared: { login?: string; linked?: string[] } = {}): Promise<{ m: Measurement | null; why: string | null }> {
   let bin: string;
   try { bin = agyBinary(); } catch { return { m: null, why: "Antigravity is not installed" }; }
   const tmp = mkdtempSync(join(tmpdir(), "governcode-agy-"));
@@ -182,7 +203,7 @@ export async function quotaIn(o: { supervisor: string; policyDir: string }, home
   const policyFile = join(o.policyDir, `agy-usage-${process.pid}-${Date.now()}-${randomBytes(3).toString("hex")}.json`);
   try {
     mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
-    const policy = agyPolicy({ work: scratch, tmp, home, bin, writePaths: [], node: process.execPath, socket: "/nonexistent" });
+    const policy = agyPolicy({ work: scratch, tmp, home, bin, writePaths: [], node: process.execPath, socket: "/nonexistent", ...shared });
     writeFileSync(policyFile, JSON.stringify({ ...policy, unix_connect: policy.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
     const out = await run(o.supervisor, policyFile, bin, ["-p", "/quota", "--output-format", "json"], agyEnv(tmp, home), scratch, 40_000);
     const m = out.code === 0 ? parseQuota(out.stdout) : null;   // a reading counts only from a clean run
@@ -209,7 +230,10 @@ export function agyUsage(o: { supervisor: string; policyDir: string; stateDir: s
         why = installed ? "Antigravity is not connected (gov connect agy)" : "Antigravity is not installed";
         return null;
       }
-      const r = await quotaIn(o, toolHome(o.stateDir, "agy"));
+      // In a fresh home of its own, like a run.
+      const rh = agyRunHome(o.stateDir);
+      let r: { m: Measurement | null; why: string | null };
+      try { r = await quotaIn(o, rh.home, { login: rh.login, linked: rh.linked }); } finally { rh.finish(); }
       why = r.why;
       return r.m;
     },
@@ -243,11 +267,14 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   };
   let bin: string;
   try { bin = agyBinary(); } catch (e) { return finish({ ok: false, summary: String(e instanceof Error ? e.message : e) }); }
-  const home = toolHome(o.stateDir, "agy");
-  if (!isConnected(o.stateDir, "agy")) return finish({ ok: false, summary: "Antigravity is not connected: run gov connect agy" });
+  const rh = agyRunHome(o.stateDir);
+  const home = rh.home;
+  cleanups.push(() => rh.finish());   // (normally after the process has exited; see below)
+  if (!isConnected(o.stateDir, "agy")) { rh.finish(); return finish({ ok: false, summary: "Antigravity is not connected: run gov connect agy" }); }
   cleanups.push(hold(o.stateDir, "agy"));
   const found = customizations(o.worktree);
   if (found.length) {
+    rh.finish();
     return finish({ ok: false, summary: `the project has Antigravity customizations (${found.slice(0, 3).join(", ")}); ` +
       "GovernCode does not run an Antigravity Runner with a project's own hooks, plugins or agents" });
   }
@@ -279,7 +306,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   cleanups.push(() => rmSync(tmp, { recursive: true, force: true }));
   const policyFile = join(o.policyDir, `agy-${process.pid}-${Date.now()}.json`);
   writeFileSync(policyFile, JSON.stringify(agyPolicy({ work: o.worktree, tmp, home, bin, writePaths: o.writePaths, gitDir: o.gitDir,
-    node: process.execPath, socket: sock.path })), { mode: 0o600 });
+    node: process.execPath, socket: sock.path, login: rh.login, linked: rh.linked })), { mode: 0o600 });
   cleanups.push(() => rmSync(policyFile, { force: true }));
 
   const args = ["-p", `${RUNNER_CONTEXT}\n\n${o.prompt}`, "--output-format", "stream-json", "--disable-slash-commands",
@@ -288,7 +315,9 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
     { cwd: o.worktree, env: agyEnv(tmp, home), stdio: ["ignore", "pipe", "pipe"], detached: true });
   cleanups.push(() => { try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } });
   let stderr = "";
-  child.on("error", (e) => finish({ ok: false, summary: `agy did not start: ${e.message}` }));
+  // The run's home goes once govern-sup has exited (every process of the run gone).
+  child.on("close", () => rh.finish());
+  child.on("error", (e) => { rh.finish(); finish({ ok: false, summary: `agy did not start: ${e.message}` }); });
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
   let result: any = null;
   createInterface({ input: child.stdout }).on("line", (line) => {

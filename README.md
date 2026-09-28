@@ -86,9 +86,10 @@ hand-back; nothing else an AI tool runs may listen at all.
   keeps; when a tool refreshes its login during a run, govd copies the new file back as it is.
 - Only a subscription sign-in counts as connected, never an API key: GovernCode does not switch
   anything onto paid API use.
-- Claude Code and Codex start every run from a fresh home of their own, with only the login
-  linked in, and that home is deleted afterwards: nothing a run writes (memory, caches,
-  settings, rules, skills) reaches another run, in this project or any other.
+- Every run of Claude Code, Codex or Antigravity starts from a fresh home of its own, with only
+  the login linked in (and, for Antigravity, its helper programs, read-only), and that home is
+  deleted afterwards: nothing a run writes (memory, knowledge, caches, settings, rules, skills)
+  reaches another run, in this project or any other.
 - `gov disconnect TOOL` deletes GovernCode's copy of a login. Revoking the tool's access in your
   account ends every sign-in of that tool, your own included.
 
@@ -207,9 +208,6 @@ Honest limits, for now:
   and the sandbox limits where it can write, not which HTTPS sites it can reach.
 - `gov disconnect agy` deletes GovernCode's copy of the login. Revoking Antigravity's access in
   your Google account ends every Antigravity sign-in, your own included.
-- Antigravity keeps its own state (conversations, knowledge) in its GovernCode home between runs;
-  its settings, hooks and MCP servers are rebuilt before every run. A fresh home per run, as for
-  Claude Code and Codex, comes next.
 - A project that contains Antigravity customization folders (`.agents/`, `.agent/`, `_agents/`,
   `_agent/`) is refused: their hooks could switch GovernCode's Gate off. A Runner that creates one
   fails its Spec.

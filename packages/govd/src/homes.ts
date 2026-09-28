@@ -8,7 +8,7 @@
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, mkdtempSync, openSync,
   readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const toolDir = (stateDir: string, tool: string) => join(stateDir, "tools", tool);
 /** The GovernCode home Connect signs the tool into. */
@@ -39,19 +39,30 @@ export function setConnected(stateDir: string, tool: string, yes: boolean): void
 // so a run can overwrite its own tool's GovernCode login. That can only break that login (Connect
 // again fixes it); it reaches nothing else. Upgrade: a private copy per run, published under a
 // lock, if a tool is found refreshing mid-run while another run is signing in.
-export function runHome(stateDir: string, tool: string, loginFile: string): { home: string; login: string; finish(): void } {
+export function runHome(stateDir: string, tool: string, loginFile: string, readOnlyLinks: string[] = []):
+    { home: string; login: string; linked: string[]; finish(): void } {
   const shared = join(toolHome(stateDir, tool), loginFile);
   const runs = join(toolDir(stateDir, tool), "runs");
   mkdirSync(runs, { recursive: true, mode: 0o700 });
   const home = mkdtempSync(join(runs, "run-"));
   const link = join(home, loginFile);
+  mkdirSync(dirname(link), { recursive: true, mode: 0o700 });
   if (existsSync(shared)) symlinkSync(shared, link);
+  // Large downloads the tool keeps beside its login (its own helper programs), shared read-only.
+  const linked: string[] = [];
+  for (const rel of readOnlyLinks) {
+    const target = join(toolHome(stateDir, tool), rel);
+    if (!existsSync(target)) continue;
+    mkdirSync(dirname(join(home, rel)), { recursive: true, mode: 0o700 });
+    symlinkSync(target, join(home, rel));
+    linked.push(target);
+  }
   const gen = generation(stateDir, tool);
   const stamp = (): string | null => { try { const st = statSync(shared); return `${st.ino}:${st.size}:${st.mtimeMs}`; } catch { return null; } };
   const before = stamp();
   let done = false;
   return {
-    home, login: shared,
+    home, login: shared, linked,
     finish() {
       if (done) return;
       done = true;

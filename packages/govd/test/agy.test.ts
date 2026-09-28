@@ -32,8 +32,14 @@ if (args[1] === "/quota") {
     { id: "gemini-5h", window: "5h", remaining_fraction: 0.95, reset_time: "2026-09-29T00:00:00Z" }] }] } } });
   process.exit(0);
 }
-let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(home, "fake.json"), "utf8")); } catch {}
+// A fresh home per run: the shared GovernCode home is where the login link points.
+const login = path.join(home, ".gemini/antigravity-cli/antigravity-oauth-token");
+const shared = path.resolve(path.dirname(fs.realpathSync(login)), "..", "..");
+let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(shared, "fake.json"), "utf8")); } catch {}
 const hooks = JSON.parse(fs.readFileSync(path.join(home, ".gemini/config/hooks.json"), "utf8"));
+// What this run saw, for the test to check (the run's own home is deleted afterwards).
+fs.writeFileSync(path.join(shared, "seen.json"), JSON.stringify({ hooks, config: fs.readdirSync(path.join(home, ".gemini/config")),
+  settings: JSON.parse(fs.readFileSync(path.join(home, ".gemini/antigravity-cli/settings.json"), "utf8")), home }));
 const cmds = Object.values(hooks).filter((h) => h.enabled !== false).flatMap((h) => (h.PreToolUse || []).flatMap((g) => g.hooks.map((x) => x.command)));
 out({ event: "init", init: { tools: ["write_to_file", "view_file", "run_command"] } });
 let i = 0;
@@ -73,6 +79,8 @@ function setup(answer: "allow" | "deny", calls: (work: string) => object[], extr
   const state = mkdtempSync(join(root, "state-"));
   const home = toolHome(state, "agy");
   mkdirSync(join(home, ".gemini", "config"), { recursive: true });
+  mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), "login");   // the shared login (never read)
   writeFileSync(join(home, "..", "connected"), "");                          // connected
   writeFileSync(join(home, ".gemini", "config", "plugins"), "left over");     // must be cleared
   const ledger = new Ledger(":memory:");
@@ -109,12 +117,12 @@ test("agy Runner: a quiet read passes, a write waits at a Gate that shows its co
   assert.equal(t.gates.length, 1, "the read did not ask");
   assert.match(t.gates[0].tool, /^agy fileChange \(Runner · agy, S-0001\)$/);
   assert.match(t.gates[0].canonical, /"CodeContent": "ok\\n"/);
-  const cfg = readdirSync(join(t.home, ".gemini", "config"));
-  assert.ok(!cfg.includes("plugins"), "anything else in the config folder is removed");
-  const hooks = JSON.parse(readFileSync(join(t.home, ".gemini", "config", "hooks.json"), "utf8"));
-  assert.match(Object.keys(hooks)[0], /^governcode-[0-9a-f]{18}$/, "the hook's name is random");
-  assert.deepEqual(JSON.parse(readFileSync(join(t.home, ".gemini", "antigravity-cli", "settings.json"), "utf8")), { toolPermission: "always-proceed" },
-    "Antigravity's own confirmations are off: GovernCode's hook is the Gate");
+  const seen = JSON.parse(readFileSync(join(t.home, "seen.json"), "utf8"));
+  assert.deepEqual(seen.config, ["hooks.json"], "the run's config folder holds GovernCode's hook and nothing else");
+  assert.match(Object.keys(seen.hooks)[0], /^governcode-[0-9a-f]{18}$/, "the hook's name is random");
+  assert.deepEqual(seen.settings, { toolPermission: "always-proceed" }, "Antigravity's own confirmations are off: GovernCode's hook is the Gate");
+  assert.ok(!seen.home.startsWith(t.home), "the run had a fresh home of its own");
+  assert.ok(!existsSync(seen.home), "and it is gone afterwards");
 });
 
 test("agy Runner: a declined Gate leaves the file unwritten", async () => {
