@@ -92,7 +92,9 @@ its own input channel by path, or to open a fresh connection to the daemon.
 ## Platforms
 
 Linux: Landlock (ABI 4 or newer for TCP rules, 6 or newer for scoping) + seccomp.
-macOS: a default-deny Seatbelt profile (planned for phase 2). Windows: not supported.
+macOS: a default-deny Seatbelt profile. Windows: an AppContainer with a restricted token, in a
+job object (no child escapes it, and it ends with the Runner). Both are planned together, with
+the same priority, after Linux; neither ships without its own self-test.
 
 ## Protect mode (for trusted general-purpose agents)
 

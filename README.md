@@ -105,12 +105,14 @@ has no access to your files or sockets; only the app's main process talks to `go
 |---|---|
 | 0 | `govd` + `govern-sup` + `gov`: deny-by-default sandbox and its self-test; Claude Code driver; the Trace (event log) |
 | 1 | Controller + `delegate`; Codex as the first measured Runner; Limits with in-flight checks; Checkpoints + undo |
-| 2 | Dashboard desktop app (Linux, macOS); review queue; Gates |
+| 2 | Dashboard desktop app; review queue; Gates |
 | 3 | Pager phone app (Android first); pairing; phone-signed Gates; remote from laptops |
 | 4 | Modules (plugins) and their Registry |
 | 5 | iOS; driver Modules; launch |
 
-Linux and macOS are first-class. Windows is not supported yet.
+**Platforms.** Linux first, while the core is built. Then macOS and Windows together, with the
+same priority: neither waits for the other, and a release that adds one adds both. GovernCode
+should work for as many people as want it, and three platforms find more bugs than one.
 
 ## Vocabulary
 
