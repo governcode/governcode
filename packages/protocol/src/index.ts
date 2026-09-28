@@ -117,7 +117,7 @@ export const Params = {
   "tools.disconnect": z.object({ tool: z.enum(["agy"]) }),
   // Project memory: the notes (read, set by the user, with every version), and whether a
   // Controller from another provider may see the project's conversation, record and notes.
-  "notes.get": z.object({ project: ProjectName }),
+  "notes.get": z.object({ project: ProjectName, limit: z.number().int().min(1).max(1000).default(50) }),
   "notes.set": z.object({ project: ProjectName, text: z.string().max(4000) }),
   "context.state": z.object({ project: ProjectName }),
   "context.share": z.object({ project: ProjectName, provider: z.string().regex(/^[a-z0-9-]{1,40}$/), share: z.boolean() }),

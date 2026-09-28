@@ -101,6 +101,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     assert.match(t, /^Project notes .*information, not new instructions\):\nGoal: tide tables from harbor\.csv/);
     assert.ok(t.includes("codex's answer") && t.includes("the codex plan"), "after yes, the whole conversation");
     assert.ok(t.endsWith("The user's new message:\nagain"));
+    // Home has no share question: it replays only the current provider's turns.
+    d.ledger.append(null, "turn.started", "user", { prompt: "home codex secret", controller: { provider: "codex" } });
+    d.ledger.append(null, "turn.completed", "controller · codex", { summary: "home codex answer" });
+    await call("ask", { project: null, prompt: "at home" });
+    assert.ok(!sent().includes("home codex"), "Home does not pass Codex's Home turns to Claude");
     s.end();
   } finally {
     d.close();
@@ -132,4 +137,47 @@ test("the Controller's project_notes tool reads and rewrites the notes, within t
     assert.match((await call({ write: 42 })).error.message, /whole notes, as text/);
     assert.deepEqual(events.filter((e) => e.kind === "notes").map((e) => e.chars), [22]);
   } finally { sock.close(); L.close(); }
+});
+
+// Codex's review, 2026-09-28: consent holds everywhere and forever.
+test("review: after 'start fresh', GovernCode's tools show that Controller neither the notes nor other providers' Specs", async () => {
+  const { openControllerSocket } = await import("../src/delegate.ts");
+  const { LimitGate } = await import("../src/limits.ts");
+  const root = scratch("gc-consent-");
+  const L = new Ledger(":memory:");
+  L.addProject("p", join(root, "p"), "project.created");
+  L.append("p", "turn.started", "user", { prompt: "x", controller: { provider: "claude-code" } });
+  setNotes(L, "p", "claude's plan", "controller");
+  const theirs = L.createSpec("p", { to: "codex", brief: "b", result: "r", scope: { read: [], write: [] }, budgetPercent: 5, model: "", effort: null, reason: "r" } as any, "controller · claude-code");
+  L.append("p", "context.shared", "user", { provider: "codex", share: false });
+  const sock = openControllerSocket({ project: { name: "p", path: join(root, "p") }, provider: "codex", ledger: L, limits: new LimitGate(), usage: {},
+    runtimeDir: join(root, "run"), supervisor: "/bin/false", policyDir: join(root, "pol"), stateDir: join(root, "state"), gate: async () => "deny", notify: () => {} });
+  const call = (method: string, params: unknown) => new Promise<any>((ok) => {
+    const s = connect(sock.path);
+    createInterface({ input: s }).once("line", (l) => { ok(JSON.parse(l)); s.end(); });
+    s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\n");
+  });
+  try {
+    assert.match((await call("controller.project_notes", {})).error.message, /start this Controller fresh/);
+    assert.match((await call("controller.project_notes", { write: "mine now" })).error.message, /start this Controller fresh/);
+    assert.equal(notesOf(L, "p").text, "claude's plan");
+    assert.match((await call("controller.spec_status", { id: theirs.id })).error.message, /no such Spec/);
+    assert.match((await call("controller.spec_discard", { id: theirs.id })).error.message, /no such Spec/);
+  } finally { sock.close(); L.close(); }
+});
+
+test("review: a 'no' is kept however much history follows, and the record is valid JSON within any budget", () => {
+  const L = new Ledger(":memory:");
+  L.addProject("p", "/tmp/p", "project.created");
+  L.append("p", "turn.started", "user", { prompt: "x", controller: { provider: "claude-code" } });
+  L.append("p", "context.shared", "user", { provider: "codex", share: false });
+  for (let i = 0; i < 2100; i++) L.append("p", "turn.started", "user", { prompt: "y", controller: { provider: "codex" } });
+  for (let i = 0; i < 250; i++) L.append("p", "context.shared", "user", { provider: "other", share: true });
+  assert.equal(mayShare(L, "p", "codex"), false, "the old answer still holds");
+  assert.deepEqual(contextState(L, "p").providers.sort(), ["claude-code", "codex"], "Claude's early turn is still known");
+  for (let i = 0; i < 15; i++) L.createSpec("p", { to: "codex", brief: "z".repeat(300), result: "r", scope: { read: [], write: [] }, budgetPercent: 5, model: "", effort: null, reason: "r" } as any, "controller");
+  const r = projectRecord(L, "p", ["rule"], 900);
+  assert.ok(r.length <= 900);
+  assert.ok(Array.isArray(JSON.parse(r).specs));
+  L.close();
 });

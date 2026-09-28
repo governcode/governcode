@@ -177,7 +177,7 @@ export function App() {
             )}
             {view === "pipeline" && <Pipeline project={current?.name ?? null} live={live} />}
             {view === "checkpoints" && <Checkpoints project={current?.name ?? null} live={live} />}
-            {view === "notes" && <Notes project={current?.name ?? null} />}
+            {view === "notes" && <Notes key={current?.name ?? "home"} project={current?.name ?? null} />}
             {view === "limits" && <Limits />}
             {view === "settings" && <Settings projects={projects} hello={hello} onChangeController={(name) => { setProject(name); setDialog("controller"); }} />}
             {view === "gates" && <Gates gates={gates} onAnswered={() => void refreshGates()} />}

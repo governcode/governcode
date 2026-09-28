@@ -16,10 +16,19 @@ import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, s
 import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
-import { notesOf, setNotes } from "./memory.ts";
+import { mayShare, notesOf, setNotes } from "./memory.ts";
+
+/** A Spec this Controller may look at: any, when the project's context is shared with it; else
+ *  only the ones its own provider made. */
+function mine(ctx: DelegationContext, id: string): boolean {
+  if (!ctx.provider || mayShare(ctx.ledger, ctx.project.name, ctx.provider)) return true;
+  return ctx.ledger.eventsOfKind(ctx.project.name, ["spec.created"], 5000)
+    .some((e) => e.data.spec === id && e.actor === `controller · ${ctx.provider}`);
+}
 
 export type DelegationContext = {
   project: { name: string; path: string };
+  provider?: string;                       // the Controller's provider (project memory consent)
   ledger: Ledger;
   limits: LimitGate;
   usage: Record<string, UsageSource>;      // providers that can be Runners, with a usage source
@@ -68,13 +77,18 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
       // The Controller may throw away its own proposal (a bad draft it wants to redo). Accepting
       // stays the user's alone.
       const s = ctx.ledger.spec(String((params as any)?.id));
-      if (!s || s.project !== ctx.project.name) throw new Error("no such Spec in this project");
+      if (!s || s.project !== ctx.project.name || !mine(ctx, s.id)) throw new Error("no such Spec in this project");
       if (!["needs-review", "failed", "held"].includes(s.status)) throw new Error(`${s.id} is ${s.status}; only a Spec waiting for review, failed or held can be discarded`);
       discard(ctx.stateDir, s.id);
       ctx.ledger.updateSpec(s.id, { status: "undone", note: "discarded by the Controller" }, "controller");
       return { id: s.id, discarded: true };
     }
     if (method === "controller.project_notes") {
+      // A Controller the user told to start fresh sees none of the project's shared notes, and
+      // cannot overwrite them either.
+      if (ctx.provider && !mayShare(ctx.ledger, ctx.project.name, ctx.provider)) {
+        throw new Error("the user chose to start this Controller fresh in this project: the project's notes are not shared with it");
+      }
       const w = (params as { write?: unknown } | null)?.write;
       if (w === undefined) return { notes: notesOf(ctx.ledger, ctx.project.name).text };
       if (typeof w !== "string") throw new Error("write must be the whole notes, as text");
@@ -84,7 +98,7 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
     }
     if (method === "controller.spec_status") {
       const s = ctx.ledger.spec(String((params as any)?.id));
-      if (!s || s.project !== ctx.project.name) throw new Error("no such Spec in this project");
+      if (!s || s.project !== ctx.project.name || !mine(ctx, s.id)) throw new Error("no such Spec in this project");
       return { id: s.id, status: s.status, files: s.files, note: s.note };
     }
     throw new Error(`not offered to the Controller: ${method}`);
@@ -170,7 +184,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   if (input.to === "agy" && input.model && !/^gemini[a-z0-9.\- ()]*$/i.test(input.model)) {
     throw new Error("the Antigravity Runner runs Gemini models (its Limit reads the Gemini pool); name a Gemini model or leave model empty");
   }
-  const spec = L.createSpec(ctx.project.name, input, "controller");
+  const spec = L.createSpec(ctx.project.name, input, ctx.provider ? `controller · ${ctx.provider}` : "controller");
   if (picked.note) L.updateSpec(spec.id, { note: picked.note }, "govd");
   ctx.notify({ kind: "spec", id: spec.id, to: spec.to, brief: spec.brief });
 

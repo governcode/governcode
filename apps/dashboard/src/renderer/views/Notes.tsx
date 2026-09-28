@@ -38,7 +38,7 @@ export function Notes({ project }: { project: string | null }) {
       <div className="view-head"><h1>Notes</h1><span className="dim">{project ? `what every Controller of ${project} reads first` : "notes belong to a project"}</span></div>
       {!project ? <Empty title="No project selected"><p className="dim">Pick a project above.</p></Empty> : (
         <div className="scroll settings">
-          <p className="dim small">The Controller keeps these current (goal, decisions, open questions, next steps). If you switch Controllers, the new one starts here. You can edit them; every version is kept below. They stay in GovernCode, never in your repository. Don't put secrets in them.</p>
+          <p className="dim small">The Controller keeps these current (goal, decisions, open questions, next steps). If you switch to a Controller from another provider and choose to share, it starts here. You can edit them; every version is kept in the Trace, and the latest 50 are listed below. They stay in GovernCode, never in your repository. Don't put secrets in them.</p>
           <textarea className="notes mono" value={draft} rows={14} maxLength={MAX} aria-label="project notes"
             placeholder="No notes yet. The Controller writes them as it works, or write your own." onChange={(e) => setDraft(e.target.value)} />
           <div className="row">

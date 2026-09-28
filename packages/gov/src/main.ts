@@ -189,7 +189,7 @@ async function main(argv: string[]): Promise<number> {
         // gov notes: this project's notes; edit (in $EDITOR), history, restore SEQ.
         const project = await currentProject(api);
         if (!project) throw new Error("run this inside a project folder");
-        const n = await api.call("notes.get", { project });
+        const n = await api.call("notes.get", { project, limit: rest[0] === "restore" ? 1000 : 50 });
         if (!rest[0]) { console.log(n.text || dim("no notes yet (the Controller writes them with project_notes; gov notes edit to write your own)")); return 0; }
         if (rest[0] === "history") {
           for (const h of n.history) console.log(`${String(h.seq).padStart(6)}  ${new Date(h.ts).toTimeString().slice(0, 8)}  ${h.actor.padEnd(22)} ${h.text.length} chars`);

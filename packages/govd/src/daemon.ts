@@ -342,7 +342,7 @@ export class Daemon {
         return { ok: true };
       case "notes.get": {
         if (!L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
-        return { ...notesOf(L, p.project), history: notesHistory(L, p.project) };
+        return { ...notesOf(L, p.project), history: notesHistory(L, p.project, p.limit) };
       }
       case "notes.set": {
         if (!L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
@@ -499,7 +499,8 @@ export class Daemon {
     }
     // Project memory goes to this Controller only if it is the provider the project has been
     // using, or the user agreed to share it (context.share); otherwise it starts from its own turns.
-    const share = found ? mayShare(L, found.name, project.controller.provider) : true;
+    // Home has no share question: it replays only the current provider's own turns.
+    const share = found ? mayShare(L, found.name, project.controller.provider) : false;
     const history = this.conversation(project.name, share ? undefined : project.controller.provider);
     const notes = found && share ? notesOf(L, found.name).text : "";
     const record = found && share ? projectRecord(L, found.name, this.allows.list(found.name).map((r) => r.label)) : "";
@@ -598,7 +599,7 @@ export class Daemon {
         personal: this.settings().personal[project.controller.provider === "codex" ? "codex" : "claude"] === true };
       // Either Controller gets GovernCode's tools on a socket that exists only for this turn:
       // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
-      const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, ledger: L, limits: this.limits,
+      const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, provider: project.controller.provider, ledger: L, limits: this.limits,
         usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
         policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify,
         settings: () => this.settings() })

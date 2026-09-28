@@ -62,6 +62,28 @@ export class Ledger {
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
+  /** Every Controller provider that has had a turn in the project (all of history). */
+  turnProviders(project: string): string[] {
+    const rows = this.db.prepare(`SELECT DISTINCT json_extract(data, '$.controller.provider') AS p FROM events
+      WHERE project = ? AND kind = 'turn.started'`).all(project) as Array<{ p: unknown }>;
+    return rows.map((r) => r.p).filter((p): p is string => typeof p === "string" && p.length > 0);
+  }
+
+  /** The user's latest share answer for each provider (all of history). */
+  latestShares(project: string): Record<string, boolean> {
+    const rows = this.db.prepare(`SELECT json_extract(data, '$.provider') AS p, json_extract(data, '$.share') AS s FROM events
+      WHERE project = ? AND kind = 'context.shared' ORDER BY seq`).all(project) as Array<{ p: unknown; s: unknown }>;
+    const out: Record<string, boolean> = {};
+    for (const r of rows) if (typeof r.p === "string") out[r.p] = r.s === 1 || r.s === true;
+    return out;
+  }
+
+  /** The project's newest Specs, oldest first. */
+  recentSpecs(project: string, n: number): Spec[] {
+    const rows = this.db.prepare("SELECT body FROM specs WHERE project = ? ORDER BY id DESC LIMIT ?").all(project, n) as Array<{ body: string }>;
+    return rows.reverse().map((r) => JSON.parse(r.body));
+  }
+
   // --- projects (a projection kept in step with project.* events, in one transaction)
   addProject(name: string, path: string, kind: "project.created" | "project.opened"): Project {
     const created = new Date().toISOString();
