@@ -167,7 +167,7 @@ export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", 
 
 export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
-  mcp?: McpServer; personal?: boolean;
+  mcp?: McpServer; personal?: boolean; noSubagents?: boolean;
 }): { cancel(): void } {
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
@@ -187,7 +187,9 @@ export function runTurn(opts: {
       "--strict-mcp-config"] : []),
     // Proposing a project creates nothing (the user's Create does), so it needs no Gate of its own;
     // listing the Runners and reading a Spec's status only read.
-    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status,mcp__governcode__project_notes"];
+    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status,mcp__governcode__project_notes",
+    // The Crew card's "no subagents": Claude Code's subagent tool is not available at all.
+    ...(opts.noSubagents ? ["--disallowedTools", "Task,Agent"] : [])];
   // A clean environment: govd's own variables (and anything else in the user's shell) are
   // none of the tool's business. Its own process group, so finishing the turn ends every
   // process it started, not only the one that printed the result.

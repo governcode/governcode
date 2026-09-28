@@ -79,6 +79,7 @@ export function customizations(root: string, max = 20_000): string[] {
 // Read-only tools Antigravity uses to look around; the sandbox bounds what they can read.
 const QUIET = new Set(["view_file", "list_dir", "grep_search", "find_by_name", "command_status", "wait", "wait_5_seconds",
   "finish", "list_permissions"]);
+const SUBAGENT_TOOLS = new Set(["invoke_subagent", "define_subagent", "manage_subagents", "browser_subagent"]);
 const FILE_TOOLS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file", "notebook_edit"]);
 
 /** How one Antigravity tool call is judged: allowed without asking, or a Gate. Unknown and
@@ -239,6 +240,7 @@ function run(supervisor: string, policyFile: string, bin: string, args: string[]
  *  stream to `hooks.text` / `hooks.tool`; done reports the result and token usage. */
 export async function runAgyTurn(o: { supervisor: string; policyDir: string; stateDir: string; runtimeDir: string; worktree: string;
   writePaths: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks; signal?: AbortSignal;
+  noSubagents?: boolean;
   openSocket(handle: (method: string, params: unknown) => Promise<unknown>): { path: string; close(): void } }): Promise<void> {
   let finished = false;
   const cleanups: Array<() => void> = [];
@@ -262,6 +264,9 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   let asked = 0;
   const sock = o.openSocket(async (method, params) => {
     if (method !== "agy.pretool") throw new Error(`not offered: ${method}`);
+    const name = (params as any)?.toolCall?.name;
+    // The Crew card's "no subagents" for Runners: Antigravity's subagent tools are refused outright.
+    if (o.noSubagents && typeof name === "string" && SUBAGENT_TOOLS.has(name)) return { decision: "deny", reason: "The user turned subagents off for this project's Runners." };
     const j = agyGate((params as any)?.toolCall, `agy-${Date.now()}-${asked}`);
     if ("quiet" in j) return { decision: "allow" };
     if (++asked > 200) return { decision: "deny", reason: "GovernCode: too many requests in one run" };

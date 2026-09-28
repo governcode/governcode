@@ -17,6 +17,8 @@ import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
 import { mayShare, notesOf, setNotes } from "./memory.ts";
+import { runnerAllowed } from "./crew.ts";
+import type { CrewValue } from "@governcode/protocol";
 
 /** A Spec this Controller may look at: any, when the project's context is shared with it; else
  *  only the ones its own provider made. */
@@ -29,6 +31,7 @@ function mine(ctx: DelegationContext, id: string): boolean {
 export type DelegationContext = {
   project: { name: string; path: string };
   provider?: string;                       // the Controller's provider (project memory consent)
+  crew?: () => CrewValue;                  // the project's Crew card, read at each call
   ledger: Ledger;
   limits: LimitGate;
   usage: Record<string, UsageSource>;      // providers that can be Runners, with a usage source
@@ -154,7 +157,10 @@ async function measured(ctx: DelegationContext, provider: string): Promise<void>
 
 async function crew(ctx: DelegationContext) {
   const out = [];
+  const card = ctx.crew?.();
+  if (card?.handoff === "off") return { runners: [], handoff: "off", note: "The user turned handing off off for this project: work alone." };
   for (const provider of Object.keys(ctx.usage)) {
+    if (card?.runners && !card.runners.includes(provider)) continue;
     await measured(ctx, provider);
     const probe = ctx.limits.check(provider);
     const def = ctx.settings?.().runners[provider];
@@ -177,6 +183,14 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   const input = SpecInput.parse(raw);
   const L = ctx.ledger;
   if (!ctx.usage[input.to]) throw new Error(`${input.to} is not a Runner GovernCode can use (known: ${Object.keys(ctx.usage).join(", ") || "none"})`);
+  // The Crew card: which Runners, whether handing off at all, and the most one Spec may reserve.
+  const crewCard = ctx.crew?.();
+  if (crewCard) {
+    const no = runnerAllowed(crewCard, input.to);
+    if (no) throw new Error(no);
+    const cap = crewCard.maxPercent[input.to];
+    if (cap !== undefined && input.budgetPercent > cap) input.budgetPercent = cap;
+  }
   const picked = specModel(input, ctx.settings?.());
   input.model = picked.model; input.effort = picked.effort;
   // ponytail: the Antigravity Runner's Limit reads its Gemini pool, so it runs Gemini models only;
@@ -257,12 +271,13 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
       if (input.to === "agy") {
         void runAgyTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, runtimeDir: ctx.runtimeDir,
           worktree: paths.work, writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks,
+          noSubagents: crewCard?.subagents.runners === false,
           openSocket: (h) => openTurnSocket(ctx.runtimeDir, h) })
           .catch((e) => done({ ok: false, summary: `the Antigravity Runner failed: ${e instanceof Error ? e.message : e}` }));
         return;
       }
       void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work,
-        writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks });
+        writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks, noSubagents: crewCard?.subagents.runners === false });
     });
     clearInterval(poll);
     // An untouched placeholder (still empty, same timestamp) was never the Runner's: remove it.

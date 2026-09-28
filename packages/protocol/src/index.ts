@@ -74,6 +74,21 @@ export const Settings = z.object({
 });
 export type SettingsValue = z.infer<typeof Settings>;
 
+/** How a project's crew works (the Crew card). Enforced by govd, not asked of the AI.
+ *  controllerWorks false: the Controller reads, plans and hands off, but cannot change the project.
+ *  handoff: ask = each paid handoff waits at a Gate; plan = a handoff you approved in the game plan
+ *  runs without asking again, anything else asks; off = the Controller works alone.
+ *  runners: the Runners it may use (null: all). maxPercent: the most one Spec may reserve, per Runner.
+ *  subagents: whether the Controller's tool, and the Runners' tools, may start their own helpers. */
+export const Crew = z.object({
+  controllerWorks: z.boolean().default(true),
+  handoff: z.enum(["ask", "plan", "off"]).default("ask"),
+  runners: z.array(z.string().regex(/^[a-z0-9-]{1,40}$/)).max(20).nullable().default(null),
+  maxPercent: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.number().int().min(1).max(25)).default({}),
+  subagents: z.object({ controller: z.boolean().default(true), runners: z.boolean().default(true) }).default({ controller: true, runners: true }),
+});
+export type CrewValue = z.infer<typeof Crew>;
+
 export const Params = {
   hello: z.object({ client: z.string().max(40), protocol: z.number().int() }),
   "project.list": z.object({}),
@@ -121,6 +136,8 @@ export const Params = {
   "notes.set": z.object({ project: ProjectName, text: z.string().max(4000) }),
   "context.state": z.object({ project: ProjectName }),
   "context.share": z.object({ project: ProjectName, provider: z.string().regex(/^[a-z0-9-]{1,40}$/), share: z.boolean() }),
+  "crew.get": z.object({ project: ProjectName }),
+  "crew.set": z.object({ project: ProjectName, crew: Crew }),
 } as const;
 export type Method = keyof typeof Params;
 
@@ -143,7 +160,7 @@ export type TraceEvent = {
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone"
-    | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared";
+    | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared" | "crew.set";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
 };

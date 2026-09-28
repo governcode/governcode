@@ -185,6 +185,35 @@ async function main(argv: string[]): Promise<number> {
         console.log(`Controller for ${project}: ${rest[0] ?? "claude-code"}`);
         return 0;
       }
+      case "crew": {
+        // gov crew: this project's Crew card. Set a part: works on|off, handoff ask|plan|off,
+        // runners all|codex,agy, max RUNNER N|none, subagents controller|runners on|off.
+        const project = await currentProject(api);
+        if (!project) throw new Error("run this inside a project folder");
+        const { crew } = await api.call("crew.get", { project });
+        const [what, a, b] = rest;
+        const usage = "usage: gov crew [works on|off | handoff ask|plan|off | runners all|R1,R2 | max RUNNER N|none | subagents controller|runners on|off]";
+        if (what) {
+          if (what === "works" && ["on", "off"].includes(a)) crew.controllerWorks = a === "on";
+          else if (what === "handoff" && ["ask", "plan", "off"].includes(a)) crew.handoff = a;
+          else if (what === "runners" && a) crew.runners = a === "all" ? null : a.split(",").map((x: string) => x.trim()).filter(Boolean);
+          else if (what === "max" && a && b === "none") delete crew.maxPercent[a];
+          else if (what === "max" && a && Number.isInteger(Number(b))) crew.maxPercent[a] = Number(b);
+          else if (what === "subagents" && ["controller", "runners"].includes(a) && ["on", "off"].includes(b)) crew.subagents[a] = b === "on";
+          else throw new Error(usage);
+          await api.call("crew.set", { project, crew });
+        }
+        const HANDOFF: Record<string, string> = { ask: "ask me each time", plan: "follow the approved plan", off: "off (the Controller works alone)" };
+        console.log(`Crew card for ${project}`);
+        console.log(`  Controller     ${crew.controllerWorks ? "works itself and hands off" : "plans and hands off only (the project is read-only for it)"}`);
+        console.log(`  Handing off    ${HANDOFF[crew.handoff]}`);
+        console.log(`  Runners        ${crew.runners ? crew.runners.join(", ") || "none" : "all connected Runners"}`);
+        const caps = Object.entries(crew.maxPercent).map(([r, n]) => `${r} ${n}%`).join(", ");
+        console.log(`  Most per Spec  ${caps || "the Runner's Limit (25% at most)"}`);
+        console.log(`  Subagents      Controller ${crew.subagents.controller ? "on" : "off"} · Runners ${crew.subagents.runners ? "on" : "off"}`);
+        if (!what) console.log(dim(usage));
+        return 0;
+      }
       case "notes": {
         // gov notes: this project's notes; edit (in $EDITOR), history, restore SEQ.
         const project = await currentProject(api);
@@ -423,7 +452,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy]|disconnect agy|notes [edit|history|restore SEQ]|reset|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy]|disconnect agy|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

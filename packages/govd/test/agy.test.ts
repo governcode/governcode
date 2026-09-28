@@ -68,7 +68,7 @@ function project(extra?: (dir: string) => void) {
 const opened: Array<{ close(): void }> = [];
 afterEach(() => { while (opened.length) { try { opened.pop()!.close(); } catch { /* already */ } } });
 
-function setup(answer: "allow" | "deny", calls: (work: string) => object[], extra?: (dir: string) => void) {
+function setup(answer: "allow" | "deny", calls: (work: string) => object[], extra?: (dir: string) => void, crew?: any) {
   const proj = project(extra);
   const state = mkdtempSync(join(root, "state-"));
   const home = toolHome(state, "agy");
@@ -81,7 +81,8 @@ function setup(answer: "allow" | "deny", calls: (work: string) => object[], extr
   const ctx = { project: { name: "p", path: proj }, ledger, limits,
     usage: { agy: agyUsage({ supervisor, policyDir: join(state, "pol"), stateDir: state }) },
     runtimeDir: join(state, "run"), supervisor, policyDir: join(state, "pol"), stateDir: state,
-    gate: async (r: { tool: string; canonical: string }) => { gates.push(r); return answer; }, notify: () => {} };
+    gate: async (r: { tool: string; canonical: string }) => { gates.push(r); return answer; }, notify: () => {},
+    ...(crew ? { crew: () => crew } : {}) };
   const sock = openControllerSocket(ctx as any);
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {
     const s = connect(sock.path);
@@ -259,4 +260,16 @@ test("review 2: quota fields of the wrong type are skipped, never a crash", () =
   const evil = { toString: 0 };
   assert.equal(parseQuota(JSON.stringify({ command: { data: { groups: [{ name: evil, buckets: [] }] } } })), null);
   assert.equal(parseQuota(JSON.stringify({ command: { data: { groups: [{ name: "Gemini Models", buckets: [{ window: evil, remaining_fraction: 0.5 }] }] } } })), null);
+});
+
+test("crew card: a Runner's subagent asks at a Gate by default, and is refused without one when the card turns them off", async () => {
+  const { DEFAULT_CREW } = await import("../src/crew.ts");
+  const calls = (w: string) => [{ name: "invoke_subagent", args: { Task: "help" } }, write(w, "notes/hello.txt")];
+  const on = setup("allow", calls);
+  await on.call("controller.delegate", SPEC);
+  assert.deepEqual(on.gates.map((g) => g.tool.split(" (")[0]), ["agy_invoke_subagent", "agy fileChange"]);
+  const off = setup("allow", calls, undefined, { ...DEFAULT_CREW, subagents: { controller: true, runners: false } });
+  const r = await off.call("controller.delegate", SPEC);
+  assert.deepEqual(off.gates.map((g) => g.tool.split(" (")[0]), ["agy fileChange"], "the subagent never reached a Gate");
+  assert.deepEqual(r.result.files, ["notes/hello.txt"]);
 });

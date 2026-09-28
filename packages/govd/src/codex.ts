@@ -156,7 +156,7 @@ export function matchMcpApproval(p: any, inflight: Map<string, { tool: string; a
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
 export async function runCodexTurn(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string;
   readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks;
-  signal?: AbortSignal; mcp?: McpServer; personal?: boolean }): Promise<void> {
+  signal?: AbortSignal; mcp?: McpServer; personal?: boolean; noSubagents?: boolean }): Promise<void> {
   let s: Awaited<ReturnType<typeof session>>;
   try {
     s = await session(o);   // o.mcp widens its policy for GovernCode's MCP server
@@ -236,7 +236,11 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
       developerInstructions: o.writePaths ? RUNNER_CONTEXT : CONTROLLER_CONTEXT,
       // ponytail: servers in the user's own config.toml still load (Claude gets --strict-mcp-config);
       // their approvals are declined above. Drop them when Codex offers a strict switch.
-      ...(o.mcp ? { config: { mcp_servers: { governcode: { command: o.mcp.node, args: [o.mcp.script, o.mcp.socket, ...(o.mcp.mode ? [o.mcp.mode] : [])] } } } } : {}) });
+      config: {
+        ...(o.mcp ? { mcp_servers: { governcode: { command: o.mcp.node, args: [o.mcp.script, o.mcp.socket, ...(o.mcp.mode ? [o.mcp.mode] : [])] } } } : {}),
+        // The Crew card's "no subagents": Codex's multi-agent features off for this thread.
+        ...(o.noSubagents ? { features: { multi_agent: false, multi_agent_v2: false } } : {}),
+      } });
     await rpc.request("turn/start", { threadId: t.thread.id, input: [{ type: "text", text: o.prompt }],
       ...(o.effort ? { effort: o.effort } : {}) });
   } catch (e) {
