@@ -109,7 +109,9 @@ export class Connector {
     try { bin = spec.binary(); } catch { return Promise.resolve({ id, connected: false, note: `${spec.name} is not installed` }); }
     const home = toolHome(this.o.stateDir, tool);
     mkdirSync(home, { recursive: true, mode: 0o700 });
-    return this.alreadySignedIn(tool, home).then((yes) => yes
+    // Held for the whole check (Disconnect waits), so a login deleted meanwhile is never marked.
+    const release = hold(this.o.stateDir, tool);
+    return this.alreadySignedIn(tool, home).finally(release).then((yes) => yes
       ? { id, connected: true, note: `${spec.name} is connected for GovernCode (it was already signed in here)` }
       : this.signIn(id, tool, bin, home, notify));
   }

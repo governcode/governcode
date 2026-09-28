@@ -35,6 +35,10 @@ export function setConnected(stateDir: string, tool: string, yes: boolean): void
  *  is the same one and the shared login has not changed since the run started (another run's
  *  refresh wins, never an older one); it opens the run's file without following a link and
  *  writes the shared file in place, so other running tools keep their access to it. */
+// ponytail: a run may write the shared login file in place (tools refresh their token that way),
+// so a run can overwrite its own tool's GovernCode login. That can only break that login (Connect
+// again fixes it); it reaches nothing else. Upgrade: a private copy per run, published under a
+// lock, if a tool is found refreshing mid-run while another run is signing in.
 export function runHome(stateDir: string, tool: string, loginFile: string): { home: string; login: string; finish(): void } {
   const shared = join(toolHome(stateDir, tool), loginFile);
   const runs = join(toolDir(stateDir, tool), "runs");

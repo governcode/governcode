@@ -104,10 +104,13 @@ async function session(o: { supervisor: string; policyDir: string; stateDir: str
   const policy = o.mcp ? withMcpRead({ ...base, exec: [...base.exec, dirname(o.mcp.node)], unix_connect: [...base.unix_connect, o.mcp.socket] }, o.mcp) : base;
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
   const rpc = start(o.supervisor, policyFile, bin, { ...toolEnv(tmp), CODEX_HOME: home }, o.worktree);
-  await rpc.request("initialize", { clientInfo: { name: "governcode", title: "GovernCode", version: "0.0.1" } });
-  // The run's home goes only once Codex has exited (a login refresh must not be cut off).
-  const cleanup = () => { rpc.close(); rmSync(policyFile, { force: true }); rmSync(tmp, { recursive: true, force: true });
-    void rpc.exited.then(() => rh.finish()); };
+  // The run's home goes only once Codex has exited (a login refresh must not be cut off), whether
+  // the session ends normally or Codex never got as far as answering.
+  void rpc.exited.then(() => rh.finish());
+  const cleanup = () => { rpc.close(); rmSync(policyFile, { force: true }); rmSync(tmp, { recursive: true, force: true }); };
+  try {
+    await rpc.request("initialize", { clientInfo: { name: "governcode", title: "GovernCode", version: "0.0.1" } });
+  } catch (e) { cleanup(); throw e; }
   return { rpc, cleanup };
 }
 
