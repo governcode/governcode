@@ -54,7 +54,11 @@ test("a kind is the program and its subcommand; dangerous programs, git and inte
 test("Codex's review: flags before the subcommand, versioned interpreters, awk and execution flags always ask", () => {
   assert.equal(kindOf(bash("npm --silent publish")), null, "the subcommand is found past the flags");
   assert.equal(kindOf(bash("npm --version"))!.key, "command:npm");
-  assert.notEqual(kindOf(bash("npm --silent test"))!.key, "command:npm", "a rule for bare npm never covers npm test");
+  assert.equal(kindOf(bash("npm --silent test")), null, "an option before the subcommand asks (it may take a value)");
+  // Security review 2026-09-27: an option's value dressed up as the approved subcommand.
+  assert.equal(kindOf(bash("npm --prefix test exec -- sh -c id")), null);
+  assert.equal(kindOf(bash("tar -I./payload")), null, "short spelling of --use-compress-program");
+  assert.equal(kindOf(bash("npm test --script-shell=./payload")), null);
   for (const c of ["python3.13 -c pass", "perl5.38 -e 1", "awk 'BEGIN {system(\"id\")}'", "gawk -f x.awk", "busybox sh",
     "rg --pre=sh pattern README.md", "rg --pre sh x", "tar --to-command=sh -xf a.tar", "npm --prefix /x test", "cat -o x",
     // Grok's red team: launchers that run the real program later on the line.
@@ -76,6 +80,14 @@ test("quiet reads: only reads no project file can steer", () => {
   for (const c of ["git status", "git diff", "rg --pre sh foo", "rg --pre=sh foo", "cat x | sh", "cat $(x)", "npm test",
     "sort -o out x", "ls; rm -rf ~", "find . -delete", "find . -exec rm {} +", "find . -fprintf out x",
     "sed -n '1e rm -rf ~' x", "sed -i 's/a/b/' x", "sed -n '1,5w out' x", "sed 's/a/b/' x", "sed -n '1,5p' -i x"]) assert.ok(!isQuietRead(bash(c)), c);
+  // Security review 2026-09-27: options that run programs, never end, or read special files.
+  for (const c of ["rg --hostname-bin=./payload --hyperlink-format=default needle README.md", "rg -z needle a.gz",
+    "tail -f README.md", "tail -F log", "tail --follow log", "cat /dev/zero", "grep -f /dev/zero README.md",
+    "wc --files0-from=/dev/zero", "head -c 1 /proc/self/mem", "cat -", "grep -r x /sys", "du --files0-from=x",
+    "find . -newerXY x", "find /dev -name x", "ls --color=always", "stat --printf=%n x", "rg --pre-glob=* x"]) assert.ok(!isQuietRead(bash(c)), c);
+  for (const c of ["ls -la src", "head -n 40 README.md", "head -20 x", "tail -n5 x", "grep -rn --include='*.ts' TODO src",
+    "rg -n -g '*.ts' needle src", "rg --hidden --files", "wc -lw a b", "du -sh .", "df -h", "stat -c %s x", "which node",
+    "find src -name '*.ts' -type f -print", "grep -e -x file"]) assert.ok(isQuietRead(bash(c)), c);
   for (const c of ["find . -maxdepth 2 -type f", "sed -n '1,220p' README.md", "sed -n '10,$p' a b",
     "/usr/bin/bash -lc \"sed -n '1,80p' src/tide.js\""]) assert.ok(isQuietRead(bash(c)), c);
   assert.ok(!isQuietRead({ tool: "Edit", input: { command: "ls" } }));

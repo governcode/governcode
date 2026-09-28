@@ -78,8 +78,10 @@ whatever the project's scripts say, and the AI can edit those scripts. The sandb
 what they can do; the Gate just no longer asks each time. Use "this turn" when in doubt.
 
 **Quiet reads** (a setting, on by default): plain read-only commands that no project file can
-steer (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `pwd`, `stat`, `du`, `df`, `which`)
-run without a Gate. They are still sandboxed and still in the Trace. Turn it off in Settings to
+steer (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `pwd`, `stat`, `du`, `df`, `which`,
+`find` with tests only) run without a Gate, and only with the options each is known to read
+with: any other option (`tail -f`, `rg --pre`, `grep -f`...) or a special file (`/dev`,
+`/proc`, `/sys`) asks. They are still sandboxed and still in the Trace. Turn it off in Settings to
 be asked for everything.
 
 ## Local models: nothing to run, so nothing to sandbox
