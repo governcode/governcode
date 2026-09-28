@@ -255,10 +255,12 @@ async function main(argv: string[]): Promise<number> {
         // GovernCode with its own sign-in (a link to open, a code to paste back).
         const tool = rest[0];
         if (!tool) {
-          const { tools } = await api.call("tools.list", {});
+          const { tools } = await api.call("tools.list", { measure: true });
           for (const t of tools) {
             const use = t.usage?.readings?.length ? ` · ${t.usage.readings.map((r: any) => `${r.window} ${r.usedPercent}% used`).join(", ")}` : "";
-            console.log(`${t.tool.padEnd(6)} ${t.name.padEnd(12)} ${!t.installed ? "not installed" : t.connected ? "connected" + use : "not connected (gov connect " + t.tool + ")"}`);
+            const state = !t.installed ? "not installed" : !t.connected ? `not connected (gov connect ${t.tool})`
+              : t.problem ? `needs attention: ${t.problem}` : "connected" + use;
+            console.log(`${t.tool.padEnd(6)} ${t.name.padEnd(12)} ${state}`);
           }
           console.log(dim("Claude Code and Codex use your own logins for now; they move to Connect in a later release."));
           return 0;

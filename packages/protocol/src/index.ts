@@ -108,7 +108,9 @@ export const Params = {
   // sign-in in GovernCode's private home for it and streams {kind:"connect", id, text | url}
   // events; connect.input passes what the user pastes (a sign-in code); it resolves when the
   // sign-in ends, connected or not. GovernCode never reads the login the tool keeps there.
-  "tools.list": z.object({}),
+  // measure: ask each connected tool for its usage now (no quota spent); a login that no longer
+  // works then shows as needing sign-in again instead of "connected".
+  "tools.list": z.object({ measure: z.boolean().default(false) }),
   "connect.start": z.object({ tool: z.enum(["agy"]) }),
   "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),
   "connect.cancel": z.object({ id: z.string().regex(/^C-\d+$/) }),

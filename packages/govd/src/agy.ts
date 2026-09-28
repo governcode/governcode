@@ -13,11 +13,11 @@
 //   customizations is refused, and a Runner that creates one fails its Spec.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { randomBytes } from "node:crypto";
-import { canonical, resolverFiles, toolchainDirs, toolEnv, RUNNER_CONTEXT, type GateRequest, type Policy, type TurnHooks } from "./claude.ts";
+import { canonical, resolverFiles, toolchainDirs, RUNNER_CONTEXT, type GateRequest, type Policy, type TurnHooks } from "./claude.ts";
 import type { Measurement, UsageSource } from "./limits.ts";
 
 export const HOOK_SCRIPT = new URL("./agy-hook.ts", import.meta.url).pathname;
@@ -30,6 +30,16 @@ export function agyBinary(): string {
     if (dir && existsSync(p)) return realpathSync(p);
   }
   throw new Error("agy not found (install the Antigravity CLI, or set GOVERNCODE_AGY_BIN)");
+}
+
+/** Runners and sign-ins using a tool's home right now: Disconnect refuses while any run. */
+export const inUse = new Map<string, number>();
+export const useKey = (stateDir: string, tool: string) => `${stateDir}\0${tool}`;
+export function hold(stateDir: string, tool: string): () => void {
+  const k = useKey(stateDir, tool);
+  inUse.set(k, (inUse.get(k) ?? 0) + 1);
+  let done = false;
+  return () => { if (done) return; done = true; const n = (inUse.get(k) ?? 1) - 1; if (n > 0) inUse.set(k, n); else inUse.delete(k); };
 }
 
 /** A tool's private home in GovernCode's state, where Connect signs it in. */
@@ -85,16 +95,35 @@ export function agyGate(call: unknown, id: string): { quiet: true } | { req: Gat
   return gate(name ? `agy_${name}` : "agy unknown tool", name ? args : { call: c as Record<string, unknown> });
 }
 
+/** Writes a file govd owns inside the tool's home without following a link a Runner may have
+ *  left there: whatever is at the path is removed (a link is unlinked, never written through),
+ *  the new file is created beside it with O_EXCL | O_NOFOLLOW and renamed into place. */
+export function safeWrite(path: string, body: string): void {
+  try { if (!lstatSync(path).isFile()) rmSync(path, { recursive: true, force: true }); } catch { /* absent */ }
+  const tmp = `${path}.governcode-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { writeSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(tmp, path);
+}
+
+/** A folder govd writes into must be a real folder, not a link a Runner swapped in. */
+function realDir(path: string): void {
+  try { if (!lstatSync(path).isDirectory()) rmSync(path, { recursive: true, force: true }); } catch { /* absent */ }
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (!lstatSync(path).isDirectory()) throw new Error(`${path} is not a folder`);
+}
+
 /** GovernCode's hooks file and nothing else in the home's config folder: other hooks, plugins,
  *  MCP servers and settings a previous run or anyone else left there are removed. */
 export function writeAgyConfig(home: string, hook: { node: string; script: string; socket: string }): string {
   const cfg = join(home, ".gemini", "config");
-  mkdirSync(cfg, { recursive: true, mode: 0o700 });
+  realDir(join(home, ".gemini"));
+  realDir(cfg);
   for (const name of readdirSync(cfg)) if (!["projects", ".migrated"].includes(name)) rmSync(join(cfg, name), { recursive: true, force: true });
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const name = `governcode-${randomBytes(9).toString("hex")}`;   // unguessable: a project file cannot switch it off by name
-  writeFileSync(join(cfg, "hooks.json"), JSON.stringify({ [name]: { PreToolUse: [{ matcher: "*",
-    hooks: [{ type: "command", command: `${q(hook.node)} ${q(hook.script)} ${q(hook.socket)}`, timeout: 3600 }] }] } }), { mode: 0o600 });
+  safeWrite(join(cfg, "hooks.json"), JSON.stringify({ [name]: { PreToolUse: [{ matcher: "*",
+    hooks: [{ type: "command", command: `${q(hook.node)} ${q(hook.script)} ${q(hook.socket)}`, timeout: 3600 }] }] } }));
   return name;
 }
 
@@ -117,11 +146,14 @@ export function agyPolicy(o: { work: string; tmp: string; home: string; bin: str
   };
 }
 
-function agyEnv(tmp: string, home: string): Record<string, string> {
+// Only what a program needs to run; never another provider's settings or keys (Codex's review:
+// the shared allowlist passed ANTHROPIC_* on).
+const AGY_ENV_KEEP = /^(PATH|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|HTTPS?_PROXY|NO_PROXY)$/;
+export function agyEnv(tmp: string, home: string): Record<string, string> {
   // HOME is the private home; no DBUS address, so no keyring (the policy blocks the socket too).
-  const env = toolEnv(tmp);
-  delete env.DBUS_SESSION_BUS_ADDRESS;
-  return { ...env, HOME: home };
+  const env: Record<string, string> = { TMPDIR: tmp, HOME: home, npm_config_cache: join(tmp, "npm-cache"), npm_config_update_notifier: "false" };
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && AGY_ENV_KEEP.test(k)) env[k] = v;
+  return env;
 }
 
 /** Antigravity's usage for the model group GovernCode runs (Gemini unless a Claude or GPT
@@ -129,10 +161,12 @@ function agyEnv(tmp: string, home: string): Record<string, string> {
 export function parseQuota(out: string, model = ""): Measurement | null {
   let d: any;
   try { d = JSON.parse(out); } catch { return null; }
-  const groups: any[] = d?.command?.data?.groups ?? [];
+  const groups: unknown = d?.command?.data?.groups;
+  if (!Array.isArray(groups)) return null;
   const third = /claude|gpt|opus|sonnet/i.test(model);
   const g = groups.find((x) => (third ? /claude|gpt/i : /gemini/i).test(String(x?.name ?? "")));
-  const readings = (g?.buckets ?? []).filter((b: any) => typeof b?.remaining_fraction === "number" && Number.isFinite(b.remaining_fraction))
+  if (!Array.isArray(g?.buckets)) return null;
+  const readings = g.buckets.filter((b: any) => typeof b?.remaining_fraction === "number" && Number.isFinite(b.remaining_fraction))
     .map((b: any) => ({ window: b.window === "5h" ? "5-hour" : String(b.window ?? b.id ?? "window"),
       usedPercent: Math.round(Math.min(100, Math.max(0, (1 - b.remaining_fraction) * 100)) * 10) / 10,
       resetsAt: typeof b.reset_time === "string" ? b.reset_time : null }));
@@ -202,6 +236,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   try { bin = agyBinary(); } catch (e) { return finish({ ok: false, summary: String(e instanceof Error ? e.message : e) }); }
   const home = toolHome(o.stateDir, "agy");
   if (!isConnected(o.stateDir, "agy")) return finish({ ok: false, summary: "Antigravity is not connected: run gov connect agy" });
+  cleanups.push(hold(o.stateDir, "agy"));
   const found = customizations(o.worktree);
   if (found.length) {
     return finish({ ok: false, summary: `the project has Antigravity customizations (${found.slice(0, 3).join(", ")}); ` +
@@ -224,8 +259,8 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   // under hidden folders (GovernCode's workspaces live in ~/.local/state). GovernCode's hook is the
   // Gate for every call, and still denies when it fails, times out or says no (verified in this
   // mode, 2026-09-28). The file is rewritten before every run.
-  mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(home, ".gemini", "antigravity-cli", "settings.json"), JSON.stringify({ toolPermission: "always-proceed" }), { mode: 0o600 });
+  realDir(join(home, ".gemini", "antigravity-cli"));
+  safeWrite(join(home, ".gemini", "antigravity-cli", "settings.json"), JSON.stringify({ toolPermission: "always-proceed" }));
 
   mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
   const tmp = mkdtempSync(join(tmpdir(), "governcode-agy-"));
@@ -251,12 +286,22 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
     if (s?.step_type === "agent_response" && s.state === "DONE" && typeof s.text_delta === "string") o.hooks.text(s.text_delta);
     if (m?.event === "result" && m.result) result = m.result;
   });
-  o.signal?.addEventListener("abort", () => finish({ ok: false, summary: `stopped: ${String(o.signal?.reason ?? "aborted")}` }), { once: true });
+  // Stopping ends the process group and waits for govern-sup to report it gone before anything is
+  // recorded (a snapshot taken earlier could miss a last write).
+  let stopped: string | null = null;
+  o.signal?.addEventListener("abort", () => {
+    stopped = String(o.signal?.reason ?? "aborted");
+    try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ }
+    setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } }, 10_000).unref();
+  }, { once: true });
   child.on("close", (code) => {
+    if (stopped) return finish({ ok: false, summary: `stopped: ${stopped}` });
     // A Runner that created Antigravity customizations could switch the Gate off for later runs.
     const made = customizations(o.worktree);
     if (made.length) return finish({ ok: false, summary: `the Runner created Antigravity customizations (${made.slice(0, 3).join(", ")}); not offered` });
-    if (result?.status === "SUCCESS") {
+    // Both the tool's own report and the sandbox's exit status (125: it could not be sure every
+    // process was gone) must say it went well.
+    if (result?.status === "SUCCESS" && code === 0) {
       const denied = Array.isArray(result.denied_actions) && result.denied_actions.length ? ` (declined: ${result.denied_actions.map((d: any) => d?.action).join(", ")})` : "";
       return finish({ ok: true, summary: `done${denied}`, usage: result.usage ?? null });
     }

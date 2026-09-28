@@ -190,3 +190,65 @@ test("the hook fails closed: no govd, bad input and an unreadable answer all den
   assert.equal(spawnSync("sh", ["-c", `printf '%s|' ${cmd}`], { encoding: "utf8" }).stdout, "/opt/my node/node|/a/it's.ts|/s.sock|");
   assert.ok(existsSync(HOOK_SCRIPT));
 });
+
+// Codex's review, 2026-09-28: each finding pinned by a test.
+test("review: govd never writes through a link a Runner left in the home, and never passes other providers' keys", async () => {
+  const { safeWrite, agyEnv } = await import("../src/agy.ts");
+  const dir = mkdtempSync(join(root, "link-"));
+  const victim = join(dir, "victim.txt");
+  writeFileSync(victim, "untouched");
+  const { symlinkSync, lstatSync } = await import("node:fs");
+  symlinkSync(victim, join(dir, "settings.json"));
+  safeWrite(join(dir, "settings.json"), "{}");
+  assert.equal(readFileSync(victim, "utf8"), "untouched");
+  assert.ok(lstatSync(join(dir, "settings.json")).isFile());
+  process.env.ANTHROPIC_API_KEY = "sk-test"; process.env.OPENAI_API_KEY = "sk-test"; process.env.CLAUDE_CONFIG_DIR = "/x";
+  const env = agyEnv("/tmp/x", "/home/h");
+  assert.equal(env.HOME, "/home/h");
+  assert.ok(!Object.keys(env).some((k) => /ANTHROPIC|OPENAI|CLAUDE|DBUS/.test(k)), Object.keys(env).join(","));
+  delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.CLAUDE_CONFIG_DIR;
+});
+
+test("review: a link planted as settings.json during a run is replaced, not followed, on the next run", async () => {
+  const t = setup("allow", (w) => [write(w, "notes/hello.txt")]);
+  const victim = join(t.state, "victim.txt");
+  writeFileSync(victim, "untouched");
+  const { symlinkSync } = await import("node:fs");
+  mkdirSync(join(t.home, ".gemini", "antigravity-cli"), { recursive: true });
+  symlinkSync(victim, join(t.home, ".gemini", "antigravity-cli", "settings.json"));
+  await t.call("controller.delegate", SPEC);
+  assert.equal(readFileSync(victim, "utf8"), "untouched");
+});
+
+test("review: odd quota output is a failed reading, never a crash; Claude or GPT models are refused on agy", async () => {
+  assert.equal(parseQuota(JSON.stringify({ command: { data: { groups: {} } } })), null);
+  assert.equal(parseQuota(JSON.stringify({ command: { data: { groups: [{ name: "Gemini", buckets: {} }] } } })), null);
+  assert.equal(parseQuota("null"), null);
+  const t = setup("allow", (w) => [write(w, "notes/hello.txt")]);
+  const r = await t.call("controller.delegate", { ...SPEC, model: "claude-sonnet-5" });
+  assert.match(r.error.message, /runs Gemini models/);
+  assert.equal(t.gates.length, 0);
+});
+
+test("review: junk on a turn socket gets no reply and does not crash govd; an oversized line ends only that connection", async () => {
+  const { openTurnSocket } = await import("../src/delegate.ts");
+  const sock = openTurnSocket(join(root, "run-junk"), async (m) => ({ ok: m }));
+  const send = (payload: string) => new Promise<string | null>((ok) => {
+    const s = connect(sock.path);
+    let got: string | null = null;
+    const rl = createInterface({ input: s });
+    rl.on("error", () => {});
+    rl.once("line", (l) => { got = l; s.end(); });
+    s.on("close", () => ok(got));
+    s.on("error", () => ok(got));
+    s.write(payload);
+    setTimeout(() => s.end(), 300);
+  });
+  try {
+    assert.equal(await send("null\n"), null);
+    assert.equal(await send("[1,2]\n"), null);
+    assert.equal(await send("x".repeat(1_200_000)), null);
+    // The server is still up and answers a proper request.
+    assert.equal(JSON.parse((await send(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "ping" }) + "\n"))!).result.ok, "ping");
+  } finally { sock.close(); }
+});

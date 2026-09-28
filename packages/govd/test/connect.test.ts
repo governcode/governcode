@@ -58,3 +58,19 @@ test("connect: a wrong code or a cancel ends not connected, and input to a finis
   assert.equal(cancelled.connected, false);
   assert.throws(() => c.input(bad.id, "x"), /no sign-in C-1 is running/);
 });
+
+test("review: a sign-in that exits non-zero is not connected, and Disconnect refuses while the login is in use", async () => {
+  const { hold } = await import("../src/agy.ts");
+  const { state, c } = connector();
+  process.env.GOVERNCODE_AGY_BIN = exe("agy-bad", `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ command: { data: { groups: [{ name: "Gemini Models", buckets: [{ window: "weekly", remaining_fraction: 0.5 }] }] } } }) + "\\n");
+process.exit(3);
+`);
+  const r = await c.start("agy", () => {});
+  assert.equal(r.connected, false);
+  process.env.GOVERNCODE_AGY_BIN = join(bin, "agy");
+  const release = hold(state, "agy");
+  assert.throws(() => c.disconnect("agy"), /in use/);
+  release();
+  assert.doesNotThrow(() => c.disconnect("agy"));
+});

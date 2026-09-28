@@ -90,17 +90,29 @@ export function openTurnSocket(runtimeDir: string, handle: (method: string, para
   const path = join(dir, `${randomBytes(12).toString("hex")}.sock`);
   const server: Server = createServer((sock) => {
     sock.on("error", () => sock.destroy());
+    // Whatever a tool sends here is untrusted: a line over 1 MB ends the connection, and anything
+    // that is not a JSON object with a method gets no reply (never a crash).
+    let pending = 0;
+    sock.on("data", (c: Buffer) => {
+      const nl = c.lastIndexOf(10);
+      pending = nl < 0 ? pending + c.length : c.length - nl - 1;
+      if (pending > 1_000_000) sock.destroy();
+    });
     const lines = createInterface({ input: sock });
     lines.on("error", () => {});
-    lines.on("line", async (line) => {
-      let m: any;
-      try { m = JSON.parse(line); } catch { return; }
-      const reply = (o: object) => sock.writable && sock.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...o }) + "\n");
-      try {
-        reply({ result: await handle(String(m.method), m.params) });
-      } catch (e) {
-        reply({ error: { code: 1001, message: e instanceof Error ? e.message : String(e) } });
-      }
+    lines.on("line", (line) => {
+      void (async () => {
+        let m: any;
+        try { m = JSON.parse(line); } catch { return; }
+        if (!m || typeof m !== "object" || Array.isArray(m) || typeof m.method !== "string") return;
+        const id = typeof m.id === "number" || typeof m.id === "string" ? m.id : null;
+        const reply = (o: object) => { if (sock.writable) sock.write(JSON.stringify({ jsonrpc: "2.0", id, ...o }) + "\n"); };
+        try {
+          reply({ result: await handle(m.method, m.params) });
+        } catch (e) {
+          reply({ error: { code: 1001, message: e instanceof Error ? e.message : String(e) } });
+        }
+      })().catch(() => sock.destroy());
     });
   });
   server.listen(path, () => chmodSync(path, 0o600));
@@ -142,6 +154,11 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   if (!ctx.usage[input.to]) throw new Error(`${input.to} is not a Runner GovernCode can use (known: ${Object.keys(ctx.usage).join(", ") || "none"})`);
   const picked = specModel(input, ctx.settings?.());
   input.model = picked.model; input.effort = picked.effort;
+  // ponytail: the Antigravity Runner's Limit reads its Gemini pool, so it runs Gemini models only;
+  // Claude and GPT through Antigravity have their own pool. Upgrade: a Limit per model group.
+  if (input.to === "agy" && /claude|gpt|opus|sonnet/i.test(input.model)) {
+    throw new Error("the Antigravity Runner runs Gemini models (its Limit reads the Gemini pool); use another Runner for Claude or GPT models, or leave model empty");
+  }
   const spec = L.createSpec(ctx.project.name, input, "controller");
   if (picked.note) L.updateSpec(spec.id, { note: picked.note }, "govd");
   ctx.notify({ kind: "spec", id: spec.id, to: spec.to, brief: spec.brief });

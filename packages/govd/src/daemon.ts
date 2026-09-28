@@ -417,8 +417,19 @@ export class Daemon {
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
-      case "tools.list":
-        return { tools: this.connector.list().map((t) => ({ ...t, usage: this.usage[t.tool] ? this.limits.view(t.tool) : null })) };
+      case "tools.list": {
+        const tools = this.connector.list();
+        if (p.measure) await Promise.all(tools.filter((t) => t.connected && this.usage[t.tool]).map(async (t) => {
+          const src = this.usage[t.tool];
+          const m = await src.read();
+          if (m) this.limits.record(m); else this.limits.forget(src.provider, src.why?.());
+        }));
+        return { tools: tools.map((t) => {
+          const view = this.usage[t.tool] ? this.limits.view(t.tool) : null;
+          const why = view && !view.readings.length && !view.verdict.ok ? view.verdict.reason : null;
+          return { ...t, usage: view, problem: t.connected && why && /sign|connect/i.test(why) ? why : null };
+        }) };
+      }
       case "connect.start": {
         // The sign-in runs a tool, so it runs only in a verified sandbox, like everything else.
         if (!this.sandboxOk) throw new RpcError(Errors.refused, `the sandbox is not verified (${this.sandboxReason}); GovernCode starts no tool`);
@@ -433,7 +444,8 @@ export class Daemon {
         this.connector.cancel(p.id);
         return { cancelled: true };
       case "tools.disconnect": {
-        const r = this.connector.disconnect(p.tool);
+        let r;
+        try { r = this.connector.disconnect(p.tool); } catch (e) { throw new RpcError(Errors.refused, e instanceof Error ? e.message : String(e)); }
         L.append(null, "tool.disconnected", "user", { tool: p.tool });
         return { ...r, note: `${TOOLS[p.tool as keyof typeof TOOLS].name} is disconnected. To revoke its access to your account too: ${r.revoke}` };
       }

@@ -7,8 +7,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agyBinary, agyPolicy, isConnected, parseQuota, toolHome, CONNECTED_MARK } from "./agy.ts";
-import { toolEnv } from "./claude.ts";
+import { agyBinary, agyEnv, agyPolicy, hold, inUse, isConnected, parseQuota, safeWrite, toolHome, useKey, CONNECTED_MARK } from "./agy.ts";
 
 export type Tool = "agy";
 export const TOOLS: Record<Tool, { name: string; revoke: string }> = {
@@ -53,7 +52,8 @@ export class Connector {
     const base = agyPolicy({ work, tmp, home, bin, writePaths: [join(home, ".gemini")], node: process.execPath, socket: "/nonexistent" });
     mkdirSync(join(home, ".gemini"), { recursive: true, mode: 0o700 });
     writeFileSync(policyFile, JSON.stringify({ ...base, unix_connect: base.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
-    const env = { ...toolEnv(tmp), HOME: home };
+    const env = agyEnv(tmp, home);
+    const release = hold(this.o.stateDir, tool);
     const child = spawn(this.o.supervisor, ["run", "--policy", policyFile, "--", bin, "-p", "/quota", "--output-format", "json"],
       { cwd: work, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     child.stdin!.on("error", () => {});
@@ -73,18 +73,22 @@ export class Connector {
     child.stderr!.on("data", (b) => show(String(b)));
     const timer = setTimeout(() => { try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } }, 10 * 60_000);
     return new Promise((ok) => {
-      child.on("close", () => {
+      child.on("close", (code) => {
         clearTimeout(timer);
         this.sessions.delete(id);
+        release();
         rmSync(policyFile, { force: true });
         rmSync(tmp, { recursive: true, force: true });
         const json = stdout.split("\n").filter((l) => l.trim().startsWith("{")).pop() ?? "";
-        const connected = parseQuota(json) !== null;
-        if (connected) writeFileSync(join(home, CONNECTED_MARK), "Connected for GovernCode. GovernCode never reads the login the tool keeps here.\n", { mode: 0o600 });
-        else rmSync(join(home, CONNECTED_MARK), { force: true });
+        // Connected only when the tool exited cleanly AND then reported its usage (so the login works).
+        let connected = code === 0 && parseQuota(json) !== null;
+        try {
+          if (connected) safeWrite(join(home, CONNECTED_MARK), "Connected for GovernCode. GovernCode never reads the login the tool keeps here.\n");
+          else rmSync(join(home, CONNECTED_MARK), { force: true });
+        } catch { connected = false; }
         ok({ id, connected, note: connected ? `${TOOLS[tool].name} is connected for GovernCode` : `${TOOLS[tool].name} did not finish signing in` });
       });
-      child.on("error", () => { clearTimeout(timer); this.sessions.delete(id); ok({ id, connected: false, note: `${TOOLS[tool].name} did not start` }); });
+      child.on("error", () => { clearTimeout(timer); this.sessions.delete(id); release(); ok({ id, connected: false, note: `${TOOLS[tool].name} did not start` }); });
     });
   }
 
@@ -103,6 +107,8 @@ export class Connector {
   /** Forget the tool's login: its private home is deleted. The grant itself is revoked from the
    *  user's account page (returned, so the user can open it). */
   disconnect(tool: Tool): { removed: boolean; revoke: string } {
+    // Not while a sign-in or a Runner is using the login: stop or finish those first.
+    if (inUse.get(useKey(this.o.stateDir, tool))) throw new Error(`${TOOLS[tool].name} is in use (a sign-in or a Runner); try again when it has finished`);
     const home = toolHome(this.o.stateDir, tool);
     const removed = existsSync(home);
     rmSync(home, { recursive: true, force: true });
