@@ -56,9 +56,10 @@ export class Ledger {
   }
 
   /** A project's events of some kinds, newest last (all of its history, not a recent window). */
-  eventsOfKind(project: string, kinds: TraceEvent["kind"][], limit = 500): TraceEvent[] {
-    const rows = this.db.prepare(`SELECT * FROM events WHERE project = ? AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT ?`)
-      .all(project, ...kinds, limit) as Array<Record<string, unknown>>;
+  eventsOfKind(project: string | null, kinds: TraceEvent["kind"][], limit = 500): TraceEvent[] {
+    const where = project === null ? "project IS NULL" : "project = ?";
+    const rows = this.db.prepare(`SELECT * FROM events WHERE ${where} AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT ?`)
+      .all(...(project === null ? [] : [project]), ...kinds, limit) as Array<Record<string, unknown>>;
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
@@ -80,7 +81,8 @@ export class Ledger {
 
   /** The project's newest Specs, oldest first. */
   recentSpecs(project: string, n: number): Spec[] {
-    const rows = this.db.prepare("SELECT body FROM specs WHERE project = ? ORDER BY id DESC LIMIT ?").all(project, n) as Array<{ body: string }>;
+    // Insertion order (rowid), not the id's text: S-10000 sorts before S-9999 as text.
+    const rows = this.db.prepare("SELECT body FROM specs WHERE project = ? ORDER BY rowid DESC LIMIT ?").all(project, n) as Array<{ body: string }>;
     return rows.reverse().map((r) => JSON.parse(r.body));
   }
 

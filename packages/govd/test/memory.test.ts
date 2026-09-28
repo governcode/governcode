@@ -106,6 +106,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     d.ledger.append(null, "turn.completed", "controller · codex", { summary: "home codex answer" });
     await call("ask", { project: null, prompt: "at home" });
     assert.ok(!sent().includes("home codex"), "Home does not pass Codex's Home turns to Claude");
+    // One Home turn at a time, so a late reply can never land on another provider's turn.
+    const first = call("ask", { project: null, prompt: "slow" });
+    const second = await call("ask", { project: null, prompt: "overlap" });
+    assert.match(second.error?.message ?? "", /still working at Home/);
+    await first;
     s.end();
   } finally {
     d.close();
@@ -179,5 +184,19 @@ test("review: a 'no' is kept however much history follows, and the record is val
   const r = projectRecord(L, "p", ["rule"], 900);
   assert.ok(r.length <= 900);
   assert.ok(Array.isArray(JSON.parse(r).specs));
+  L.close();
+});
+
+test("review 2: tool events never push exchanges out of the conversation, and the newest Specs are the newest past S-9999", () => {
+  const L = new Ledger(":memory:");
+  L.addProject("p", "/tmp/p", "project.created");
+  L.append("p", "turn.started", "user", { prompt: "keep me", controller: { provider: "claude-code" } });
+  L.append("p", "turn.completed", "controller · claude-code", { summary: "kept" });
+  for (let i = 0; i < 1000; i++) L.append("p", "turn.tool", "controller · claude-code", { name: "Bash" });
+  const conv = L.eventsOfKind("p", ["turn.started", "turn.text", "turn.completed", "turn.failed", "conversation.reset"], 2000);
+  assert.equal(conv[0].data.prompt, "keep me");
+  const spec = { to: "codex", brief: "b", result: "r", scope: { read: [], write: [] }, budgetPercent: 5, model: "", effort: null, reason: "r" } as any;
+  for (let i = 0; i < 10_001; i++) L.createSpec("p", spec, "controller");
+  assert.deepEqual(L.recentSpecs("p", 2).map((s) => s.id), ["S-10000", "S-10001"]);
   L.close();
 });
