@@ -21,12 +21,25 @@ Free and open source (MIT). Runs on your own machine; no hosted service.
 
 One repository, three channels: **Debate** (the `debate` branch, where work and new ideas
 happen), **Motion** (release candidates, tagged `vX.Y.Z-motion.N`) and **Decree** (stable
-releases, tagged `vX.Y.Z`). Nothing has reached Motion yet: GovernCode is pre-alpha.
+releases, tagged `vX.Y.Z`). The first Motion is
+[0.1.0-motion.1](https://github.com/governcode/governcode/releases/tag/v0.1.0-motion.1).
 
-> **Status: pre-alpha, phases 1 and 2.** Developers can try it on Linux, from the CLI or
-> the early Dashboard: the sandbox, Gates, Checkpoints, Limits, and delegation from a Claude
-> Code or Codex Controller to a Codex Runner work end to end. Expect rough edges; nothing is
-> released yet.
+> **Status: pre-alpha, first release candidate.** Developers can try it on Linux, from the
+> CLI or the early Dashboard: the sandbox, Gates, Checkpoints, Limits, and delegation from a
+> Claude Code or Codex Controller to a Codex or local-model Runner work end to end. Expect
+> rough edges.
+
+**Install the release candidate (Linux x86_64):** download
+`governcode-0.1.0-motion.1-linux-x86_64.tar.gz` and `SHA256SUMS` from the
+[release page](https://github.com/governcode/governcode/releases/tag/v0.1.0-motion.1), then:
+
+```sh
+sha256sum -c SHA256SUMS
+tar xzf governcode-0.1.0-motion.1-linux-x86_64.tar.gz
+cd governcode-0.1.0-motion.1-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
+govd &
+gov demo
+```
 
 ## Try it (developers, Linux)
 
