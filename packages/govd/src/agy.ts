@@ -37,6 +37,13 @@ export function toolHome(stateDir: string, tool: string): string {
   return join(stateDir, "tools", tool, "home");
 }
 
+/** Connect leaves this mark only after a sign-in that ended with the tool reporting its usage.
+ *  It sits at the home's top level, which no Runner's sandbox can write. */
+export const CONNECTED_MARK = ".governcode-connected";
+export function isConnected(stateDir: string, tool: string): boolean {
+  return existsSync(join(toolHome(stateDir, tool), CONNECTED_MARK));
+}
+
 // Antigravity's customization roots; a project copy holding one is refused (see above).
 const CUSTOM_ROOTS = [".agents", ".agent", "_agents", "_agent"];
 
@@ -142,7 +149,7 @@ export function agyUsage(o: { supervisor: string; policyDir: string; stateDir: s
       let bin: string;
       try { bin = agyBinary(); } catch (e) { why = "Antigravity is not installed"; return null; }
       const home = toolHome(o.stateDir, "agy");
-      if (!existsSync(join(home, ".gemini"))) { why = "Antigravity is not connected (gov connect agy)"; return null; }
+      if (!isConnected(o.stateDir, "agy")) { why = "Antigravity is not connected (gov connect agy)"; return null; }
       const tmp = mkdtempSync(join(tmpdir(), "governcode-agy-"));
       const scratch = join(tmp, "work");
       mkdirSync(scratch);
@@ -194,7 +201,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   let bin: string;
   try { bin = agyBinary(); } catch (e) { return finish({ ok: false, summary: String(e instanceof Error ? e.message : e) }); }
   const home = toolHome(o.stateDir, "agy");
-  if (!existsSync(join(home, ".gemini"))) return finish({ ok: false, summary: "Antigravity is not connected: run gov connect agy" });
+  if (!isConnected(o.stateDir, "agy")) return finish({ ok: false, summary: "Antigravity is not connected: run gov connect agy" });
   const found = customizations(o.worktree);
   if (found.length) {
     return finish({ ok: false, summary: `the project has Antigravity customizations (${found.slice(0, 3).join(", ")}); ` +
@@ -213,6 +220,12 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   });
   cleanups.push(() => sock.close());
   writeAgyConfig(home, { node: process.execPath, script: HOOK_SCRIPT, socket: sock.path });
+  // Antigravity's own confirmations off: in print mode it cannot ask anyone, so it refused writes
+  // under hidden folders (GovernCode's workspaces live in ~/.local/state). GovernCode's hook is the
+  // Gate for every call, and still denies when it fails, times out or says no (verified in this
+  // mode, 2026-09-28). The file is rewritten before every run.
+  mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, ".gemini", "antigravity-cli", "settings.json"), JSON.stringify({ toolPermission: "always-proceed" }), { mode: 0o600 });
 
   mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
   const tmp = mkdtempSync(join(tmpdir(), "governcode-agy-"));

@@ -104,6 +104,15 @@ export const Params = {
   // After `watch`, the connection also receives `event` notifications: {kind:"trace", event}
   // for every Trace append, and {kind:"gates"} whenever a Gate opens or is settled.
   watch: z.object({}),
+  // Connect (2026-09-28): every tool joins the same way. connect.start runs the tool's own
+  // sign-in in GovernCode's private home for it and streams {kind:"connect", id, text | url}
+  // events; connect.input passes what the user pastes (a sign-in code); it resolves when the
+  // sign-in ends, connected or not. GovernCode never reads the login the tool keeps there.
+  "tools.list": z.object({}),
+  "connect.start": z.object({ tool: z.enum(["agy"]) }),
+  "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),
+  "connect.cancel": z.object({ id: z.string().regex(/^C-\d+$/) }),
+  "tools.disconnect": z.object({ tool: z.enum(["agy"]) }),
 } as const;
 export type Method = keyof typeof Params;
 
@@ -125,7 +134,8 @@ export type TraceEvent = {
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
-    | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone";
+    | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone"
+    | "tool.connected" | "tool.disconnected";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
 };

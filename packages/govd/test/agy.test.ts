@@ -72,7 +72,8 @@ function setup(answer: "allow" | "deny", calls: (work: string) => object[], extr
   const proj = project(extra);
   const state = mkdtempSync(join(root, "state-"));
   const home = toolHome(state, "agy");
-  mkdirSync(join(home, ".gemini", "config"), { recursive: true });            // connected
+  mkdirSync(join(home, ".gemini", "config"), { recursive: true });
+  writeFileSync(join(home, ".governcode-connected"), "");                     // connected
   writeFileSync(join(home, ".gemini", "config", "plugins"), "left over");     // must be cleared
   const ledger = new Ledger(":memory:");
   const limits = new LimitGate();
@@ -110,6 +111,8 @@ test("agy Runner: a quiet read passes, a write waits at a Gate that shows its co
   assert.ok(!cfg.includes("plugins"), "anything else in the config folder is removed");
   const hooks = JSON.parse(readFileSync(join(t.home, ".gemini", "config", "hooks.json"), "utf8"));
   assert.match(Object.keys(hooks)[0], /^governcode-[0-9a-f]{18}$/, "the hook's name is random");
+  assert.deepEqual(JSON.parse(readFileSync(join(t.home, ".gemini", "antigravity-cli", "settings.json"), "utf8")), { toolPermission: "always-proceed" },
+    "Antigravity's own confirmations are off: GovernCode's hook is the Gate");
 });
 
 test("agy Runner: a declined Gate leaves the file unwritten", async () => {
@@ -139,7 +142,7 @@ test("agy Runner: a Runner that creates Antigravity customizations fails its Spe
 
 test("agy Runner: not connected is a plain failure, not a crash", async () => {
   const t = setup("allow", () => []);
-  execFileSync("rm", ["-r", join(t.home, ".gemini")]);
+  execFileSync("rm", [join(t.home, ".governcode-connected")]);
   const r = await t.call("controller.delegate", SPEC);
   assert.equal(r.result.status, "held");   // the usage source cannot read a home that is not connected
   assert.match(r.result.reason, /not connected \(gov connect agy\)/);

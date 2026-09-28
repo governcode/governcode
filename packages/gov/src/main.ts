@@ -250,6 +250,45 @@ async function main(argv: string[]): Promise<number> {
         console.log(`${provider}: personal instructions ${state}`);
         return 0;
       }
+      case "connect": {
+        // gov connect: the tools and whether each is connected. gov connect TOOL: sign it in for
+        // GovernCode with its own sign-in (a link to open, a code to paste back).
+        const tool = rest[0];
+        if (!tool) {
+          const { tools } = await api.call("tools.list", {});
+          for (const t of tools) {
+            const use = t.usage?.readings?.length ? ` · ${t.usage.readings.map((r: any) => `${r.window} ${r.usedPercent}% used`).join(", ")}` : "";
+            console.log(`${t.tool.padEnd(6)} ${t.name.padEnd(12)} ${!t.installed ? "not installed" : t.connected ? "connected" + use : "not connected (gov connect " + t.tool + ")"}`);
+          }
+          console.log(dim("Claude Code and Codex use your own logins for now; they move to Connect in a later release."));
+          return 0;
+        }
+        if (tool !== "agy") throw new Error("usage: gov connect [agy]");
+        const tty = answers();
+        let id = "";
+        api.onEvent(async (ev) => {
+          if (ev.kind !== "connect") return;
+          id = ev.id;
+          if (ev.url) {
+            console.log(warn("\nOpen this link and sign in:"));
+            console.log(ev.url);
+            const code = (await tty.next("\nPaste the code it gives you here: ")).trim();
+            if (code) await api.call("connect.input", { id, text: code });
+            else await api.call("connect.cancel", { id });
+          } else if (ev.text) console.log(dim(ev.text));
+        });
+        console.log(dim("Signing in inside GovernCode's sandbox, in a home that belongs to GovernCode (not your own setup)."));
+        const r = await api.call("connect.start", { tool });
+        tty.close();
+        console.log(r.connected ? r.note : warn(r.note));
+        return r.connected ? 0 : 1;
+      }
+      case "disconnect": {
+        const tool = rest[0];
+        if (tool !== "agy") throw new Error("usage: gov disconnect agy");
+        console.log((await api.call("tools.disconnect", { tool })).note);
+        return 0;
+      }
       case "reset": {
         // gov reset: the Controller forgets this project's conversation (the Trace keeps it all).
         const project = await currentProject(api);
@@ -334,7 +373,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|reset|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy]|disconnect agy|reset|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

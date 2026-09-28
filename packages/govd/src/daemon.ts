@@ -15,6 +15,7 @@ import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { agyUsage } from "./agy.ts";
+import { Connector, TOOLS } from "./connect.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
 import { ollamaUsage } from "./local.ts";
 import { Allows, analyze, scopesFor, type AllowRule, type AllowScope, type GateContext, type Kind } from "./allows.ts";
@@ -56,6 +57,7 @@ export class Daemon {
   /** Connections that called `watch`: each gets Trace appends and Gate changes pushed to it. */
   private watchers = new Map<Socket, { send: (n: WatchEvent) => void; stop: () => void }>();
   private sandboxOk = false;
+  private connector!: Connector;         // Connect: tools sign in for GovernCode in their own homes
   private sandboxReason = "self-test not run";
 
   private opts: DaemonOptions;
@@ -69,6 +71,7 @@ export class Daemon {
     this.limits.setReserves(this.settings().reserves);
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
+    this.connector = new Connector({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir });
   }
 
   /** The project's recent conversation, since its last reset: the user's messages and the
@@ -414,6 +417,26 @@ export class Daemon {
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
+      case "tools.list":
+        return { tools: this.connector.list().map((t) => ({ ...t, usage: this.usage[t.tool] ? this.limits.view(t.tool) : null })) };
+      case "connect.start": {
+        // The sign-in runs a tool, so it runs only in a verified sandbox, like everything else.
+        if (!this.sandboxOk) throw new RpcError(Errors.refused, `the sandbox is not verified (${this.sandboxReason}); GovernCode starts no tool`);
+        const r = await this.connector.start(p.tool, notify);
+        if (r.connected) L.append(null, "tool.connected", "user", { tool: p.tool });
+        return r;
+      }
+      case "connect.input":
+        this.connector.input(p.id, p.text);
+        return { sent: true };
+      case "connect.cancel":
+        this.connector.cancel(p.id);
+        return { cancelled: true };
+      case "tools.disconnect": {
+        const r = this.connector.disconnect(p.tool);
+        L.append(null, "tool.disconnected", "user", { tool: p.tool });
+        return { ...r, note: `${TOOLS[p.tool as keyof typeof TOOLS].name} is disconnected. To revoke its access to your account too: ${r.revoke}` };
+      }
       case "watch":
         this.watch(sock, notify);
         return { ok: true };
