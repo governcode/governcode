@@ -95,7 +95,9 @@ export const Params = {
   "project.new": z.object({ name: ProjectName, path: z.string().min(1), git: z.boolean().default(true) }),
   "project.open": z.object({ path: z.string().min(1), name: ProjectName.optional() }),
   "controller.set": z.object({ project: ProjectName, controller: ControllerChoice }),
-  "trace.list": z.object({ project: ProjectName.optional(), limit: z.number().int().min(1).max(1000).default(50) }),
+  // kinds: only events of these kinds (e.g. the latest turn boundaries, however long the turn).
+  "trace.list": z.object({ project: ProjectName.optional(), limit: z.number().int().min(1).max(1000).default(50),
+    kinds: z.array(z.string().regex(/^[a-z.]{1,40}$/)).max(20).optional() }),
   ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000) }),
   "gate.list": z.object({}),
   "spec.list": z.object({ project: ProjectName.optional() }),

@@ -137,3 +137,21 @@ test("review: a closed turn socket refuses new connections and requests; another
     assert.equal(analyze({ tool: "Bash", input: { command: cmd } }).ask, true, cmd);
   }
 });
+
+test("board review: a turn cut off by govd stopping is closed on the record at the next start", async () => {
+  const root = scratch("gc-crew-interrupted-");
+  const opts = { socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
+    policyDir: join(root, "state/pol"), homeDir: join(root, "state/home"), supervisor: "/bin/true", version: "t" };
+  const d1 = new Daemon(opts);
+  d1.ledger.addProject("p", join(root, "p"), "project.created");
+  d1.ledger.append("p", "turn.started", "user", { prompt: "x", controller: { provider: "claude-code" } });
+  d1.close();
+  const d2 = new Daemon(opts);
+  try {
+    await d2.listen();
+    const last = d2.ledger.eventsOfKind("p", ["turn.started", "turn.completed", "turn.failed"], 1).at(-1)!;
+    assert.equal(last.kind, "turn.failed");
+    assert.equal(last.data.summary, "govd stopped during this turn");
+    assert.equal(d2.ledger.eventsOfKind("p", ["turn.started", "turn.completed", "turn.failed"], 10).filter((e) => e.kind === "turn.failed").length, 1);
+  } finally { d2.close(); }
+});

@@ -18,9 +18,14 @@ function CrewBoard({ project }: { project: string }) {
   const [board, setBoard] = useState<Board | null>(null);
   const load = useCallback(async () => {
     try {
-      const [t, s, g] = await Promise.all([call<{ events: TraceEvent[] }>("trace.list", { project, limit: 400 }),
+      // The latest turn's boundaries on their own (a long turn has more events than the window),
+      // merged with the recent events.
+      const [t, b, s, g] = await Promise.all([call<{ events: TraceEvent[] }>("trace.list", { project, limit: 400 }),
+        call<{ events: TraceEvent[] }>("trace.list", { project, limit: 4, kinds: ["turn.started", "turn.completed", "turn.failed"] }),
         call<{ specs: Spec[] }>("spec.list", { project }), call<{ gates: Gate[] }>("gate.list", {})]);
-      setBoard(buildBoard(t.events, s.specs, g.gates.filter((x) => x.project === project)));
+      const seen = new Set(t.events.map((e) => e.seq));
+      const events = [...b.events.filter((e) => !seen.has(e.seq)), ...t.events].sort((x, y) => x.seq - y.seq);
+      setBoard(buildBoard(events, s.specs, g.gates.filter((x) => x.project === project)));
     } catch { /* shown by the status bar */ }
   }, [project]);
   useEffect(() => { void load(); }, [load]);
@@ -30,13 +35,13 @@ function CrewBoard({ project }: { project: string }) {
   return (
     <>
       <h2>Now</h2>
-      {!board.controller ? <p className="dim small">Nothing yet: ask the Controller something in the Terminal.</p> : (
+      {!board.controller && !board.specs.length ? <p className="dim small">Nothing yet: ask the Controller something in the Terminal.</p> : (
         <div className="crew-board">
-          <div className="crew-node">
+          {board.controller && <div className="crew-node">
             <b>Controller</b> <span className="mono small">{board.controller.provider}</span>{" "}
             {board.controller.working ? <Pill tone="accent">working</Pill> : <span className="dim small">idle since {clock(board.controller.since)}</span>}{" "}
             {waiting(board.controller.gates.length)}
-          </div>
+          </div>}
           {board.subagents.map((a, i) => (
             <div key={i} className="crew-node child"><span className="dim small">subagent</span> {a.what} <span className="dim small">· {clock(a.at)}</span></div>
           ))}

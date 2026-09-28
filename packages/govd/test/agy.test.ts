@@ -274,3 +274,11 @@ test("crew card: a Runner's subagent asks at a Gate by default, and is refused w
   assert.deepEqual(off.gates.map((g) => g.tool.split(" (")[0]), ["agy fileChange"], "the subagent never reached a Gate");
   assert.deepEqual(r.result.files, ["notes/hello.txt"]);
 });
+
+test("board review: a Runner's steps are recorded up to 200 per Spec, then one line says the rest were not", async () => {
+  const t = setup("allow", (w) => Array.from({ length: 205 }, () => ({ name: "view_file", args: { AbsolutePath: join(w, "README.md") } })));
+  await t.call("controller.delegate", SPEC);
+  const steps = t.ledger.eventsOfKind("p", ["spec.step"], 1000);
+  assert.equal(steps.length, 201);
+  assert.equal(steps.at(-1)!.data.name, "(later steps not recorded)");
+});

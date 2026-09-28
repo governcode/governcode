@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, existsSync, sta
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RpcError, Settings, type SettingsValue, type Method, type WatchEvent } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RpcError, Settings, type SettingsValue, type Method, type WatchEvent, type TraceEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
@@ -153,7 +153,17 @@ export class Daemon {
     return { ok: !problems.length, problems };
   }
 
+  /** A turn that has a start but no end was cut off by govd stopping: it is closed on the record,
+   *  so nothing shows it as still working. */
+  private closeInterruptedTurns(): void {
+    for (const project of [...this.ledger.projects().map((p) => p.name), null]) {
+      const last = this.ledger.eventsOfKind(project, ["turn.started", "turn.completed", "turn.failed"], 1).at(-1);
+      if (last?.kind === "turn.started") this.ledger.append(project, "turn.failed", "govd", { summary: "govd stopped during this turn" });
+    }
+  }
+
   async listen(): Promise<void> {
+    this.closeInterruptedTurns();
     const dir = resolve(this.opts.socketPath, "..");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
@@ -392,7 +402,7 @@ export class Daemon {
         L.append(p.project, "context.shared", "user", { provider: p.provider, share: p.share });
         return { ok: true };
       case "trace.list":
-        return { events: L.events(p.project, p.limit) };
+        return { events: p.kinds && p.project ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
       case "conversation.reset":
