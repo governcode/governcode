@@ -4,9 +4,10 @@
 
 **Govern your AI coding crew.** Pick one AI coding tool as the Controller. It keeps its own
 subagents and hands bounded jobs (Specs) to the other tools you already use, as Runners.
-Every Spec is written down, runs in a sandbox and its own git worktree, and can be diffed
-and undone. A Limit keeps each provider's usage above the reserve you set, and risky steps
-wait at a Gate for your approval, signed on your phone.
+Every Spec is written down, runs in a sandbox on its own copy of the project, and can be
+diffed and undone. A Limit keeps each provider's usage above the reserve you set, and risky
+steps wait at a Gate for your approval, in the Dashboard or your terminal (on your phone once
+the Pager app ships, phase 3).
 
 Free and open source (MIT). Runs on your own machine; no hosted service.
 

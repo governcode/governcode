@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, symlin
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { gitGuard } from "../src/gitguard.ts";
-import { toolEnv, claudePolicy } from "../src/claude.ts";
+import { toolEnv, claudePolicy, toolchainDirs } from "../src/claude.ts";
 import { Daemon } from "../src/daemon.ts";
 import { scratch } from "./scratch.ts";
 
@@ -141,4 +141,17 @@ test("git guard: config.worktree, core.worktree and remote upload-pack are rever
   assert.deepEqual(changed, [".git/config", ".git/config.worktree"]);
   for (const k of ["extensions.worktreeConfig", "core.worktree", "remote.origin.uploadpack"]) assert.throws(() => git(dir, "config", k), k);
   assert.ok(!existsSync(join(dir, ".git/config.worktree")));
+});
+
+test("toolchains from a version manager can run in the sandbox; home and ~/.dot folders are never granted", () => {
+  const home = scratch("gc-home-");
+  const node = join(home, ".local/share/mise/installs/node/26.7.0");
+  mkdirSync(join(node, "bin"), { recursive: true });
+  writeFileSync(join(node, "bin/node"), "");
+  mkdirSync(join(home, ".cargo/bin"), { recursive: true });
+  writeFileSync(join(home, ".cargo/bin/cargo"), "");          // a rustup proxy: ~/.cargo holds credentials
+  writeFileSync(join(home, "python3"), "");                    // straight in home
+  const dirs = toolchainDirs([join(node, "bin"), join(home, ".cargo/bin"), home, "/usr/bin"].join(":"), home);
+  assert.deepEqual(dirs, [node]);
+  assert.equal(toolEnv("/t").npm_config_cache, "/t/npm-cache", "npm keeps its cache in the run's scratch");
 });

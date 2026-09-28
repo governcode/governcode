@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, lstatSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { canonical, resolverFiles, toolEnv, withMcpRead, CONTROLLER_CONTEXT, RUNNER_CONTEXT, type GateRequest, type McpServer, type Policy, type TurnHooks } from "./claude.ts";
+import { canonical, resolverFiles, toolchainDirs, toolEnv, withMcpRead, CONTROLLER_CONTEXT, RUNNER_CONTEXT, type GateRequest, type McpServer, type Policy, type TurnHooks } from "./claude.ts";
 import type { Measurement, UsageSource } from "./limits.ts";
 
 /** The real Codex binary: $GOVERNCODE_CODEX_BIN, else `codex` on PATH, looking through a mise shim. */
@@ -50,7 +50,7 @@ export function codexPolicy(worktree: string, sessionTmp: string, codexHome: str
       // A Spec's Runner reads its whole worktree (and the repo's git data) but writes only its scope.
       ...(readOnly || writePaths ? [worktree] : []), ...(gitDir ? [gitDir] : [])].filter((p) => p === worktree || exists(p)),
     write: [...(readOnly ? [] : writePaths ?? [worktree]), sessionTmp, codexHome, "/dev/null"],
-    exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin)],
+    exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin), ...toolchainDirs()],
     tcp_connect: [443],
     unix_connect: ["/run/systemd/resolve/io.systemd.Resolve"].filter(exists),
     cwd: worktree,

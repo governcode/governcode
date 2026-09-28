@@ -79,7 +79,7 @@ export function claudePolicy(worktree: string, sessionTmp: string, readOnly = fa
       "/dev/random", dirname(bin), join(home, ".claude.json"), ...cfgRead, ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
       (p) => p === worktree || existsSync(p)),
     write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...cfgWrite.filter(existsSync)],
-    exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin), ...(mcp ? [dirname(mcp.node)] : [])],
+    exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin), ...(mcp ? [dirname(mcp.node)] : []), ...toolchainDirs()],
     tcp_connect: [443],
     // The per-turn GovernCode socket is the one extra socket, and only while this turn runs.
     unix_connect: [...RESOLVER_SOCKETS.filter(existsSync), ...(mcp ? [mcp.socket] : [])],
@@ -95,9 +95,46 @@ export function withMcpRead(p: Policy, mcp?: McpServer): Policy {
 const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|CLAUDE_CONFIG_DIR|ANTHROPIC_[A-Z_]+|CLAUDE_CODE_[A-Z_]+|HTTPS?_PROXY|NO_PROXY)$/;
 
 export function toolEnv(tmp: string): Record<string, string> {
-  const env: Record<string, string> = { TMPDIR: tmp };
+  // npm keeps its cache and logs in ~/.npm, which the sandbox does not let it write: give it
+  // one inside this run's own scratch folder.
+  const env: Record<string, string> = { TMPDIR: tmp, npm_config_cache: join(tmp, "npm-cache"), npm_config_update_notifier: "false" };
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && ENV_KEEP.test(k)) env[k] = v;
   return env;
+}
+
+// Language tools a project's commands commonly run. Installed by a version manager (mise, nvm,
+// asdf, fnm, volta, pyenv...) they live in the user's home, outside the system folders the
+// sandbox runs programs from; `npm test` then fails in the sandbox while it works in the shell
+// (first fresh-install test, 2026-09-27).
+const TOOLCHAIN = ["node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "python3", "python", "pip", "pip3", "uv",
+  "ruby", "bundle", "go", "java", "cargo", "rustc"];
+
+/** The install folders of the user's own toolchains, found on PATH: each tool's real location,
+ *  two levels up (…/node/26.7.0 for …/node/26.7.0/bin/node), so its libraries come along. Read
+ *  and run only, never write. Never a folder directly in home (~/.cargo, ~/.local), which can
+ *  hold credentials or much more than a toolchain.
+ *  ponytail: a shim-based setup (mise shims, rustup proxies) resolves to such a folder and is
+ *  skipped; those tools still run from the system if installed there. */
+export function toolchainDirs(path = process.env.PATH ?? "", home = homedir()): string[] {
+  const out = new Set<string>();
+  for (const t of TOOLCHAIN) {
+    let real: string;
+    try { real = realpathSync(whichIn(t, path)); } catch { continue; }
+    if (!real.startsWith(home + "/")) continue;                  // system tools are already allowed
+    const root = dirname(dirname(real));
+    const rel = root.slice(home.length + 1);
+    if (!rel || !rel.includes("/")) continue;                    // home itself, or ~/.cargo-like
+    out.add(root);
+  }
+  return [...out];
+}
+
+function whichIn(cmd: string, path: string): string {
+  for (const dir of path.split(":")) {
+    const p = join(dir, cmd);
+    if (dir && existsSync(p)) return p;
+  }
+  throw new Error(`${cmd} not found on PATH`);
 }
 
 function which(cmd: string): string {
