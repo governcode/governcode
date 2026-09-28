@@ -9,7 +9,7 @@ import { gitGuard } from "../src/gitguard.ts";
 import { toolEnv, claudePolicy, toolchainDirs } from "../src/claude.ts";
 import { codexPolicy } from "../src/codex.ts";
 import { Daemon } from "../src/daemon.ts";
-import { scratch } from "./scratch.ts";
+import { scratch, markConnected } from "./scratch.ts";
 
 const git = (dir: string, ...a: string[]) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" }).trim();
 
@@ -98,6 +98,7 @@ test("project paths: home, dot-folders, govd's own dirs and symlinks to them are
   const root = scratch("gc-paths-");
   const d = new Daemon({ socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
     policyDir: join(root, "state/p"), homeDir: join(root, "state/home"), supervisor: "/bin/false", version: "t" });
+  markConnected(d);
   const call = (d as any).call.bind(d);
   for (const path of [homedir(), join(homedir(), ".ssh"), join(root, "state"), join(root, "run"), "/"]) {
     await assert.rejects(call("project.open", { path }, () => {}, null), /cannot be a project|not a folder/, path);

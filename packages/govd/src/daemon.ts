@@ -14,7 +14,7 @@ import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
-import { agyUsage } from "./agy.ts";
+import { agyUsage, isConnected } from "./agy.ts";
 import { Connector, TOOLS } from "./connect.ts";
 import { contextState, mayShare, notesHistory, notesOf, projectRecord, setNotes } from "./memory.ts";
 import { crewBrief, crewOf, setCrew, DEFAULT_CREW } from "./crew.ts";
@@ -487,17 +487,17 @@ export class Daemon {
         return { ok: true };
       case "tools.list": {
         const tools = this.connector.list();
-        if (p.measure) await Promise.all(tools.filter((t) => t.connected && this.usage[t.tool]).map(async (t) => {
+        // Measured: a tool with a usage report is read now; one without (Claude Code) runs its
+        // own status command. Either failing means the login may no longer work: never "connected".
+        const failed = new Map<string, string>();
+        if (p.measure) await Promise.all(tools.filter((t) => t.connected).map(async (t) => {
           const src = this.usage[t.tool];
-          const m = await src.read();
-          if (m) this.limits.record(m); else this.limits.forget(src.provider, src.why?.());
+          if (src) {
+            const m = await src.read();
+            if (m) this.limits.record(m); else { this.limits.forget(src.provider, src.why?.()); failed.set(t.tool, src.why?.() ?? "could not check"); }
+          } else if (!(await this.connector.check(t.tool))) failed.set(t.tool, `${t.name} needs signing in again (gov connect ${t.tool})`);
         }));
-        return { tools: tools.map((t) => {
-          const view = this.usage[t.tool] ? this.limits.view(t.tool) : null;
-          // Measured and no reading, for any reason: the login may no longer work. Never "connected".
-          const problem = p.measure && t.connected && view && !view.readings.length ? (view.verdict.ok ? "could not check" : view.verdict.reason) : null;
-          return { ...t, usage: view, problem };
-        }) };
+        return { tools: tools.map((t) => ({ ...t, usage: this.usage[t.tool] ? this.limits.view(t.tool) : null, problem: failed.get(t.tool) ?? null })) };
       }
       case "connect.start": {
         // The sign-in runs a tool, so it runs only in a verified sandbox, like everything else.
@@ -549,6 +549,11 @@ export class Daemon {
     // using, or the user agreed to share it (context.share); otherwise it starts from its own turns.
     // Home has no share question: it replays only the current provider's own turns.
     const share = found ? mayShare(L, found.name, project.controller.provider) : false;
+    // The Controller's tool must be connected for GovernCode (its own sign-in in GovernCode's home).
+    const tool = project.controller.provider === "codex" ? "codex" : "claude";
+    if (!isConnected(resolve(this.opts.ledgerPath, ".."), tool)) {
+      throw new RpcError(Errors.refused, `connect ${tool === "codex" ? "Codex" : "Claude Code"} for GovernCode first: gov connect ${tool}, or Settings › Tools in the Dashboard`);
+    }
     const history = this.conversation(project.name, share ? undefined : project.controller.provider);
     const notes = found && share ? notesOf(L, found.name).text : "";
     const record = found && share ? projectRecord(L, found.name, this.allows.list(found.name).map((r) => r.label)) : "";
@@ -696,7 +701,7 @@ export class Daemon {
         void runCodexTurn({ ...common, stateDir: resolve(this.opts.ledgerPath, ".."), model: project.controller.model, effort: project.controller.effort, mcp,
           noSubagents: !crew.subagents.controller });
       } else {
-        runTurn({ ...common, controller: project.controller, mcp, noSubagents: !crew.subagents.controller });
+        runTurn({ ...common, controller: project.controller, mcp, noSubagents: !crew.subagents.controller, stateDir: resolve(this.opts.ledgerPath, "..") });
       }
     });
   }

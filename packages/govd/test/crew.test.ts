@@ -10,7 +10,7 @@ import { LimitGate } from "../src/limits.ts";
 import { Daemon } from "../src/daemon.ts";
 import { crewBrief, crewOf, runnerAllowed, setCrew, DEFAULT_CREW } from "../src/crew.ts";
 import { openControllerSocket } from "../src/delegate.ts";
-import { scratch } from "./scratch.ts";
+import { scratch, markConnected } from "./scratch.ts";
 
 test("crew card: defaults, the latest setting wins, and what the Controller is told", () => {
   const L = new Ledger(":memory:");
@@ -87,6 +87,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   process.env.PATH = `${bin}:${PATH}`;
   const d = new Daemon({ socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
     policyDir: join(root, "state/pol"), homeDir: join(root, "state/home"), supervisor, version: "t" });
+  markConnected(d);
   try {
     d.selftest();
     await d.listen();
@@ -143,10 +144,12 @@ test("board review: a turn cut off by govd stopping is closed on the record at t
   const opts = { socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
     policyDir: join(root, "state/pol"), homeDir: join(root, "state/home"), supervisor: "/bin/true", version: "t" };
   const d1 = new Daemon(opts);
+  markConnected(d1);
   d1.ledger.addProject("p", join(root, "p"), "project.created");
   d1.ledger.append("p", "turn.started", "user", { prompt: "x", controller: { provider: "claude-code" } });
   d1.close();
   const d2 = new Daemon(opts);
+  markConnected(d2);
   try {
     await d2.listen();
     const last = d2.ledger.eventsOfKind("p", ["turn.started", "turn.completed", "turn.failed"], 1).at(-1)!;

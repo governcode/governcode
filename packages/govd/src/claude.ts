@@ -3,12 +3,12 @@
 // Gates answered by the user through govd, never by the harness itself.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import type { ControllerChoice } from "@governcode/protocol";
 
-export type Policy = { version: 1; read: string[]; write: string[]; exec: string[]; tcp_connect: number[]; unix_connect: string[]; cwd: string };
+export type Policy = { version: 1; read: string[]; write: string[]; exec: string[]; tcp_connect: number[]; tcp_bind?: number[]; unix_connect: string[]; cwd: string };
 
 // The one local socket a tool may reach: the system DNS resolver, where the host uses one.
 const RESOLVER_SOCKETS = ["/run/systemd/resolve/io.systemd.Resolve"];
@@ -69,27 +69,42 @@ export function canonical(value: unknown): string {
 /** What a Claude Code process may touch. Everything not listed is denied by govern-sup. */
 export type McpServer = { node: string; script: string; socket: string; mode?: "home" };   // home: propose_project only
 
-export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false, mcp?: McpServer, personal = false): Policy {
-  const home = homedir();
-  const cfg = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+/** The user's own Claude Code folder: only its personal files are ever reachable, and only
+ *  when the user chose to bring them. */
+export const userClaudeDir = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+export const PERSONAL_CLAUDE = ["CLAUDE.md", "skills", "plugins", "hooks", "agents", "commands", "output-styles", "rules", "settings.json"];
+
+/** GovernCode's Claude Code home (Connect signed it in there): rebuilt before every turn, so
+ *  nothing a turn writes into it (settings, instructions, hooks) reaches the next turn. The user's
+ *  personal files are linked in, read-only, only when they chose to bring them. */
+export function prepareClaudeHome(stateDir: string, personal: boolean): string {
+  const home = join(stateDir, "tools", "claude", "home");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  for (const name of [...PERSONAL_CLAUDE, "settings.local.json"]) {
+    const p = join(home, name);
+    try { lstatSync(p); rmSync(p, { recursive: true, force: true }); } catch { /* absent */ }
+  }
+  if (personal) for (const name of PERSONAL_CLAUDE) {
+    const src = join(userClaudeDir(), name);
+    if (existsSync(src)) symlinkSync(src, join(home, name));
+  }
+  return home;
+}
+
+export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false, mcp?: McpServer, personal = false,
+                             cfg = join(tmpdir(), "governcode-no-claude-home")): Policy {
   const bin = realpathSync(which("claude"));
-  // Only what Claude Code needs, found by testing: its settings, instructions, skills and
-  // credentials READ-ONLY (so a run cannot widen what it auto-allows next time, invariant 3;
-  // an expired token then needs one unsandboxed `claude` to refresh); scratch state writable.
-  // Not other projects' transcripts (projects/, history.jsonl): none of this run's business.
-  // The user's own instructions (CLAUDE.md, skills, agents, commands, hooks, plugins) only when
-  // they chose to bring them (Settings › Personal instructions); otherwise Claude Code cannot
-  // even read them, and starts from its defaults plus GovernCode's context.
-  const personalFiles = ["CLAUDE.md", "skills", "plugins", "hooks", "agents", "commands", "output-styles", "rules"];
-  const cfgRead = ["settings.json", "themes", ".credentials.json", ...(personal ? personalFiles : [])].map((p) => join(cfg, p));
-  const cfgWrite = ["sessions", "session-env", "shell-snapshots", "todos", "statsig", "cache", "debug",
-    "paste-cache", "file-history", "plans"].map((p) => join(cfg, p));
+  // GovernCode's own Claude home (cfg) is the tool's: its login, state and transcripts, writable.
+  // The user's own ~/.claude and ~/.claude.json are not in this policy at all; their personal
+  // files (instructions, skills, agents, commands, plugins, hooks, settings) are readable only when
+  // the user chose to bring them, through the links prepareClaudeHome made.
+  const personalRead = personal ? PERSONAL_CLAUDE.map((n) => join(userClaudeDir(), n)) : [];
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
-      "/dev/random", dirname(bin), join(home, ".claude.json"), ...cfgRead, ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
+      "/dev/random", dirname(bin), cfg, ...personalRead, ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
       (p) => p === worktree || existsSync(p)),
-    write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...cfgWrite.filter(existsSync)],
+    write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...(existsSync(cfg) ? [cfg] : [])],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin), ...(mcp ? [dirname(mcp.node)] : []), ...toolchainDirs()],
     tcp_connect: [443],
     // The per-turn GovernCode socket is the one extra socket, and only while this turn runs.
@@ -103,7 +118,9 @@ export function withMcpRead(p: Policy, mcp?: McpServer): Policy {
   return mcp ? { ...p, read: [...p.read, dirname(mcp.script), dirname(mcp.node)] } : p;
 }
 
-const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|CLAUDE_CONFIG_DIR|ANTHROPIC_[A-Z_]+|CLAUDE_CODE_[A-Z_]+|HTTPS?_PROXY|NO_PROXY)$/;
+// No provider keys or config locations (ANTHROPIC_*, CLAUDE_*, OPENAI_*...): every tool uses the
+// login Connect made in its GovernCode home, never an API key from the user's shell.
+const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|HTTPS?_PROXY|NO_PROXY)$/;
 
 export function toolEnv(tmp: string): Record<string, string> {
   // npm keeps its cache and logs in ~/.npm, which the sandbox does not let it write: give it
@@ -148,7 +165,7 @@ function whichIn(cmd: string, path: string): string {
   throw new Error(`${cmd} not found on PATH`);
 }
 
-function which(cmd: string): string {
+export function which(cmd: string): string {
   for (const dir of (process.env.PATH ?? "").split(":")) {
     const p = join(dir, cmd);
     if (existsSync(p)) return p;
@@ -168,17 +185,20 @@ export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", 
 
 export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
-  mcp?: McpServer; personal?: boolean; noSubagents?: boolean;
+  mcp?: McpServer; personal?: boolean; noSubagents?: boolean; stateDir: string;
 }): { cancel(): void } {
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
+  const cfg = prepareClaudeHome(opts.stateDir, opts.personal === true);
   const policyFile = join(opts.policyDir, `turn-${process.pid}-${Date.now()}.json`);
-  writeFileSync(policyFile, JSON.stringify(withMcpRead(claudePolicy(opts.worktree, sessionTmp, opts.readOnly, opts.mcp, opts.personal), opts.mcp)), { mode: 0o600 });
+  writeFileSync(policyFile, JSON.stringify(withMcpRead(claudePolicy(opts.worktree, sessionTmp, opts.readOnly, opts.mcp, opts.personal, cfg), opts.mcp)), { mode: 0o600 });
 
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--permission-prompt-tool", "stdio", "--permission-mode", "default",
-    // Only the user's own settings; never the worktree's, which the harness can write.
-    "--setting-sources", "user", "--no-session-persistence",
+    // Never the worktree's settings (the harness can write them), and the user's own only when
+    // they chose to bring them: otherwise no settings file at all, so nothing a turn writes into
+    // its home's settings.json can take effect.
+    "--setting-sources", opts.personal ? "user" : "", "--no-session-persistence",
     // Without personal instructions the user's hooks do not run either.
     "--settings", JSON.stringify({ permissions: { ask: ASK_TOOLS }, ...(opts.personal ? {} : { disableAllHooks: true }) }),
     "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : []),
@@ -197,7 +217,7 @@ export function runTurn(opts: {
   const child = spawn(opts.supervisor, ["run", "--policy", policyFile, "--", which("claude"), ...args], {
     cwd: opts.worktree, stdio: ["pipe", "pipe", "pipe"], detached: true,
     // A delegated Spec can run for many minutes while the Controller's tool call waits.
-    env: { ...toolEnv(sessionTmp), MCP_TOOL_TIMEOUT: String(60 * 60_000) },
+    env: { ...toolEnv(sessionTmp), CLAUDE_CONFIG_DIR: cfg, MCP_TOOL_TIMEOUT: String(60 * 60_000) },
   });
   let stderr = "";
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));

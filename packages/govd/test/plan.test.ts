@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { Daemon } from "../src/daemon.ts";
 import { parsePlan } from "../src/delegate.ts";
 import { DEFAULT_CREW } from "../src/crew.ts";
-import { scratch } from "./scratch.ts";
+import { scratch, markConnected } from "./scratch.ts";
 
 test("a plan is checked: 1 to 12 items, 'me' or a Runner, short lines", () => {
   assert.deepEqual(parsePlan({ items: [{ who: "Codex", what: " tests " }] }).items, [{ who: "codex", what: "tests" }]);
@@ -63,6 +63,7 @@ async function run(crew: object, planReply: Record<string, unknown>, handoffs: s
   const dir = join(root, `d-${Math.random().toString(36).slice(2)}`);
   const d = new Daemon({ socketPath: join(dir, "run/govd.sock"), ledgerPath: join(dir, "state/trace.sqlite"),
     policyDir: join(dir, "state/pol"), homeDir: join(dir, "state/home"), supervisor, version: "t" });
+  markConnected(d);
   try {
     d.selftest();
     await d.listen();

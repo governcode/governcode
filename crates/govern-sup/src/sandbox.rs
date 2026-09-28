@@ -155,11 +155,17 @@ fn landlock(policy: &Resolved, abi: i32) -> Result<(), String> {
             .add_rule(PathBeneath::new(rule.fd.as_fd(), AccessFs::ResolveUnix))
             .map_err(|e| fs_err(&format!("{}: {e}", rule.path.display())))?;
     }
-    // Only connect rules are added; BindTcp is handled with no rules, so every bind fails.
+    // Connect rules, and bind rules only where the policy lists a port (none by default, so
+    // every bind fails; a sign-in's localhost callback gets port 0, one the kernel picks).
     for &port in &policy.tcp_connect {
         ruleset = ruleset
             .add_rule(NetPort::new(port, AccessNet::ConnectTcp))
             .map_err(|e| format!("cannot enforce the network rule (port {port}): {e}"))?;
+    }
+    for &port in &policy.tcp_bind {
+        ruleset = ruleset
+            .add_rule(NetPort::new(port, AccessNet::BindTcp))
+            .map_err(|e| format!("cannot enforce the bind rule (port {port}): {e}"))?;
     }
 
     let status = ruleset.restrict_self().map_err(|e| fs_err(&e))?;

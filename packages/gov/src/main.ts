@@ -347,16 +347,19 @@ async function main(argv: string[]): Promise<number> {
               : t.problem ? `needs attention: ${t.problem}` : "connected" + use;
             console.log(`${t.tool.padEnd(6)} ${t.name.padEnd(12)} ${state}`);
           }
-          console.log(dim("Claude Code and Codex use your own logins for now; they move to Connect in a later release."));
           return 0;
         }
-        if (tool !== "agy") throw new Error("usage: gov connect [agy]");
+        if (!["agy", "claude", "codex"].includes(tool)) throw new Error("usage: gov connect [agy|claude|codex]");
+        const device = tool === "codex";   // Codex shows a code to type on its page; nothing to paste back here
         const tty = answers();
         let id = "";
         api.onEvent(async (ev) => {
           if (ev.kind !== "connect") return;
           id = ev.id;
-          if (ev.url) {
+          if (ev.url && device) {
+            console.log(warn("\nOpen this link, sign in, and enter the code shown below it:"));
+            console.log(ev.url);
+          } else if (ev.url) {
             console.log(warn("\nOpen this link and sign in:"));
             console.log(ev.url);
             const code = (await tty.next("\nPaste the code it gives you here: ")).trim();
@@ -372,7 +375,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "disconnect": {
         const tool = rest[0];
-        if (tool !== "agy") throw new Error("usage: gov disconnect agy");
+        if (!["agy", "claude", "codex"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex");
         console.log((await api.call("tools.disconnect", { tool })).note);
         return 0;
       }
@@ -460,7 +463,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy]|disconnect agy|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

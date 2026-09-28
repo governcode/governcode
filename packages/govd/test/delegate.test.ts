@@ -28,7 +28,7 @@ process.env.GOVERNCODE_CODEX_BIN = exe("codex", `#!/usr/bin/env node
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const fs = require("node:fs"), path = require("node:path");
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
-let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME || "", "fake.json"), "utf8")); } catch {}
+let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME || "", "..", "fake.json"), "utf8")); } catch {}
 const file = cfg.path || "tests/hello.txt";
 let pending = null;
 rl.on("line", (l) => {
@@ -63,8 +63,10 @@ function project() {
 function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settings?: any, turnEnded?: AbortSignal) {
   const proj = project();
   const state = mkdtempSync(join(root, "state-"));
-  mkdirSync(join(state, "codex-home"), { recursive: true });
-  writeFileSync(join(state, "codex-home", "fake.json"), JSON.stringify(fake));
+  // Connected for GovernCode; the fake's settings sit beside its home (govd cleans the home before each run).
+  mkdirSync(join(state, "tools", "codex", "home"), { recursive: true });
+  writeFileSync(join(state, "tools", "codex", "home", ".governcode-connected"), "");
+  writeFileSync(join(state, "tools", "codex", "fake.json"), JSON.stringify(fake));
   const ledger = new Ledger(":memory:");
   const limits = new LimitGate();
   const gates: string[] = [];

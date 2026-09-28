@@ -4,15 +4,67 @@
 // keyring, so the tool keeps its login in its own file store there and refreshes it itself.
 // GovernCode never reads, copies or parses that login. Disconnect deletes the home.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { agyBinary, agyEnv, agyPolicy, hold, inUse, isConnected, quotaIn, safeWrite, toolHome, useKey, CONNECTED_MARK } from "./agy.ts";
+import { dirname, join } from "node:path";
+import { agyBinary, agyEnv, agyPolicy, hold, inUse, isConnected, quotaIn, run, safeWrite, toolHome, useKey, CONNECTED_MARK } from "./agy.ts";
+import { resolverFiles, toolchainDirs, which, type Policy } from "./claude.ts";
+import { codexBinary } from "./codex.ts";
 
-export type Tool = "agy";
-export const TOOLS: Record<Tool, { name: string; revoke: string }> = {
-  agy: { name: "Antigravity", revoke: "https://myaccount.google.com/connections" },
+export type Tool = "agy" | "claude" | "codex";
+type Opts = { supervisor: string; policyDir: string; stateDir: string };
+
+/** How each tool signs in, in its GovernCode home. flow: "paste" = the user pastes a code back;
+ *  "device" = the user types the shown code on the vendor's page, nothing comes back here. */
+type Spec = { name: string; revoke: string; flow: "paste" | "device"; binary(): string; signIn: string[];
+  env(tmp: string, home: string): Record<string, string>; bind?: boolean; writable(home: string): string[];
+  check(o: Opts, home: string): Promise<boolean> };
+
+/** The tool's own status command, sandboxed in its home: signed in or not. */
+async function status(o: Opts, t: Tool, home: string, args: string[], ok: (out: { stdout: string; code: number | null }) => boolean): Promise<boolean> {
+  const spec = TOOLS[t];
+  let bin: string;
+  try { bin = spec.binary(); } catch { return false; }
+  const tmp = mkdtempSync(join(tmpdir(), "governcode-status-"));
+  const work = join(tmp, "work");
+  mkdirSync(work);
+  mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
+  const pf = join(o.policyDir, `status-${process.pid}-${Date.now()}.json`);
+  try {
+    writeFileSync(pf, JSON.stringify(signInPolicy({ work, tmp, home, bin, writable: spec.writable(home), bind: false })), { mode: 0o600 });
+    return ok(await run(o.supervisor, pf, bin, args, spec.env(tmp, home), work, 30_000));
+  } catch { return false; } finally { rmSync(pf, { force: true }); rmSync(tmp, { recursive: true, force: true }); }
+}
+
+export const TOOLS: Record<Tool, Spec> = {
+  agy: { name: "Antigravity", revoke: "https://myaccount.google.com/connections", flow: "paste", binary: agyBinary,
+    signIn: ["-p", "/quota", "--output-format", "json"], env: (tmp, home) => agyEnv(tmp, home), writable: (home) => [join(home, ".gemini")],
+    check: async (o, home) => (await quotaIn(o, home)).m !== null },
+  claude: { name: "Claude Code", revoke: "https://claude.ai/settings", flow: "paste", binary: () => realpathSync(which("claude")),
+    signIn: ["auth", "login", "--claudeai"], bind: true,   // its sign-in also listens on localhost for the browser's callback
+    env: (tmp, home) => agyEnv(tmp, home, { CLAUDE_CONFIG_DIR: home }), writable: (home) => [home],
+    check: (o, home) => status(o, "claude", home, ["auth", "status", "--json"], (r) => {
+      try { return r.code === 0 && JSON.parse(r.stdout).loggedIn === true; } catch { return false; } }) },
+  codex: { name: "Codex", revoke: "https://chatgpt.com/#settings/Security", flow: "device", binary: codexBinary,
+    signIn: ["login", "--device-auth"], env: (tmp, home) => agyEnv(tmp, home, { CODEX_HOME: home }), writable: (home) => [home],
+    check: (o, home) => status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in/i.test(r.stdout)) },
 };
+
+/** What a sign-in (or its status check) may touch: its own home, the network on 443, no keyring,
+ *  and a listening port only for a sign-in whose browser calls back to localhost. */
+export function signInPolicy(o: { work: string; tmp: string; home: string; bin: string; writable: string[]; bind: boolean }): Policy {
+  return {
+    version: 1,
+    read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom", "/dev/random",
+      dirname(o.bin), o.home, ...resolverFiles(), o.work].filter((p) => p === o.work || existsSync(p)),
+    write: [...o.writable, o.tmp, "/dev/null"],
+    exec: ["/usr/bin", "/bin", "/usr/lib", dirname(o.bin), ...toolchainDirs()],
+    tcp_connect: [443],
+    ...(o.bind ? { tcp_bind: [0] } : {}),
+    unix_connect: ["/run/systemd/resolve/io.systemd.Resolve"].filter(existsSync),
+    cwd: o.work,
+  };
+}
 
 type Session = { tool: Tool; child: ChildProcess; sent: Set<string> };
 const URL_RE = /https:\/\/[^\s"'<>]+/;
@@ -30,16 +82,22 @@ export class Connector {
   list() {
     return (Object.keys(TOOLS) as Tool[]).map((tool) => {
       let installed = true;
-      try { agyBinary(); } catch { installed = false; }
-      return { tool, name: TOOLS[tool].name, installed, connected: installed && this.connected(tool) };
+      try { TOOLS[tool].binary(); } catch { installed = false; }
+      return { tool, name: TOOLS[tool].name, flow: TOOLS[tool].flow, installed, connected: installed && this.connected(tool) };
     });
+  }
+
+  /** Is the tool's login still good? Its own status command, run now. */
+  check(tool: Tool): Promise<boolean> {
+    return this.connected(tool) ? TOOLS[tool].check(this.o, toolHome(this.o.stateDir, tool)) : Promise.resolve(false);
   }
 
   /** Runs the sign-in; streams its output and link to `notify`; resolves when it ends. */
   start(tool: Tool, notify: (n: unknown) => void): Promise<{ id: string; connected: boolean; note: string }> {
     const id = `C-${this.next++}`;
+    const spec = TOOLS[tool];
     let bin: string;
-    try { bin = agyBinary(); } catch { return Promise.resolve({ id, connected: false, note: `${TOOLS[tool].name} is not installed` }); }
+    try { bin = spec.binary(); } catch { return Promise.resolve({ id, connected: false, note: `${spec.name} is not installed` }); }
     const home = toolHome(this.o.stateDir, tool);
     mkdirSync(home, { recursive: true, mode: 0o700 });
     const tmp = mkdtempSync(join(tmpdir(), "governcode-connect-"));
@@ -47,25 +105,25 @@ export class Connector {
     mkdirSync(work);
     mkdirSync(this.o.policyDir, { recursive: true, mode: 0o700 });
     const policyFile = join(this.o.policyDir, `connect-${process.pid}-${Date.now()}.json`);
-    // Signing in needs the tool's whole home writable (it creates its folders and login there);
-    // no agent runs, only the tool's own no-cost usage command, which triggers its sign-in.
-    const base = agyPolicy({ work, tmp, home, bin, writePaths: [join(home, ".gemini")], node: process.execPath, socket: "/nonexistent" });
-    mkdirSync(join(home, ".gemini"), { recursive: true, mode: 0o700 });
-    writeFileSync(policyFile, JSON.stringify({ ...base, unix_connect: base.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
-    const env = agyEnv(tmp, home);
+    // Signing in needs the tool's home writable (it creates its folders and login there); no agent
+    // runs, only the tool's own sign-in command.
+    for (const w of spec.writable(home)) mkdirSync(w, { recursive: true, mode: 0o700 });
+    writeFileSync(policyFile, JSON.stringify(signInPolicy({ work, tmp, home, bin, writable: spec.writable(home), bind: spec.bind === true })), { mode: 0o600 });
+    const env = spec.env(tmp, home);
     const release = hold(this.o.stateDir, tool);
     const sent = new Set<string>();           // what the user pasted is echoed by the terminal: not shown back
     // The tool signs in only with a terminal ("no controlling terminal; cannot complete interactive
     // login"), so the sandboxed command runs under a pseudo-terminal from `script` (util-linux).
     const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
     // Echo off first, so the code the user pastes is not printed back.
-    const inner = "stty -echo 2>/dev/null; exec " + [this.o.supervisor, "run", "--policy", policyFile, "--", bin, "-p", "/quota", "--output-format", "json"].map(q).join(" ");
+    const inner = "stty -echo 2>/dev/null; exec " + [this.o.supervisor, "run", "--policy", policyFile, "--", bin, ...spec.signIn].map(q).join(" ");
     const child = spawn(process.env.GOVERNCODE_SCRIPT_BIN ?? "script", ["-qfec", inner, "/dev/null"],
       { cwd: work, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     child.stdin!.on("error", () => {});
     this.sessions.set(id, { tool, child, sent });
     let shownUrl = false;
-    const clean = (x: string) => x.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+    // Terminal codes out: colours, and hyperlinks (OSC 8), whose link is also printed as text.
+    const clean = (x: string) => x.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
     // Output is shown line by line (a chunk can end mid-line), with anything the user pasted cut out.
     let partial = "";
     const show = (chunk: string) => {
@@ -96,12 +154,12 @@ export class Connector {
         // trusted for this).
         let connected = false;
         try {
-          connected = code === 0 && (await quotaIn(this.o, home)).m !== null;
+          connected = code === 0 && await spec.check(this.o, home);
           if (connected) safeWrite(join(home, CONNECTED_MARK), "Connected for GovernCode. GovernCode never reads the login the tool keeps here.\n");
           else rmSync(join(home, CONNECTED_MARK), { force: true });
         } catch { connected = false; }
         release();
-        ok({ id, connected, note: connected ? `${TOOLS[tool].name} is connected for GovernCode` : `${TOOLS[tool].name} did not finish signing in` });
+        ok({ id, connected, note: connected ? `${spec.name} is connected for GovernCode` : `${spec.name} did not finish signing in` });
       });
       child.on("error", (e: NodeJS.ErrnoException) => { clearTimeout(timer); this.sessions.delete(id); release();
         ok({ id, connected: false, note: e.code === "ENOENT" ? "the sign-in needs the script command (util-linux), which was not found" : `${TOOLS[tool].name} did not start` }); });

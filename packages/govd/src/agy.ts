@@ -150,9 +150,9 @@ export function agyPolicy(o: { work: string; tmp: string; home: string; bin: str
 // Only what a program needs to run; never another provider's settings or keys (Codex's review:
 // the shared allowlist passed ANTHROPIC_* on).
 const AGY_ENV_KEEP = /^(PATH|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|HTTPS?_PROXY|NO_PROXY)$/;
-export function agyEnv(tmp: string, home: string): Record<string, string> {
+export function agyEnv(tmp: string, home: string, extra: Record<string, string> = {}): Record<string, string> {
   // HOME is the private home; no DBUS address, so no keyring (the policy blocks the socket too).
-  const env: Record<string, string> = { TMPDIR: tmp, HOME: home, npm_config_cache: join(tmp, "npm-cache"), npm_config_update_notifier: "false" };
+  const env: Record<string, string> = { TMPDIR: tmp, HOME: home, npm_config_cache: join(tmp, "npm-cache"), npm_config_update_notifier: "false", ...extra };
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && AGY_ENV_KEEP.test(k)) env[k] = v;
   return env;
 }
@@ -224,7 +224,7 @@ export function agyUsage(o: { supervisor: string; policyDir: string; stateDir: s
   };
 }
 
-function run(supervisor: string, policyFile: string, bin: string, args: string[], env: Record<string, string>, cwd: string, ms: number) {
+export function run(supervisor: string, policyFile: string, bin: string, args: string[], env: Record<string, string>, cwd: string, ms: number) {
   return new Promise<{ stdout: string; stderr: string; code: number | null }>((ok) => {
     const child = spawn(supervisor, ["run", "--policy", policyFile, "--", bin, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdout = "", stderr = "";

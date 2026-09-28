@@ -8,6 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonical, resolverFiles, toolchainDirs, toolEnv, withMcpRead, CONTROLLER_CONTEXT, RUNNER_CONTEXT, type GateRequest, type McpServer, type Policy, type TurnHooks } from "./claude.ts";
 import type { Measurement, UsageSource } from "./limits.ts";
+import { isConnected } from "./agy.ts";
 
 /** The real Codex binary: $GOVERNCODE_CODEX_BIN, else `codex` on PATH, looking through a mise shim. */
 export function codexBinary(): string {
@@ -22,21 +23,23 @@ export function codexBinary(): string {
   throw new Error("codex not found (set GOVERNCODE_CODEX_BIN to the codex binary)");
 }
 
-/**
- * Codex keeps databases and logs in its home. A private CODEX_HOME per GovernCode, rebuilt
- * before each run, holds them; the user's config and login are linked in and read-only in
- * the policy, so a run cannot rewrite what the next run trusts.
- */
+// What may stay in GovernCode's Codex home between runs: the login Connect made and Codex's own
+// state. Everything else (config.toml, rules/ that can pre-approve commands, prompts, skills,
+// hooks, AGENTS.md...) is removed before every run, so nothing a run writes there reaches the next.
+const CODEX_KEEP = /^(auth\.json|installation_id|version\.json|models_cache\.json|history\.jsonl|sessions|log|logs|cache|tmp|shell_snapshots|[a-z_]+_\d+\.sqlite(-wal|-shm)?)$/;
+
+/** GovernCode's Codex home (Connect signed Codex in there), cleaned before each run; the user's
+ *  AGENTS.md is linked in, read-only, only when they chose to bring it. The user's own ~/.codex
+ *  (their config.toml, login and rules) is never used. */
 export function prepareCodexHome(stateDir: string, personal = false): string {
   const user = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-  const home = join(stateDir, "codex-home");
+  const home = join(stateDir, "tools", "codex", "home");
   mkdirSync(home, { recursive: true, mode: 0o700 });
   for (const name of readdirSync(home)) {
     const p = join(home, name);
-    if (lstatSync(p).isSymbolicLink() || ["config.toml", "auth.json", "AGENTS.md"].includes(name)) rmSync(p, { force: true });
+    if (lstatSync(p).isSymbolicLink() || !CODEX_KEEP.test(name)) rmSync(p, { recursive: true, force: true });
   }
-  // AGENTS.md is the user's own instructions: a Controller brings it only when they chose to.
-  for (const name of ["config.toml", "auth.json", ...(personal ? ["AGENTS.md"] : [])]) if (existsSync(join(user, name))) symlinkSync(join(user, name), join(home, name));
+  if (personal && existsSync(join(user, "AGENTS.md"))) symlinkSync(join(user, "AGENTS.md"), join(home, "AGENTS.md"));
   return home;
 }
 
@@ -47,7 +50,7 @@ export function codexPolicy(worktree: string, sessionTmp: string, codexHome: str
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
-      "/dev/random", dirname(bin), join(user, "config.toml"), join(user, "auth.json"), ...(personal ? [join(user, "AGENTS.md")] : []), ...resolverFiles(),
+      "/dev/random", dirname(bin), codexHome, ...(personal ? [join(user, "AGENTS.md")] : []), ...resolverFiles(),
       // A Spec's Runner reads its whole worktree (and the repo's git data) but writes only its scope.
       ...(readOnly || writePaths ? [worktree] : []), ...(gitDir ? [gitDir] : [])].filter((p) => p === worktree || exists(p)),
     write: [...(readOnly ? [] : writePaths ?? [worktree]), sessionTmp, codexHome, "/dev/null"],
@@ -115,10 +118,14 @@ async function session(o: { supervisor: string; policyDir: string; stateDir: str
 
 /** Codex's usage windows, for the Limit gate. Null when they cannot be read (= held). */
 export function codexUsage(o: { supervisor: string; policyDir: string; stateDir: string; scratch: string }): UsageSource {
+  let why: string | null = null;
   return {
     provider: "codex",
+    why: () => why,
     async read(): Promise<Measurement | null> {
       let s: Awaited<ReturnType<typeof session>> | undefined;
+      if (!isConnected(o.stateDir, "codex")) { why = "Codex is not connected (gov connect codex)"; return null; }
+      why = "Codex did not report its usage";
       try {
         mkdirSync(o.scratch, { recursive: true, mode: 0o700 });
         s = await session({ ...o, worktree: o.scratch, readOnly: true });
@@ -129,6 +136,7 @@ export function codexUsage(o: { supervisor: string; policyDir: string; stateDir:
           ? [{ window: w.windowDurationMins ? (w.windowDurationMins >= 10_000 ? "weekly" : `${Math.round(w.windowDurationMins / 60)}-hour`) : name,
                usedPercent: w.usedPercent, resetsAt: w.resetsAt ? new Date(w.resetsAt * 1000).toISOString() : null }] : [];
         const readings = [...win(snap.primary, "primary"), ...win(snap.secondary, "secondary")];
+        if (readings.length) why = null;
         return readings.length ? { provider: "codex", measuredAt: Date.now(), readings } : null;
       } catch {
         return null;

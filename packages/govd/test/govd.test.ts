@@ -2,13 +2,13 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, readFileSync, existsSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
 import { Daemon } from "../src/daemon.ts";
 import { canonical } from "../src/claude.ts";
-import { scratch } from "./scratch.ts";
+import { scratch, markConnected } from "./scratch.ts";
 
 const root = scratch("govd-test-");
 const bin = join(root, "bin");
@@ -91,6 +91,7 @@ function client(sock: string) {
 function daemon(tag: string) {
   const d = new Daemon({ socketPath: join(root, tag, "govd.sock"), ledgerPath: join(root, tag, "trace.sqlite"),
     policyDir: join(root, tag, "policies"), homeDir: join(root, tag, "home"), supervisor, version: "test" });
+  markConnected(d);
   opened.push(() => d.close());
   return d;
 }
@@ -133,8 +134,13 @@ test("a turn streams, raises a Gate on the user's connection, and runs exactly w
   assert.equal(policy.cwd, worktree);
   assert.ok(policy.write.includes(worktree));
   assert.deepEqual(policy.tcp_connect, [443]);
-  assert.ok(!policy.write.some((p: string) => p.startsWith(join(root, "turn"))), "govd's own state is never writable");
-  assert.ok(![...policy.read, ...policy.exec].some((p: string) => p.startsWith(join(root, "turn"))), "nor readable");
+  // Nothing of govd's own state is writable except the tool's own GovernCode home (its login and
+  // state; rebuilt before every turn): never the Trace, settings, rules or another tool's home.
+  const claudeHome = join(root, "turn", "tools", "claude", "home");
+  assert.ok(!policy.write.some((p: string) => p.startsWith(join(root, "turn")) && p !== claudeHome), "govd's own state is never writable");
+  assert.ok(policy.write.includes(claudeHome));
+  assert.ok(!policy.read.some((p: string) => p.endsWith("/.claude.json") || p === join(homedir(), ".claude")), "the user's own Claude Code setup is out of reach");
+  assert.ok(![...policy.read, ...policy.exec].some((p: string) => p.startsWith(join(root, "turn")) && p !== claudeHome), "nor readable");
   const kinds = d.ledger.events("tidepool", 20).map((e) => e.kind);
   assert.deepEqual(kinds.filter((k) => k.startsWith("turn.") || k.startsWith("project.")),
     ["project.created", "turn.started", "turn.text", "turn.completed"]);

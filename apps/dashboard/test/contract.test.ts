@@ -14,6 +14,7 @@ import { checkAsk, checkCall, checkConnect, connect, socketPath } from "../src/m
 import { GovdLink } from "../src/main/link.ts";
 import { CALLABLE, Channel } from "../src/shared/contract.ts";
 import { Daemon } from "../../../packages/govd/src/daemon.ts";
+import { markConnected } from "../../../packages/govd/test/scratch.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "dashboard-test-"));
 after(() => rmSync(dir, { recursive: true, force: true }));   // leave nothing in /tmp
@@ -73,7 +74,9 @@ test("an ask needs a well-formed id and prompt; Home is a null project", () => {
 test("a Connect needs a well-formed stream id and a tool GovernCode can connect", () => {
   assert.deepEqual(checkConnect("connect-agy-1", "agy"), { streamId: "connect-agy-1", params: { tool: "agy" } });
   assert.throws(() => checkConnect("bad id!", "agy"), /bad stream id/);
-  assert.throws(() => checkConnect("s1", "claude"), /Invalid/);
+  assert.throws(() => checkConnect("s1", "grok"), /Invalid/);
+  assert.deepEqual(checkConnect("s2", "claude").params, { tool: "claude" });
+  assert.deepEqual(checkConnect("s3", "codex").params, { tool: "codex" });
   // A sign-in code is one printable line; the renderer cannot send control characters to the tool.
   assert.throws(() => checkCall("connect.input", { id: "C-1", text: "abc\nrm -rf" }));
   assert.doesNotThrow(() => checkCall("connect.input", { id: "C-1", text: "4/0AbC-dEf_123" }));
@@ -126,6 +129,7 @@ test("the link says hello, streams an ask's events on its own connection, and no
 test("against the real govd: hello reports the sandbox, and lists come back", async () => {
   const d = new Daemon({ socketPath: join(dir, "govd", "govd.sock"), ledgerPath: join(dir, "state", "trace.sqlite"),
     policyDir: join(dir, "state", "policies"), homeDir: join(dir, "state", "home"), supervisor: "/nonexistent", version: "test" });
+  markConnected(d);
   await d.listen();
   const link = new GovdLink(join(dir, "govd", "govd.sock"));
   try {
@@ -198,6 +202,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", ()
   process.env.PATH = `${bin}:${oldPath}`;
   const d = new Daemon({ socketPath: join(dir, "cp-run", "govd.sock"), ledgerPath: join(dir, "cp-state", "trace.sqlite"),
     policyDir: join(dir, "cp-state", "pol"), homeDir: join(dir, "cp-state", "home"), supervisor, version: "t" });
+  markConnected(d);
   d.selftest();
   await d.listen();
   const link = new GovdLink(join(dir, "cp-run", "govd.sock"));

@@ -8,7 +8,7 @@ import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "../src/daemon.ts";
-import { scratch } from "./scratch.ts";
+import { scratch, markConnected } from "./scratch.ts";
 
 const root = scratch("gc-turns-");
 const bin = join(root, "bin");
@@ -41,6 +41,7 @@ function client(sock: string) {
 test("a Controller turn's changes are checkpointed and can be undone exactly once", async () => {
   const d = new Daemon({ socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
     policyDir: join(root, "state/pol"), homeDir: join(root, "state/home"), supervisor, version: "t" });
+  markConnected(d);
   d.selftest();
   await d.listen();
   const c = client(join(root, "run/govd.sock"));
@@ -86,6 +87,7 @@ test("a Controller turn's changes are checkpointed and can be undone exactly onc
 test("undo refuses when the user changed a file after the turn", async () => {
   const d = new Daemon({ socketPath: join(root, "run2/govd.sock"), ledgerPath: join(root, "state2/trace.sqlite"),
     policyDir: join(root, "state2/pol"), homeDir: join(root, "state2/home"), supervisor, version: "t" });
+  markConnected(d);
   d.selftest();
   await d.listen();
   const c = client(join(root, "run2/govd.sock"));

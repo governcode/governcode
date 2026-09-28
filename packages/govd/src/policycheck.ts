@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudePolicy, type Policy } from "./claude.ts";
+import { claudePolicy, userClaudeDir, type Policy } from "./claude.ts";
 
 type Probe = { name: string; code: string; expect: "ok" | "refused"; when?: () => boolean };
 
@@ -19,14 +19,16 @@ except OSError:
     print("refused")`;
 
 export function policyProbes(project: string, daemonSocket: string): Probe[] {
-  const home = homedir(), cfg = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+  // The user's own Claude Code setup: a turn uses GovernCode's Claude home, so none of this is
+  // reachable, not even for reading (personal instructions off).
+  const home = homedir(), cfg = userClaudeDir();
   return [
     { name: "write inside the project", expect: "ok", code: py(`open(${JSON.stringify(join(project, "probe.txt"))}, "w").write("x")`) },
-    { name: "write ~/.claude.json (the tool's own allow-list)", expect: "refused", when: () => existsSync(join(home, ".claude.json")),
-      code: py(`open(${JSON.stringify(join(home, ".claude.json"))}, "a").close()`) },
-    { name: "write the tool's settings.json", expect: "refused", when: () => existsSync(join(cfg, "settings.json")),
-      code: py(`open(${JSON.stringify(join(cfg, "settings.json"))}, "a").close()`) },
-    { name: "list other projects' transcripts", expect: "refused", when: () => existsSync(join(cfg, "projects")),
+    { name: "read the user's ~/.claude.json", expect: "refused", when: () => existsSync(join(home, ".claude.json")),
+      code: py(`open(${JSON.stringify(join(home, ".claude.json"))}).read(1)`) },
+    { name: "read the user's own Claude Code settings.json", expect: "refused", when: () => existsSync(join(cfg, "settings.json")),
+      code: py(`open(${JSON.stringify(join(cfg, "settings.json"))}).read(1)`) },
+    { name: "list the user's own Claude Code transcripts", expect: "refused", when: () => existsSync(join(cfg, "projects")),
       code: py(`os.listdir(${JSON.stringify(join(cfg, "projects"))})`) },
     { name: "write in the home folder outside the project", expect: "refused",
       code: py(`open(${JSON.stringify(join(home, ".governcode-policy-probe"))}, "w").write("x")`) },
@@ -42,7 +44,9 @@ export function checkClaudePolicy(supervisor: string, policyDir: string, daemonS
   const project = join(scratch, "project"), sessionTmp = join(scratch, "tmp");
   mkdirSync(project); mkdirSync(sessionTmp);
   try {
-    try { policy = claudePolicy(project, sessionTmp); } catch { return []; }   // no Claude Code installed: nothing to check
+    const claudeHome = join(scratch, "claude-home");
+    mkdirSync(claudeHome);
+    try { policy = claudePolicy(project, sessionTmp, false, undefined, false, claudeHome); } catch { return []; }   // no Claude Code installed: nothing to check
     const probeFile = join(policyDir, `policycheck-${process.pid}.json`);
     mkdirSync(policyDir, { recursive: true, mode: 0o700 });
     writeFileSync(probeFile, JSON.stringify(policy), { mode: 0o600 });

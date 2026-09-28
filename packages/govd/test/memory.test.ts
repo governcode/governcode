@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { Ledger } from "../src/ledger.ts";
 import { Daemon } from "../src/daemon.ts";
 import { contextState, mayShare, notesHistory, notesOf, projectRecord, setNotes, NOTES_MAX } from "../src/memory.ts";
-import { scratch } from "./scratch.ts";
+import { scratch, markConnected } from "./scratch.ts";
 
 test("notes: the latest version, every version kept, and a size limit", () => {
   const L = new Ledger(":memory:");
@@ -72,6 +72,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   process.env.PATH = `${bin}:${PATH}`;
   const d = new Daemon({ socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
     policyDir: join(root, "state/pol"), homeDir: join(root, "state/home"), supervisor, version: "t" });
+  markConnected(d);
   try {
     d.selftest();
     await d.listen();

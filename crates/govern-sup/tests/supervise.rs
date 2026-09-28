@@ -65,3 +65,20 @@ fn nothing_the_tool_started_survives_it() {
     assert!(!marker.exists(), "a process outlived the run");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn listening_needs_a_tcp_bind_rule_and_port_zero_allows_one_the_kernel_picks() {
+    let d = tmp("bind");
+    let p = policy(&d);
+    let listen = r#"exec /usr/bin/python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(); print("listening")'"#;
+    // The default policy: no bind rule, so the tool cannot listen.
+    let out = sup(&p, listen).output().unwrap();
+    assert!(!out.status.success(), "bound without a rule: {}", String::from_utf8_lossy(&out.stdout));
+    // A sign-in's policy: tcp_bind [0], a port the kernel picks.
+    let json = std::fs::read_to_string(&p).unwrap().replace(r#""tcp_connect":[]"#, r#""tcp_connect":[],"tcp_bind":[0]"#);
+    std::fs::write(&p, json).unwrap();
+    let out = sup(&p, listen).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "listening");
+    let _ = std::fs::remove_dir_all(&d);
+}

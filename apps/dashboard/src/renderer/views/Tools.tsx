@@ -8,9 +8,9 @@ import type { AskEvent } from "../../shared/contract.ts";
 import { Pill } from "../ui.tsx";
 
 type Reading = { window: string; usedPercent: number };
-type Tool = { tool: string; name: string; installed: boolean; connected: boolean; problem: string | null;
+type Tool = { tool: string; name: string; flow: "paste" | "device"; installed: boolean; connected: boolean; problem: string | null;
   usage: { readings: Reading[] } | null };
-type SignIn = { streamId: string; id: string | null; url: string | null; lines: string[]; code: string; sent: boolean };
+type SignIn = { streamId: string; flow: "paste" | "device"; name: string; id: string | null; url: string | null; lines: string[]; code: string; sent: boolean };
 
 export function Tools() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -39,7 +39,7 @@ export function Tools() {
     const streamId = `connect-${tool.tool}-${Date.now()}`;
     stream.current = streamId;
     setMsg(null);
-    setSignIn({ streamId, id: null, url: null, lines: [], code: "", sent: false });
+    setSignIn({ streamId, flow: tool.flow, name: tool.name, id: null, url: null, lines: [], code: "", sent: false });
     const r = await api().connect(streamId, tool.tool);
     stream.current = null;
     setSignIn(null);
@@ -78,8 +78,6 @@ export function Tools() {
             </div>
           );
         })}
-        <div className="tr"><b>Claude Code · Codex</b><span><Pill tone="info">your own login</Pill></span>
-          <span className="small dim">They use your own sign-in for now and move to Connect in a later release.</span><span /></div>
       </div>
       {checking && <p className="dim small">Checking each connected tool…</p>}
 
@@ -87,8 +85,16 @@ export function Tools() {
         <div className="checkpoint" role="dialog" aria-label="Sign in">
           <div className="row"><b>Signing in</b><span className="spacer" /><button className="btn" onClick={cancel} disabled={!signIn.id}>Cancel</button></div>
           {!signIn.url && <p className="dim small">Starting the tool's sign-in inside the sandbox…</p>}
-          {signIn.url && !signIn.sent && <>
-            <p className="small">1. Open the sign-in page and sign in with the account this tool should use. The tool waits about a minute; if it runs out, choose Connect again.</p>
+          {signIn.url && signIn.flow === "device" && <>
+            <p className="small">1. Open the sign-in page and sign in with the account {signIn.name} should use.</p>
+            <div className="row">
+              <button className="btn btn-accent" onClick={() => void api().openSignIn(signIn.url!)}>Open sign-in page</button>
+              <button className="btn" onClick={() => void navigator.clipboard.writeText(signIn.url!)}>Copy link</button>
+            </div>
+            <p className="small">2. Enter the one-time code shown below on that page. This screen finishes by itself when you are done.</p>
+          </>}
+          {signIn.url && signIn.flow === "paste" && !signIn.sent && <>
+            <p className="small">1. Open the sign-in page and sign in with the account {signIn.name} should use. Go straight through: some tools wait only about a minute; if it runs out, choose Connect again.</p>
             <div className="row">
               <button className="btn btn-accent" onClick={() => void api().openSignIn(signIn.url!)}>Open sign-in page</button>
               <button className="btn" onClick={() => void navigator.clipboard.writeText(signIn.url!)}>Copy link</button>

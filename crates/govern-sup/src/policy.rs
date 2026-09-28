@@ -26,6 +26,10 @@ pub struct Policy {
     pub exec: Vec<PathBuf>,
     #[serde(default = "default_ports")]
     pub tcp_connect: Vec<u16>,
+    /// Local TCP ports the tool may listen on (0: a port the kernel picks). Empty by default:
+    /// no AI tool ever listens. Only a sign-in whose browser calls back to localhost gets [0].
+    #[serde(default)]
+    pub tcp_bind: Vec<u16>,
     /// Pathname Unix sockets the tool may connect to (e.g. the system DNS resolver's);
     /// every other local socket stays out of reach. Enforced per path from Landlock ABI 9.
     #[serde(default)]
@@ -59,6 +63,7 @@ pub struct Rule {
 pub struct Resolved {
     pub paths: Vec<Rule>,
     pub tcp_connect: Vec<u16>,
+    pub tcp_bind: Vec<u16>,
     pub unix_connect: Vec<Rule>,
     pub cwd: PathBuf,
     /// Non-fatal notes (skipped missing read/exec paths) for stderr.
@@ -187,6 +192,7 @@ fn resolve(p: Policy) -> Result<Resolved, String> {
     let mut out = Resolved {
         paths: Vec::new(),
         tcp_connect: p.tcp_connect,
+        tcp_bind: p.tcp_bind,
         unix_connect: Vec::new(),
         cwd: PathBuf::new(),
         warnings: Vec::new(),
@@ -194,7 +200,7 @@ fn resolve(p: Policy) -> Result<Resolved, String> {
     if let Some(port) = out.tcp_connect.iter().find(|&&port| port == 0) {
         return Err(format!("tcp_connect: port {port} is not a valid destination port"));
     }
-    let entries = p.read.len() + p.write.len() + p.exec.len() + p.unix_connect.len() + out.tcp_connect.len();
+    let entries = p.read.len() + p.write.len() + p.exec.len() + p.unix_connect.len() + out.tcp_connect.len() + out.tcp_bind.len();
     if entries > MAX_ENTRIES {
         return Err(format!("policy lists {entries} entries (at most {MAX_ENTRIES})"));
     }
@@ -301,8 +307,16 @@ mod tests {
         let t = TempDir::new("minimal");
         let r = parse(&policy(&t, "")).unwrap();
         assert_eq!(r.tcp_connect, vec![443]);
+        assert!(r.tcp_bind.is_empty(), "no AI tool listens unless the policy says so");
         assert_eq!(r.paths.len(), 1);
         assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_sign_in_may_list_a_bind_port() {
+        let t = TempDir::new("bind");
+        let r = parse(&policy(&t, r#","tcp_bind":[0]"#)).unwrap();
+        assert_eq!(r.tcp_bind, vec![0]);
     }
 
     #[test]
