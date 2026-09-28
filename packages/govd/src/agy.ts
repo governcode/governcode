@@ -42,17 +42,9 @@ export function hold(stateDir: string, tool: string): () => void {
   return () => { if (done) return; done = true; const n = (inUse.get(k) ?? 1) - 1; if (n > 0) inUse.set(k, n); else inUse.delete(k); };
 }
 
-/** A tool's private home in GovernCode's state, where Connect signs it in. */
-export function toolHome(stateDir: string, tool: string): string {
-  return join(stateDir, "tools", tool, "home");
-}
-
-/** Connect leaves this mark only after a sign-in that ended with the tool reporting its usage.
- *  It sits at the home's top level, which no Runner's sandbox can write. */
-export const CONNECTED_MARK = ".governcode-connected";
-export function isConnected(stateDir: string, tool: string): boolean {
-  return existsSync(join(toolHome(stateDir, tool), CONNECTED_MARK));
-}
+// Where a tool is signed in, and whether it is connected: see homes.ts.
+export { isConnected, toolHome } from "./homes.ts";
+import { isConnected, toolHome } from "./homes.ts";
 
 // Antigravity's customization roots; a project copy holding one is refused (see above).
 const CUSTOM_ROOTS = [".agents", ".agent", "_agents", "_agent"];

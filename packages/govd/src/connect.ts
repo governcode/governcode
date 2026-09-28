@@ -7,7 +7,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { agyBinary, agyEnv, agyPolicy, hold, inUse, isConnected, quotaIn, run, safeWrite, toolHome, useKey, CONNECTED_MARK } from "./agy.ts";
+import { agyBinary, agyEnv, hold, inUse, isConnected, quotaIn, run, toolHome, useKey } from "./agy.ts";
+import { setConnected } from "./homes.ts";
 import { resolverFiles, toolchainDirs, which, type Policy } from "./claude.ts";
 import { codexBinary } from "./codex.ts";
 
@@ -45,13 +46,15 @@ export const TOOLS: Record<Tool, Spec> = {
     signIn: ["auth", "login", "--claudeai"], bind: [0],   // its sign-in also listens on localhost for the browser's callback
     env: (tmp, home) => agyEnv(tmp, home, { CLAUDE_CONFIG_DIR: home }), writable: (home) => [home],
     check: (o, home) => status(o, "claude", home, ["auth", "status", "--json"], (r) => {
-      try { return r.code === 0 && JSON.parse(r.stdout).loggedIn === true; } catch { return false; } }) },
+      // A subscription sign-in only: never an API key (paid API use) from anywhere.
+      try { const j = JSON.parse(r.stdout); return r.code === 0 && j.loggedIn === true && j.authMethod === "claude.ai"; } catch { return false; } }) },
   // The browser sign-in (its callback on localhost:1455), not --device-auth: device-code sign-in
   // is off by default in ChatGPT's security settings (found in the first real Connect).
   codex: { name: "Codex", revoke: "https://chatgpt.com/#settings/Security", flow: "browser", binary: codexBinary,
     signIn: ["login"], bind: [1455], env: (tmp, home) => agyEnv(tmp, home, { CODEX_HOME: home }), writable: (home) => [home],
     // Codex prints its status on stderr ("Logged in using ChatGPT"), found in the first real Connect.
-    check: (o, home) => status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in/i.test(r.stdout + r.stderr) && !/not logged in/i.test(r.stdout + r.stderr)) },
+    // A ChatGPT sign-in only, never an API key.
+    check: (o, home) => status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in using chatgpt/i.test(r.stdout + r.stderr)) },
 };
 
 /** What a sign-in (or its status check) may touch: its own home, the network on 443, no keyring,
@@ -113,7 +116,7 @@ export class Connector {
    *  own status command decides; then no new sign-in is needed. */
   private async alreadySignedIn(tool: Tool, home: string): Promise<boolean> {
     if (!existsSync(home) || !(await TOOLS[tool].check(this.o, home).catch(() => false))) return false;
-    safeWrite(join(home, CONNECTED_MARK), "Connected for GovernCode. GovernCode never reads the login the tool keeps here.\n");
+    setConnected(this.o.stateDir, tool, true);
     return true;
   }
 
@@ -174,8 +177,7 @@ export class Connector {
         let connected = false;
         try {
           connected = code === 0 && await spec.check(this.o, home);
-          if (connected) safeWrite(join(home, CONNECTED_MARK), "Connected for GovernCode. GovernCode never reads the login the tool keeps here.\n");
-          else rmSync(join(home, CONNECTED_MARK), { force: true });
+          setConnected(this.o.stateDir, tool, connected);
         } catch { connected = false; }
         release();
         ok({ id, connected, note: connected ? `${spec.name} is connected for GovernCode` : `${spec.name} did not finish signing in` });
@@ -205,6 +207,7 @@ export class Connector {
     if (inUse.get(useKey(this.o.stateDir, tool))) throw new Error(`${TOOLS[tool].name} is in use (a sign-in or a Runner); try again when it has finished`);
     const home = toolHome(this.o.stateDir, tool);
     const removed = existsSync(home);
+    setConnected(this.o.stateDir, tool, false);
     rmSync(home, { recursive: true, force: true });
     return { removed, revoke: TOOLS[tool].revoke };
   }

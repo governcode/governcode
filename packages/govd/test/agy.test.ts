@@ -73,7 +73,7 @@ function setup(answer: "allow" | "deny", calls: (work: string) => object[], extr
   const state = mkdtempSync(join(root, "state-"));
   const home = toolHome(state, "agy");
   mkdirSync(join(home, ".gemini", "config"), { recursive: true });
-  writeFileSync(join(home, ".governcode-connected"), "");                     // connected
+  writeFileSync(join(home, "..", "connected"), "");                          // connected
   writeFileSync(join(home, ".gemini", "config", "plugins"), "left over");     // must be cleared
   const ledger = new Ledger(":memory:");
   const limits = new LimitGate();
@@ -144,7 +144,7 @@ test("agy Runner: a Runner that creates Antigravity customizations fails its Spe
 
 test("agy Runner: not connected is a plain failure, not a crash", async () => {
   const t = setup("allow", () => []);
-  execFileSync("rm", [join(t.home, ".governcode-connected")]);
+  execFileSync("rm", [join(t.home, "..", "connected")]);
   const r = await t.call("controller.delegate", SPEC);
   assert.equal(r.result.status, "held");   // the usage source cannot read a home that is not connected
   assert.match(r.result.reason, /not connected \(gov connect agy\)/);

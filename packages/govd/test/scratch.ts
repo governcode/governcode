@@ -19,6 +19,6 @@ export function markConnected(d: unknown, tools: string[] = ["claude", "codex"])
   const state = dirname((d as { opts: { ledgerPath: string } }).opts.ledgerPath);
   for (const t of tools) {
     mkdirSync(join(state, "tools", t, "home"), { recursive: true });
-    writeFileSync(join(state, "tools", t, "home", ".governcode-connected"), "");
+    writeFileSync(join(state, "tools", t, "connected"), "");
   }
 }

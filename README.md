@@ -55,8 +55,8 @@ GovernCode with it in about fifteen minutes.
 
 ## Try it (developers, Linux)
 
-You need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, and
-Claude Code installed and logged in (Codex too, to see delegation). Every AI coding tool
+You need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, `script`
+(util-linux) and Claude Code installed (Codex too, to see delegation). Every AI coding tool
 GovernCode starts runs in the sandbox, always; there is no switch to turn it off. (A local model
 is different: GovernCode sends it text through Ollama's own server and gives it no tools.)
 
@@ -67,8 +67,28 @@ npm ci && cargo build --release
 node packages/gov/src/main.ts daemon start  # or: daemon install (systemd --user)
 
 alias gov="node $PWD/packages/gov/src/main.ts"
+gov connect claude # sign Claude Code in for GovernCode (and gov connect codex, to see delegation)
 gov demo           # the quickest look: a sample project, one Controller turn, one Runner job, review and undo
 ```
+
+### Connect your tools
+
+Each AI tool signs in for GovernCode once, with its own sign-in, in a home that belongs to
+GovernCode: `gov connect claude`, `gov connect codex`, `gov connect agy`, or Settings › Tools in
+the Dashboard. Claude Code and Antigravity show a link, and you paste back the code the page
+gives you; Codex's page finishes the sign-in by itself (its browser hands it back on this
+computer). For those two sign-ins the sandbox lets the tool listen on one local port for that
+hand-back; nothing else an AI tool runs may listen at all.
+
+- Your own setup for these tools (their folders, logins, settings, keyring) is never used, and
+  GovernCode never reads or parses the logins it keeps.
+- Only a subscription sign-in counts as connected, never an API key: GovernCode does not switch
+  anything onto paid API use.
+- Claude Code and Codex start every run from a fresh home of their own, with only the login
+  linked in, and that home is deleted afterwards: nothing a run writes (memory, caches,
+  settings, rules, skills) reaches another run, in this project or any other.
+- `gov disconnect TOOL` deletes GovernCode's copy of a login. Revoking the tool's access in your
+  account ends every sign-in of that tool, your own included.
 
 Or on your own project:
 
@@ -109,8 +129,10 @@ Dashboard), GovernCode shows what it would share and asks once: share, and the n
 picks up where the last one left off; or start fresh, and it sees only its own turns. What
 carries over is what was said, decided and done, not a tool's private working state. The first time a Controller works, GovernCode asks
 whether it should bring **your own instructions** (for Claude Code: your CLAUDE.md, skills,
-agents and hooks; for Codex: your AGENTS.md). Off by default: it starts clean. Change it any time
-with `gov personal claude on|off` or in Settings.
+agents, commands, plugins and hooks, plus your settings without their `env` section or credential
+helpers; for Codex: your AGENTS.md). They are linked into the run's home read-only. Off by
+default: it starts clean, with no settings file at all. Change it any time with
+`gov personal claude on|off` or in Settings.
 
 Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot
 write any of your files (only its own scratch folders). It can propose a new project (name, folder, git); you get Create or Cancel,
@@ -118,7 +140,8 @@ and only your Create makes the folder.
 
 ### Delegation (phase 1)
 
-With Codex installed and logged in, the Controller can hand a job to it as a Runner:
+With Codex installed and connected (`gov connect codex`), the Controller can hand a job to it as a
+Runner:
 
 ```sh
 gov ask "Use the governcode delegate tool to have codex write tests for src/tide.rs,
@@ -181,12 +204,14 @@ Honest limits, for now:
   and the sandbox limits where it can write, not which HTTPS sites it can reach.
 - `gov disconnect agy` deletes GovernCode's copy of the login. Revoking Antigravity's access in
   your Google account ends every Antigravity sign-in, your own included.
+- Antigravity keeps its own state (conversations, knowledge) in its GovernCode home between runs;
+  its settings, hooks and MCP servers are rebuilt before every run. A fresh home per run, as for
+  Claude Code and Codex, comes next.
 - A project that contains Antigravity customization folders (`.agents/`, `.agent/`, `_agents/`,
   `_agent/`) is refused: their hooks could switch GovernCode's Gate off. A Runner that creates one
   fails its Spec.
 
-Claude Code and Codex still use your own logins; they move to the same Connect step in a later
-release. Gemini CLI (for Gemini API keys) comes after that, once GovernCode can hold a key safely.
+Gemini CLI (for Gemini API keys) comes later, once GovernCode can hold a key safely.
 
 ### Crew and delegation
 

@@ -3,7 +3,8 @@
 // Gates answered by the user through govd, never by the harness itself.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { lstatSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { runHome } from "./homes.ts";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import type { ControllerChoice } from "@governcode/protocol";
@@ -74,37 +75,47 @@ export type McpServer = { node: string; script: string; socket: string; mode?: "
 export const userClaudeDir = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 export const PERSONAL_CLAUDE = ["CLAUDE.md", "skills", "plugins", "hooks", "agents", "commands", "output-styles", "rules", "settings.json"];
 
-/** GovernCode's Claude Code home (Connect signed it in there): rebuilt before every turn, so
- *  nothing a turn writes into it (settings, instructions, hooks) reaches the next turn. The user's
- *  personal files are linked in, read-only, only when they chose to bring them. */
-export function prepareClaudeHome(stateDir: string, personal: boolean): string {
-  const home = join(stateDir, "tools", "claude", "home");
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  for (const name of [...PERSONAL_CLAUDE, "settings.local.json"]) {
-    const p = join(home, name);
-    try { lstatSync(p); rmSync(p, { recursive: true, force: true }); } catch { /* absent */ }
+// Keys kept from the user's own settings.json when they bring their personal setup: what shapes
+// Claude Code's behaviour, never its credentials or where it sends requests (env, apiKeyHelper,
+// credential exports, proxies: Codex's review).
+const SETTINGS_KEEP = ["hooks", "enabledPlugins", "outputStyle", "permissions", "includeCoAuthoredBy", "alwaysThinkingEnabled", "statusLine"];
+
+/** A fresh Claude Code home for one turn (homes.ts): the GovernCode login linked in, and the
+ *  user's personal files only when they chose to bring them (instructions, skills, agents,
+ *  commands, plugins, hooks linked read-only; settings.json copied with only SETTINGS_KEEP). */
+export function claudeRunHome(stateDir: string, personal: boolean): { home: string; login: string; finish(): void } {
+  const rh = runHome(stateDir, "claude", ".credentials.json");
+  if (personal) {
+    for (const name of PERSONAL_CLAUDE) {
+      const src = join(userClaudeDir(), name);
+      if (name === "settings.json" || !existsSync(src)) continue;
+      symlinkSync(src, join(rh.home, name));
+    }
+    try {
+      const mine = JSON.parse(readFileSync(join(userClaudeDir(), "settings.json"), "utf8")) as Record<string, unknown>;
+      const kept = Object.fromEntries(Object.entries(mine).filter(([k]) => SETTINGS_KEEP.includes(k)));
+      writeFileSync(join(rh.home, "settings.json"), JSON.stringify(kept), { mode: 0o600 });
+    } catch { /* none, or not JSON */ }
   }
-  if (personal) for (const name of PERSONAL_CLAUDE) {
-    const src = join(userClaudeDir(), name);
-    if (existsSync(src)) symlinkSync(src, join(home, name));
-  }
-  return home;
+  return rh;
 }
 
 export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false, mcp?: McpServer, personal = false,
-                             cfg = join(tmpdir(), "governcode-no-claude-home")): Policy {
+                             cfg = join(tmpdir(), "governcode-no-claude-home"), login?: string): Policy {
   const bin = realpathSync(which("claude"));
   // GovernCode's own Claude home (cfg) is the tool's: its login, state and transcripts, writable.
   // The user's own ~/.claude and ~/.claude.json are not in this policy at all; their personal
   // files (instructions, skills, agents, commands, plugins, hooks, settings) are readable only when
   // the user chose to bring them, through the links prepareClaudeHome made.
-  const personalRead = personal ? PERSONAL_CLAUDE.map((n) => join(userClaudeDir(), n)) : [];
+  // (settings.json is copied in, filtered, never read from the user's folder by the tool.)
+  const personalRead = personal ? PERSONAL_CLAUDE.filter((n) => n !== "settings.json").map((n) => join(userClaudeDir(), n)) : [];
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
-      "/dev/random", dirname(bin), cfg, ...personalRead, ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
+      "/dev/random", dirname(bin), cfg, ...(login ? [login] : []), ...personalRead, ...resolverFiles(), ...(readOnly ? [worktree] : [])].filter(
       (p) => p === worktree || existsSync(p)),
-    write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...(existsSync(cfg) ? [cfg] : [])],
+    // The turn's own fresh home, and the shared login file (a token refresh may write it in place).
+    write: [...(readOnly ? [] : [worktree]), sessionTmp, "/dev/null", ...(existsSync(cfg) ? [cfg] : []), ...(login && existsSync(login) ? [login] : [])],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin), ...(mcp ? [dirname(mcp.node)] : []), ...toolchainDirs()],
     tcp_connect: [443],
     // The per-turn GovernCode socket is the one extra socket, and only while this turn runs.
@@ -189,9 +200,10 @@ export function runTurn(opts: {
 }): { cancel(): void } {
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
-  const cfg = prepareClaudeHome(opts.stateDir, opts.personal === true);
+  const rh = claudeRunHome(opts.stateDir, opts.personal === true);
+  const cfg = rh.home;
   const policyFile = join(opts.policyDir, `turn-${process.pid}-${Date.now()}.json`);
-  writeFileSync(policyFile, JSON.stringify(withMcpRead(claudePolicy(opts.worktree, sessionTmp, opts.readOnly, opts.mcp, opts.personal, cfg), opts.mcp)), { mode: 0o600 });
+  writeFileSync(policyFile, JSON.stringify(withMcpRead(claudePolicy(opts.worktree, sessionTmp, opts.readOnly, opts.mcp, opts.personal, cfg, rh.login), opts.mcp)), { mode: 0o600 });
 
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--permission-prompt-tool", "stdio", "--permission-mode", "default",
@@ -233,6 +245,7 @@ export function runTurn(opts: {
     try { process.kill(-child.pid!, "SIGTERM"); } catch { /* already gone */ }
     rmSync(policyFile, { force: true });
     rmSync(sessionTmp, { recursive: true, force: true });
+    rh.finish();
     opts.hooks.done(r);
   };
 

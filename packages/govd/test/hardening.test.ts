@@ -181,15 +181,30 @@ test("personal instructions: off, the Controller cannot even read them; on, it c
   if (existsSync(join(user, "AGENTS.md"))) assert.ok(codexOn.read.includes(join(user, "AGENTS.md")));
 });
 
-test("the Codex home keeps only the login, Codex's state and GovernCode's connected mark between runs", async () => {
-  const { prepareCodexHome } = await import("../src/codex.ts");
-  const { mkdtempSync, mkdirSync, writeFileSync, readdirSync } = await import("node:fs");
+test("tool homes: every run starts empty but for the login link, leaves nothing behind, and a replaced login goes back", async () => {
+  const { runHome, toolHome, setConnected, isConnected } = await import("../src/homes.ts");
+  const { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, lstatSync, rmSync, existsSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const state = mkdtempSync(join(tmpdir(), "gc-codexhome-"));
-  const home = join(state, "tools", "codex", "home");
-  mkdirSync(join(home, "rules"), { recursive: true });
-  for (const f of [".governcode-connected", "auth.json", "state_5.sqlite", "config.toml", "AGENTS.md", "rules/allow.rules"]) writeFileSync(join(home, f), "x");
-  prepareCodexHome(state, false);
-  assert.deepEqual(readdirSync(home).sort(), [".governcode-connected", "auth.json", "state_5.sqlite"]);
+  const state = mkdtempSync(join(tmpdir(), "gc-runhome-"));
+  mkdirSync(toolHome(state, "codex"), { recursive: true });
+  writeFileSync(join(toolHome(state, "codex"), "auth.json"), "login-1");
+  const a = runHome(state, "codex", "auth.json");
+  assert.deepEqual(readdirSync(a.home), ["auth.json"]);
+  assert.ok(lstatSync(join(a.home, "auth.json")).isSymbolicLink());
+  // What a run writes (a rule that could pre-approve commands, a model cache, memory) stays in it.
+  mkdirSync(join(a.home, "rules")); writeFileSync(join(a.home, "rules", "allow.rules"), "x"); writeFileSync(join(a.home, "models_cache.json"), "{}");
+  const b = runHome(state, "codex", "auth.json");
+  assert.deepEqual(readdirSync(b.home), ["auth.json"], "a run overlapping another starts clean");
+  // A refresh written by rename: the run's login is a new file; it goes back to the shared home.
+  rmSync(join(a.home, "auth.json")); writeFileSync(join(a.home, "auth.json"), "login-2");
+  a.finish();
+  assert.equal(readFileSync(join(toolHome(state, "codex"), "auth.json"), "utf8"), "login-2");
+  assert.ok(!existsSync(a.home));
+  b.finish();
+  assert.ok(!existsSync(b.home));
+  // Connected is recorded outside every home a tool can write.
+  setConnected(state, "codex", true);
+  assert.ok(isConnected(state, "codex"));
+  assert.ok(!readdirSync(toolHome(state, "codex")).includes("connected"));
 });

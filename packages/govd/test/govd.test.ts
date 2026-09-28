@@ -136,11 +136,14 @@ test("a turn streams, raises a Gate on the user's connection, and runs exactly w
   assert.deepEqual(policy.tcp_connect, [443]);
   // Nothing of govd's own state is writable except the tool's own GovernCode home (its login and
   // state; rebuilt before every turn): never the Trace, settings, rules or another tool's home.
-  const claudeHome = join(root, "turn", "tools", "claude", "home");
-  assert.ok(!policy.write.some((p: string) => p.startsWith(join(root, "turn")) && p !== claudeHome), "govd's own state is never writable");
-  assert.ok(policy.write.includes(claudeHome));
+  // The turn's own fresh home (tools/claude/runs/run-*) and the shared login file only.
+  const runs = join(root, "turn", "tools", "claude", "runs") + "/";
+  const login = join(root, "turn", "tools", "claude", "home", ".credentials.json");
+  const claudeHome = policy.write.find((p: string) => p.startsWith(runs));
+  assert.ok(claudeHome, "the turn has its own home");
+  assert.ok(!policy.write.some((p: string) => p.startsWith(join(root, "turn")) && p !== claudeHome && p !== login), "govd's own state is never writable");
   assert.ok(!policy.read.some((p: string) => p.endsWith("/.claude.json") || p === join(homedir(), ".claude")), "the user's own Claude Code setup is out of reach");
-  assert.ok(![...policy.read, ...policy.exec].some((p: string) => p.startsWith(join(root, "turn")) && p !== claudeHome), "nor readable");
+  assert.ok(![...policy.read, ...policy.exec].some((p: string) => p.startsWith(join(root, "turn")) && p !== claudeHome && p !== login), "nor readable");
   const kinds = d.ledger.events("tidepool", 20).map((e) => e.kind);
   assert.deepEqual(kinds.filter((k) => k.startsWith("turn.") || k.startsWith("project.")),
     ["project.created", "turn.started", "turn.text", "turn.completed"]);

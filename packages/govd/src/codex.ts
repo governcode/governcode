@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { canonical, resolverFiles, toolchainDirs, toolEnv, withMcpRead, CONTROLLER_CONTEXT, RUNNER_CONTEXT, type GateRequest, type McpServer, type Policy, type TurnHooks } from "./claude.ts";
 import type { Measurement, UsageSource } from "./limits.ts";
 import { isConnected } from "./agy.ts";
+import { runHome } from "./homes.ts";
 
 /** The real Codex binary: $GOVERNCODE_CODEX_BIN, else `codex` on PATH, looking through a mise shim. */
 export function codexBinary(): string {
@@ -23,37 +24,28 @@ export function codexBinary(): string {
   throw new Error("codex not found (set GOVERNCODE_CODEX_BIN to the codex binary)");
 }
 
-// What may stay in GovernCode's Codex home between runs: the login Connect made and Codex's own
-// state. Everything else (config.toml, rules/ that can pre-approve commands, prompts, skills,
-// hooks, AGENTS.md...) is removed before every run, so nothing a run writes there reaches the next.
-const CODEX_KEEP = /^(\.governcode-connected|auth\.json|installation_id|version\.json|models_cache\.json|history\.jsonl|sessions|log|logs|cache|tmp|shell_snapshots|[a-z_]+_\d+\.sqlite(-wal|-shm)?)$/;
-
-/** GovernCode's Codex home (Connect signed Codex in there), cleaned before each run; the user's
- *  AGENTS.md is linked in, read-only, only when they chose to bring it. The user's own ~/.codex
- *  (their config.toml, login and rules) is never used. */
-export function prepareCodexHome(stateDir: string, personal = false): string {
+/** A fresh Codex home for one session (homes.ts): the GovernCode login linked in, and the user's
+ *  AGENTS.md only when they chose to bring it. Nothing else of any earlier run (config, rules
+ *  that can pre-approve commands, the model cache, memories) is there. The user's own ~/.codex is
+ *  never used. */
+export function codexRunHome(stateDir: string, personal = false): { home: string; login: string; finish(): void } {
   const user = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-  const home = join(stateDir, "tools", "codex", "home");
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  for (const name of readdirSync(home)) {
-    const p = join(home, name);
-    if (lstatSync(p).isSymbolicLink() || !CODEX_KEEP.test(name)) rmSync(p, { recursive: true, force: true });
-  }
-  if (personal && existsSync(join(user, "AGENTS.md"))) symlinkSync(join(user, "AGENTS.md"), join(home, "AGENTS.md"));
-  return home;
+  const rh = runHome(stateDir, "codex", "auth.json");
+  if (personal && existsSync(join(user, "AGENTS.md"))) symlinkSync(join(user, "AGENTS.md"), join(rh.home, "AGENTS.md"));
+  return rh;
 }
 
 export function codexPolicy(worktree: string, sessionTmp: string, codexHome: string, bin: string, readOnly = false,
-                            writePaths?: string[], gitDir?: string, personal = false): Policy {
+                            writePaths?: string[], gitDir?: string, personal = false, login?: string): Policy {
   const user = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const exists = (p: string) => existsSync(p);
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
-      "/dev/random", dirname(bin), codexHome, ...(personal ? [join(user, "AGENTS.md")] : []), ...resolverFiles(),
+      "/dev/random", dirname(bin), codexHome, ...(login ? [login] : []), ...(personal ? [join(user, "AGENTS.md")] : []), ...resolverFiles(),
       // A Spec's Runner reads its whole worktree (and the repo's git data) but writes only its scope.
       ...(readOnly || writePaths ? [worktree] : []), ...(gitDir ? [gitDir] : [])].filter((p) => p === worktree || exists(p)),
-    write: [...(readOnly ? [] : writePaths ?? [worktree]), sessionTmp, codexHome, "/dev/null"],
+    write: [...(readOnly ? [] : writePaths ?? [worktree]), sessionTmp, codexHome, ...(login && existsSync(login) ? [login] : []), "/dev/null"],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(bin), ...toolchainDirs()],
     tcp_connect: [443],
     unix_connect: ["/run/systemd/resolve/io.systemd.Resolve"].filter(exists),
@@ -103,16 +95,19 @@ async function session(o: { supervisor: string; policyDir: string; stateDir: str
   const bin = codexBinary();
   mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
   const tmp = mkdtempSync(join(tmpdir(), "governcode-codex-"));
-  const home = prepareCodexHome(o.stateDir, o.personal && !o.writePaths);   // never for a Runner
+  const rh = codexRunHome(o.stateDir, o.personal && !o.writePaths);   // personal instructions never for a Runner
+  const home = rh.home;
   const policyFile = join(o.policyDir, `codex-${process.pid}-${Date.now()}.json`);
-  const base = codexPolicy(o.worktree, tmp, home, bin, o.readOnly, o.writePaths, o.gitDir, o.personal && !o.writePaths);
+  const base = codexPolicy(o.worktree, tmp, home, bin, o.readOnly, o.writePaths, o.gitDir, o.personal && !o.writePaths, rh.login);
   // GovernCode's own MCP server for a Controller: node may run its script and reach this
   // turn's socket, nothing more (as for Claude).
   const policy = o.mcp ? withMcpRead({ ...base, exec: [...base.exec, dirname(o.mcp.node)], unix_connect: [...base.unix_connect, o.mcp.socket] }, o.mcp) : base;
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
   const rpc = start(o.supervisor, policyFile, bin, { ...toolEnv(tmp), CODEX_HOME: home }, o.worktree);
   await rpc.request("initialize", { clientInfo: { name: "governcode", title: "GovernCode", version: "0.0.1" } });
-  const cleanup = () => { rpc.close(); rmSync(policyFile, { force: true }); rmSync(tmp, { recursive: true, force: true }); };
+  // The run's home goes only once Codex has exited (a login refresh must not be cut off).
+  const cleanup = () => { rpc.close(); rmSync(policyFile, { force: true }); rmSync(tmp, { recursive: true, force: true });
+    void rpc.exited.then(() => rh.finish()); setTimeout(() => rh.finish(), 10_000).unref(); };
   return { rpc, cleanup };
 }
 
