@@ -70,6 +70,16 @@ steer (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `pwd`, `stat`, `du`, `df
 run without a Gate. They are still sandboxed and still in the Trace. Turn it off in Settings to
 be asked for everything.
 
+## Local models: nothing to run, so nothing to sandbox
+
+A local Runner (Ollama) is not a tool with a shell. govd sends it the text of the files in the
+Spec's scope and gets back proposed file contents as JSON. govd then writes them itself, into the
+Spec's workspace (govd's own state, which no AI can reach), after checking every path: inside the
+write scope, not in `.git`, not through a symlink, not over a folder, at most 20 files of 256 KB.
+One bad path refuses the whole answer, so nothing is half-written. The model never executes
+anything, and the change still waits for your review. Its Limit is the machine's (how many at
+once, how many minutes each), since there is no quota to measure.
+
 ## Known limits
 
 - The tool can read its own credentials (it needs them) and reach any address on port

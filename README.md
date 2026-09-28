@@ -87,6 +87,23 @@ GovernCode checks Codex's measured usage against your Limit first, runs it in a 
 of its own inside the sandbox (it can write only the scope), shows every step that needs
 approval as a Gate, and applies nothing until you accept.
 
+**Local models.** With [Ollama](https://ollama.com) running and a model pulled, `ollama` is a
+Runner too: good for small, well-scoped jobs (docs, comments, small fixes) that cost no quota.
+
+```sh
+ollama pull qwen3.5:9b
+gov ask "Use the governcode delegate tool to have ollama (model qwen3.5:9b) add a Usage
+         section to README.md, scope read [\"src\"], write [\"README.md\"]"
+```
+
+A local model gets no tools and runs no commands. It sees the files in the Spec's scope and
+proposes whole new files; GovernCode itself checks each path against the write scope (nothing
+outside it, nothing in `.git`, never through a symlink) before writing it into the Spec's
+workspace, and you review it like any other Spec. There is no quota to measure, so its Limit is
+your machine's: at most 1 local Spec at once, each stopped after 10 minutes (Settings › Local
+models). If Ollama refuses (busy, not running, model missing), the Spec is held with Ollama's own
+words.
+
 ### The Dashboard (desktop app, early)
 
 ```sh

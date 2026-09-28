@@ -12,7 +12,7 @@ if (!socketPath) { process.stderr.write("usage: mcp-controller SOCKET\n"); proce
 const PROJECT_TOOLS = [
   { name: "delegate", description: "Hand a bounded job (a Spec) to another AI coding tool (a Runner). GovernCode checks the Runner's usage Limit, runs it in its own git worktree inside a sandbox, records Checkpoints, and returns the result, the changed files and the diff for review. The user sees and approves each delegation.",
     inputSchema: { type: "object", additionalProperties: false, required: ["to", "brief", "result", "scope", "budgetPercent", "model", "reason"], properties: {
-      to: { type: "string", description: "Runner provider, e.g. codex" },
+      to: { type: "string", description: "Runner provider, e.g. codex, or ollama for a local model (see crew for its models and limits)" },
       brief: { type: "string", description: "The job" },
       result: { type: "string", description: "Acceptance: what done means" },
       scope: { type: "object", properties: { read: { type: "array", items: { type: "string" } }, write: { type: "array", items: { type: "string" } } }, description: "Paths relative to the project; write paths are the only writable ones. End a folder with / (a new name without / that looks like a file is treated as one file)." },

@@ -15,6 +15,7 @@ import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
+import { ollamaUsage } from "./local.ts";
 import { Allows, isQuietRead, kindOf, scopesFor, type AllowScope, type GateContext, type Kind } from "./allows.ts";
 import { openControllerSocket, openTurnSocket, accept, discard } from "./delegate.ts";
 import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot, specPaths, turnStore } from "./specstore.ts";
@@ -62,8 +63,10 @@ export class Daemon {
     this.opts = opts;
     this.ledger = new Ledger(opts.ledgerPath);
     const stateDir = resolve(opts.ledgerPath, "..");
-    this.usage = { codex: codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") }) };
+    this.usage = { codex: codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") }),
+      ollama: ollamaUsage() };
     this.limits.setReserves(this.settings().reserves);
+    this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
   }
 
@@ -305,13 +308,14 @@ export class Daemon {
       case "settings.set": {
         this.saveSettings(p);
         this.limits.setReserves(p.reserves);
-        L.append(null, "settings.changed", "user", { reserves: p.reserves, runners: p.runners, specModels: p.specModels });
+        this.limits.setLocal(p.local);
+        L.append(null, "settings.changed", "user", { reserves: p.reserves, runners: p.runners, specModels: p.specModels, local: p.local });
         return { settings: p };
       }
       case "limits.list": {
         if (p.measure) await Promise.all(Object.values(this.usage).map(async (src) => {
           const m = await src.read();
-          if (m) this.limits.record(m); else this.limits.forget(src.provider);   // unknown holds
+          if (m) this.limits.record(m); else this.limits.forget(src.provider, src.why?.());   // unknown holds
         }));
         return { providers: Object.keys(this.usage).map((name) => this.limits.view(name)) };
       }

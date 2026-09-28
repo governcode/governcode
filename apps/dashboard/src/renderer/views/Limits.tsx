@@ -7,7 +7,7 @@ import { Empty, Pill } from "../ui.tsx";
 
 type Reading = { window: string; usedPercent: number; resetsAt: string | null };
 export type ProviderLimit = {
-  provider: string; unmetered: boolean; reservePercent: number; reserves?: Record<string, number>; measuredAt: number | null; readings: Reading[];
+  provider: string; unmetered: boolean; local?: { maxRunning: number; maxMinutes: number } | null; reservePercent: number; reserves?: Record<string, number>; measuredAt: number | null; readings: Reading[];
   reservedPercent: number; owedPercent: number;
   verdict: { ok: true; note?: string } | { ok: false; reason: string; resetsAt: string | null };
 };
@@ -50,7 +50,8 @@ export function Limits() {
             <div key={p.provider} className="checkpoint limit">
               <div className="row">
                 <b>{p.provider}</b>
-                <span className="dim small">Runner · keeps {Object.values(p.reserves ?? {}).every((n) => n === p.reservePercent) ? `${p.reservePercent}% of every window` : Object.entries(p.reserves ?? {}).map(([w, n]) => `${n}% of ${w}`).join(", ")} back</span>
+                {p.local ? <span className="dim small">Local model · your machine's Limit: at most {p.local.maxRunning} at once, {p.local.maxMinutes} min each</span>
+                  : <span className="dim small">Runner · keeps {Object.values(p.reserves ?? {}).every((n) => n === p.reservePercent) ? `${p.reservePercent}% of every window` : Object.entries(p.reserves ?? {}).map(([w, n]) => `${n}% of ${w}`).join(", ")} back</span>}
                 <span className="spacer" />
                 {p.unmetered ? <Pill tone="info">unmetered (opt-in)</Pill>
                   : p.verdict.ok ? <Pill tone="ok">available</Pill>
@@ -72,7 +73,7 @@ export function Limits() {
                 );
               })}
               <div className="dim small">
-                {p.measuredAt ? `measured ${ago(p.measuredAt)}` : "never measured"}
+                {p.measuredAt ? `${p.local ? "answered" : "measured"} ${ago(p.measuredAt)}` : p.local ? "not checked yet" : "never measured"}
                 {p.reservedPercent ? ` · ${p.reservedPercent}% reserved by running Specs` : ""}
                 {p.owedPercent ? ` · ${p.owedPercent}% still owed by finished Specs` : ""}
                 {!p.verdict.ok && ` · ${p.verdict.reason}`}

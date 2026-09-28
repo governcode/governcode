@@ -56,6 +56,10 @@ export const Settings = z.object({
   specModels: z.enum(["free", "within", "defaults"]).default("free"),
   // Plain read-only commands (ls, cat, grep...) run without a Gate. The sandbox still applies.
   gates: z.object({ quietReads: z.boolean().default(true) }).default({ quietReads: true }),
+  // Local models (Ollama): no quota, so the Limit is the machine's. At most this many local Specs
+  // at once, each stopped after this many minutes.
+  local: z.object({ maxRunning: z.number().int().min(1).max(8).default(1), maxMinutes: z.number().int().min(1).max(120).default(10) })
+    .default({ maxRunning: 1, maxMinutes: 10 }),
 });
 export type SettingsValue = z.infer<typeof Settings>;
 

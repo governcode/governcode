@@ -14,6 +14,7 @@ import type { LimitGate, UsageSource } from "./limits.ts";
 import type { GateRequest } from "./claude.ts";
 import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
+import { runLocalTurn } from "./local.ts";
 
 export type DelegationContext = {
   project: { name: string; path: string };
@@ -94,7 +95,7 @@ async function measured(ctx: DelegationContext, provider: string): Promise<void>
   if (!src) return;
   const m = await src.read();
   // A failed reading must not leave an old one standing: unknown usage holds.
-  if (m) ctx.limits.record(m); else ctx.limits.forget(provider);
+  if (m) ctx.limits.record(m); else ctx.limits.forget(provider, src.why?.());
 }
 
 async function crew(ctx: DelegationContext) {
@@ -103,8 +104,13 @@ async function crew(ctx: DelegationContext) {
     await measured(ctx, provider);
     const probe = ctx.limits.check(provider);
     const def = ctx.settings?.().runners[provider];
+    const local = ctx.limits.localRule(provider);
     out.push({ provider, available: probe.ok, ...(probe.ok ? {} : { reason: probe.reason, resetsAt: probe.resetsAt }),
-      ...(def ? { defaultModel: def.model, defaultEffort: def.effort } : {}) });
+      ...(def ? { defaultModel: def.model, defaultEffort: def.effort } : {}),
+      ...(local ? { local: true, models: ctx.usage[provider].models?.() ?? [], limit: `at most ${local.maxRunning} at once, ${local.maxMinutes} min each`,
+        note: "A local model: no tools, no commands. It sees the files in the Spec's scope and proposes whole new file contents, " +
+          "which GovernCode checks against the write scope. Best for small, well-scoped jobs (docs, comments, small fixes); " +
+          "keep the scope to a few small files. effort does not apply (use null); budgetPercent is ignored." } : {}) });
   }
   const policy = ctx.settings?.().specModels ?? "free";
   return { runners: out, modelPolicy: policy === "free" ? "pick model and effort per Spec"
@@ -171,7 +177,15 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
       const v = ctx.limits.stillWithin(spec.id);
       if (!v.ok) { ctx.notify({ kind: "spec.text", id: spec.id, text: `Limit: ${v.reason}; stopping.` }); stop.abort(v.reason); }
     }, POLL_MS);
+    const local = ctx.limits.localRule(input.to);
     const result = await new Promise<{ ok: boolean; summary: string }>((done) => {
+      if (local) {
+        // No tools and no commands: govd itself writes the model's proposed files, checked against the scope.
+        runLocalTurn({ model: input.model, work: paths.work, scope: input.scope, prompt, maxMinutes: local.maxMinutes, signal: stop.signal,
+          hooks: { text: (t) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); }, done } })
+          .catch((e) => done({ ok: false, summary: `the local Runner failed: ${e instanceof Error ? e.message : e}` }));   // never an unhandled rejection
+        return;
+      }
       void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work,
         writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal,
         hooks: {

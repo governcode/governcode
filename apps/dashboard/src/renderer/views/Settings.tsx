@@ -10,8 +10,8 @@ import type { ProviderLimit } from "./Limits.tsx";
 type Reserves = Record<string, Record<string, number>>;
 type Effort = "low" | "medium" | "high" | "max" | null;
 type SettingsValue = { reserves: Reserves; runners: Record<string, { model: string; effort: Effort }>; specModels: "free" | "within" | "defaults";
-  gates: { quietReads: boolean } };
-const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free", gates: { quietReads: true } };
+  gates: { quietReads: boolean }; local: { maxRunning: number; maxMinutes: number } };
+const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free", gates: { quietReads: true }, local: { maxRunning: 1, maxMinutes: 10 } };
 type AllowRule = { id: string; project: string | null; label: string; created: string };
 const POLICIES: Array<[SettingsValue["specModels"], string, string]> = [
   ["free", "Controller picks", "It chooses the model and effort for each Spec."],
@@ -94,15 +94,15 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
                   <input className="model-input" value={draft.runners[p.provider]?.model ?? ""} placeholder="(Controller picks)" aria-label={`${p.provider} default model`}
                     onChange={(e) => setDefault(p.provider, e.target.value, draft.runners[p.provider]?.effort ?? null)} />
                 </label>
-                <label className="field inline">
+                {!p.local && <label className="field inline">
                   <span className="dim small">effort</span>
                   <select value={draft.runners[p.provider]?.effort ?? ""} disabled={!draft.runners[p.provider]} aria-label={`${p.provider} default effort`}
                     onChange={(e) => setDefault(p.provider, draft.runners[p.provider]?.model ?? "", (e.target.value || null) as Effort)}>
                     <option value="">n/a</option>{["low", "medium", "high", "max"].map((x) => <option key={x} value={x}>{x}</option>)}
                   </select>
-                </label>
+                </label>}
               </div>
-              <div className="row reserve-row">
+              {p.local ? <div className="dim small">A local model: no usage window to keep back. Its Limit is under Local models below.</div> : <div className="row reserve-row">
                 {windows.map((w) => (
                   <label key={w} className="field inline">
                     <span className="dim small">{w} · keep back</span>
@@ -111,10 +111,27 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
                     <span className="dim small">%</span>
                   </label>
                 ))}
-              </div>
+              </div>}
             </div>
           );
         })}
+        <h2>Local models</h2>
+        <p className="dim small">A local model has no usage to measure, so its Limit is your machine's. It runs no commands: it proposes whole files, GovernCode checks them against the Spec's scope, and you review them like any other Spec.</p>
+        <div className="row reserve-row">
+          <label className="field inline">
+            <span className="dim small">at most</span>
+            <input type="number" min={1} max={8} step={1} value={draft.local.maxRunning} aria-label="local Specs at once"
+              onChange={(e) => setDraft((d) => ({ ...d, local: { ...d.local, maxRunning: Math.min(8, Math.max(1, Math.round(Number(e.target.value)))) } }))} />
+            <span className="dim small">at once</span>
+          </label>
+          <label className="field inline">
+            <span className="dim small">each stopped after</span>
+            <input type="number" min={1} max={120} step={1} value={draft.local.maxMinutes} aria-label="minutes per local Spec"
+              onChange={(e) => setDraft((d) => ({ ...d, local: { ...d.local, maxMinutes: Math.min(120, Math.max(1, Math.round(Number(e.target.value)))) } }))} />
+            <span className="dim small">min</span>
+          </label>
+        </div>
+
         <h2>Gates</h2>
         <p className="dim small">The sandbox applies to every step, always. These settings only decide which steps stop to ask you first.</p>
         <label className="policy-option">

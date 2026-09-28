@@ -52,7 +52,7 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.deepEqual(checkCall("proposal.answer", { id: "P-2", answer: "create" }).params, { id: "P-2", answer: "create" });
   for (const bad of [{ id: "P-2", answer: "yes" }, { id: "G-2", answer: "create" }]) assert.throws(() => checkCall("proposal.answer", bad));
   // Settings: reserves are whole percents from 0 to 90, keyed by Runner and window.
-  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true } });
+  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true }, local: { maxRunning: 1, maxMinutes: 10 } });
   assert.throws(() => checkCall("settings.set", { specModels: "anything" }));
   assert.throws(() => checkCall("settings.set", { runners: { codex: { model: "m", effort: "huge" } } }));
   for (const bad of [{ codex: { weekly: 91 } }, { codex: { weekly: 1.5 } }, { "../x": { weekly: 5 } }]) assert.throws(() => checkCall("settings.set", { reserves: bad }));
@@ -129,7 +129,7 @@ test("against the real govd: hello reports the sandbox, and lists come back", as
     }
     // Unmeasured Runners show as held, not available (unknown usage holds).
     const { providers } = await link.call("limits.list", { measure: false }) as { providers: Array<{ provider: string; verdict: { ok: boolean } }> };
-    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false]]);
+    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false], ["ollama", false]]);
     // The link watches: a project made and a Controller chosen arrive as live Trace events.
     const seen: string[] = [];
     link.onWatch((w) => { if (w.kind === "trace") seen.push(w.event.kind); });

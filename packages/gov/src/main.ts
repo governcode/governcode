@@ -239,7 +239,8 @@ async function main(argv: string[]): Promise<number> {
         for (const x of providers) {
           const windows = x.readings.map((r: any) => `${r.window} ${r.usedPercent}%${r.resetsAt ? ` (resets ${r.resetsAt})` : ""}`).join(", ") || "not measured";
           const held = [x.reservedPercent ? `${x.reservedPercent}% reserved` : "", x.owedPercent ? `${x.owedPercent}% owed` : ""].filter(Boolean).join(", ");
-          console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${windows}  · keeps ${x.reservePercent}% back${held ? ` · ${held}` : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
+          const rule = x.local ? `local: at most ${x.local.maxRunning} at once, ${x.local.maxMinutes} min each` : `${windows}  · keeps ${x.reservePercent}% back`;
+          console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${rule}${held ? ` · ${held}` : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
         }
         return 0;
       }
