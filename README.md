@@ -4,10 +4,11 @@
 
 **Govern your AI coding crew.** Pick one AI coding tool as the Controller. It keeps its own
 subagents and hands bounded jobs (Specs) to the other tools you already use, as Runners.
-Every Spec is written down, runs in a sandbox on its own copy of the project, and can be
-diffed and undone. A Limit holds a Spec back before it would reach into the reserve you set for
-that provider (usage reports lag, so a running Spec can overshoot a little), and risky
-steps wait at a Gate for your approval, in the Dashboard or your terminal (on your phone once
+Every Spec is written down and works on its own copy of the project (a coding tool runs in a
+sandbox; a local model's files are checked against the Spec's scope), and nothing reaches your
+project until you have seen the diff and accepted it. A Controller's own turns can be undone.
+A Limit holds a Spec back before it would reach into the reserve you set for that provider
+(usage reports lag, so a running Spec can overshoot a little), and risky steps wait at a Gate for your approval, in the Dashboard or your terminal (on your phone once
 the Pager app ships, phase 3).
 
 Free and open source (MIT). Runs on your own machine; no hosted service.
@@ -99,7 +100,7 @@ agents and hooks; for Codex: your AGENTS.md). Off by default: it starts clean. C
 with `gov personal claude on|off` or in Settings.
 
 Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot
-write anything. It can propose a new project (name, folder, git); you get Create or Cancel,
+write any of your files (only its own scratch folders). It can propose a new project (name, folder, git); you get Create or Cancel,
 and only your Create makes the folder.
 
 ### Delegation (phase 1)
@@ -156,7 +157,8 @@ never reads the login Antigravity keeps there. `gov disconnect agy` removes it.
 Then `agy` is a Runner like `codex`. Every tool call Antigravity makes passes GovernCode's Gate
 (through Antigravity's own pre-tool hook): plain reads run, commands get the same checks as any
 other command, file changes show exactly what will be written (for an edit, the text replaced and
-its replacement), and anything else asks. Its Limit comes from
+its replacement), and any other tool is a kind of step like any other: it asks at Balanced and
+Strict until you allow it for a Spec or the project, and runs at Relaxed. Its Limit comes from
 Antigravity's own usage report (weekly and 5-hour windows).
 
 Honest limits, for now:
