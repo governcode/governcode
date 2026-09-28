@@ -25,19 +25,19 @@ happen), **Motion** (release candidates, tagged `vX.Y.Z-motion.N`) and **Decree*
 releases, tagged `vX.Y.Z`). The first Motion is
 [0.1.0-motion.1](https://github.com/governcode/governcode/releases/tag/v0.1.0-motion.1).
 
-> **Status: pre-alpha, first release candidate.** Developers can try it on Linux, from the
+> **Status: pre-alpha, release candidate.** Developers can try it on Linux, from the
 > CLI or the early Dashboard: the sandbox, Gates, Checkpoints, Limits, and delegation from a
 > Claude Code or Codex Controller to a Codex or local-model Runner work end to end. Expect
 > rough edges.
 
 **Install the release candidate (Linux x86_64):** download
-`governcode-0.1.0-motion.1-linux-x86_64.tar.gz` and `SHA256SUMS` from the
-[release page](https://github.com/governcode/governcode/releases/tag/v0.1.0-motion.1), then:
+`governcode-0.1.0-motion.5-linux-x86_64.tar.gz` and `SHA256SUMS` from the
+[releases page](https://github.com/governcode/governcode/releases), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar xzf governcode-0.1.0-motion.1-linux-x86_64.tar.gz
-cd governcode-0.1.0-motion.1-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
+tar xzf governcode-0.1.0-motion.5-linux-x86_64.tar.gz
+cd governcode-0.1.0-motion.5-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
 govd &
 gov demo
 ```

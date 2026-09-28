@@ -230,6 +230,8 @@ test("the asker leaving denies its waiting Gate", async () => {
   assert.ok(seen);
   assert.ok(d.ledger.events("gone", 20).some((e) => e.kind === "gate.denied" && e.data.by === "asker left"));
   assert.equal((await watcher.call("gate.list")).result.gates.length, 0);
+  // The turn goes on after the denial; let it finish before closing the Ledger under it.
+  for (let i = 0; i < 100 && (d as any).turning.get("gone"); i++) await new Promise((r) => setTimeout(r, 20));
   watcher.end(); d.close();
 });
 
