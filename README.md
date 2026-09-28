@@ -33,14 +33,15 @@ releases, tagged `vX.Y.Z`). The first Motion is
 > Expect rough edges.
 
 **Install the release candidate (Linux x86_64):** download
-`governcode-0.1.0-motion.6-linux-x86_64.tar.gz` and `SHA256SUMS` from the
+`governcode-0.1.0-motion.7-linux-x86_64.tar.gz` and `SHA256SUMS` from the
 [releases page](https://github.com/governcode/governcode/releases), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar xzf governcode-0.1.0-motion.6-linux-x86_64.tar.gz
-cd governcode-0.1.0-motion.6-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
+tar xzf governcode-0.1.0-motion.7-linux-x86_64.tar.gz
+cd governcode-0.1.0-motion.7-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
 govd &
+gov connect claude   # sign Claude Code in for GovernCode (once)
 gov demo
 ```
 
