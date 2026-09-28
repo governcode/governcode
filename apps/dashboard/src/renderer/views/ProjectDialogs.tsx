@@ -4,7 +4,7 @@
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import { api, call, PROJECT_NAME, type Controller, type Project } from "../api.ts";
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const id = useId();
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };

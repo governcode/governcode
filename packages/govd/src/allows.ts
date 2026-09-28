@@ -25,9 +25,6 @@ const ALWAYS_ASK = new Set(["rm", "rmdir", "sudo", "su", "doas", "curl", "wget",
   "mkfs", "chmod", "chown", "kill", "pkill", "killall", "shutdown", "reboot", "systemctl", "crontab", "docker",
   "podman", "eval", "exec", "env", "xargs", "sh", "bash", "zsh", "fish", "dash", "python", "python3", "node", "deno",
   "bun", "perl", "ruby", "php", "lua", "osascript", "open", "xdg-open", "npx", "pnpx", "bunx",
-  // git reads the project's .git/config, which can make it run any program (diff drivers,
-  // fsmonitor, hooks); the AI can edit that file, so every git command asks.
-  "git",
   // sed scripts can write files (w) or run commands (e); only printing line ranges is quiet.
   "sed",
   // Launchers run another program named later on the line, which this check would not see
@@ -42,11 +39,17 @@ const ALWAYS_ASK = new Set(["rm", "rmdir", "sudo", "su", "doas", "curl", "wget",
   "tar"]);
 // Program + subcommand pairs that always ask.
 const ALWAYS_ASK_SUB = new Set(["npm publish", "npm exec", "yarn publish", "pnpm publish", "pnpm exec",
-  "cargo publish", "cargo install", "gh"]);
+  "cargo publish", "cargo install", "gh",
+  // Installing packages downloads code and runs its install scripts: always asks, at every level.
+  "npm install", "npm i", "npm ci", "npm add", "npm update", "npm uninstall", "yarn add", "yarn install", "yarn remove",
+  "pnpm add", "pnpm install", "pnpm i", "pnpm remove", "bun add", "bun install", "bun remove", "pip install", "pip3 install",
+  "pip uninstall", "uv add", "uv pip", "uv sync", "uv tool", "poetry add", "poetry install", "cargo add", "go get", "go install",
+  "gem install", "bundle install", "bundle add", "composer require", "composer install", "deno install", "npx"]);
 // Read-only commands that need not ask at all (a setting; on by default). Only programs that no
 // file in the project can steer into running something else.
 // Quiet reads use the same guard (EXEC_FLAG) as rules.
-const QUIET_READS = new Set(["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "which", "stat", "du", "df", "find"]);
+const QUIET_READS = new Set(["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "which", "stat", "du", "df", "find",
+  "sort", "uniq", "cut", "nl", "echo"]);
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
 
 // Outside quotes, anything that could chain, substitute, redirect, glob or hide a command.
@@ -137,6 +140,12 @@ const QUIET: Record<string, Opts> = {
   stat: { letters: "L", arg: ["-c"] },
   du: { letters: "shcad", arg: ["-d"], longArg: ["--max-depth"] },
   df: { letters: "hTi" },
+  // Filters that commonly end a pipeline; sort's -o (write a file) is not among its options.
+  sort: { letters: "rnufbdhV", arg: ["-k", "-t"] },
+  uniq: { letters: "cdiu" },
+  cut: { arg: ["-d", "-f", "-c", "-b"] },
+  nl: { letters: "b", arg: ["-w"] },
+  echo: { letters: "neE" },
 };
 // find: a starting path, then only these tests (with their values) and printing.
 const FIND_TESTS = new Set(["-name", "-iname", "-path", "-ipath", "-type", "-maxdepth", "-mindepth", "-newer", "-size",
@@ -156,6 +165,7 @@ function quietArgs(words: string[]): boolean {
     }
     return true;
   }
+  if (words[0] === "echo") return true;                        // echo prints its words (substitution already refused)
   const o = QUIET[words[0]];
   if (!o) return false;
   let operands = false;
@@ -189,11 +199,14 @@ export function kindOf(req: { tool: string; base?: string; spec?: string; input:
   return k && req.spec ? { key: `runner:${k.key}`, label: `a Runner's ${k.label}` } : k;
 }
 
-function controllerKind(req: { tool: string; base?: string; input: Record<string, unknown> }): Kind | null {
-  const tool = baseTool(req);
-  if (tool === "Bash" || tool === "codex command") {
-    const words = plainWords(req.input.command);
-    if (!words) return null;
+// git: reading the repository is a kind like any other (it runs inside the sandbox, and the .git
+// guard puts back anything a turn changed in .git); anything that changes the repository or
+// reaches the network always asks: commit, push, pull, fetch, reset, rebase, checkout, config...
+const GIT_READ = new Set(["status", "diff", "log", "show", "blame", "ls-files", "rev-parse", "describe", "shortlog", "grep"]);
+
+/** The kind of one simple command (its words), or null when it must always ask. */
+function commandKind(words: string[]): Kind | null {
+    if (words[0] === "git" && !GIT_READ.has(words[1] ?? "")) return null;
     const key = commandKey(words);
     if (!key || ALWAYS_ASK.has(words[0]) || INTERPRETER.test(words[0]) || ALWAYS_ASK_SUB.has(key) || ALWAYS_ASK_SUB.has(words[0])) return null;
     if (words.some((w) => EXEC_FLAG.test(w))) return null;
@@ -202,6 +215,13 @@ function controllerKind(req: { tool: string; base?: string; input: Record<string
     if (words[0] === "find" && words.some((w) => FIND_ACTS.test(w))) return null;
     // Honest label: a build or test command runs the project's own scripts, which the AI can edit.
     return { key: `command:${key}`, label: `\`${key}\` commands (they run whatever the project's files say; the sandbox still applies)` };
+}
+
+function controllerKind(req: { tool: string; base?: string; input: Record<string, unknown> }): Kind | null {
+  const tool = baseTool(req);
+  if (tool === "Bash" || tool === "codex command") {
+    const words = plainWords(req.input.command);
+    return words ? commandKind(words) : null;
   }
   if (["Edit", "Write", "MultiEdit", "NotebookEdit", "codex fileChange"].includes(tool)) {
     return { key: "edit", label: "file edits (only where the sandbox already lets it write)" };
@@ -221,6 +241,103 @@ export function isQuietRead(req: { tool: string; base?: string; input: Record<st
   if (words[0] === "sed") return words.length >= 3 && words[1] === "-n" && /^(\d+|\$)(,(\d+|\$))?p$/.test(words[2]) && words.slice(3).every((w) => !w.startsWith("-"));
   return QUIET_READS.has(words[0]) && quietArgs(words);
 }
+
+// --- Compound commands (how strict, 2026-09-27) ------------------------------------------
+// AI tools rarely run a bare `npm test`; they run `cd x && npm test 2>&1 | tail -20`. Judged as a
+// whole, that always asked: 29 of 30 questions in the first real test were like it. So a command
+// is split into its simple commands, and each is judged on its own. Only syntax that joins
+// commands the way the shell always does is understood; anything that could hide or compute a
+// command (substitution, subshells, background jobs, globs, comments, heredocs, redirection
+// into a file) still makes the whole command ask.
+
+export type Analysis = { ask: boolean; quiet: boolean; kinds: Kind[] };
+
+/** A command's simple commands, as shell words, or null when any part cannot be read statically.
+ *  Splits at && || ; | and newlines outside quotes; drops `2>&1`, `>&2` and redirection to
+ *  /dev/null; `cd DIR` counts as nothing. */
+export function shellSegments(text: string): string[][] | null {
+  const segs: string[][] = [];
+  let words: string[] = [], cur = "", open = false;
+  const endWord = () => { if (open) { words.push(cur); cur = ""; open = false; } };
+  const endSeg = () => { endWord(); if (words.length) segs.push(words); words = []; };
+  for (let i = 0; i < text.length;) {
+    const c = text[i];
+    if (c === " " || c === "\t") { endWord(); i++; continue; }
+    if (c === "\n" || c === ";") { endSeg(); i++; continue; }
+    if (c === "&" && text[i + 1] === "&") { endSeg(); i += 2; continue; }
+    if (c === "|") { endSeg(); i += text[i + 1] === "|" ? 2 : 1; continue; }
+    if (c === ">" || c === "<") {
+      // A file descriptor right before it (2>): part of the redirection, not a word.
+      if (open && /^[0-9]$/.test(cur)) { cur = ""; open = false; }
+      if (c === "<") return null;                                  // input from a file or heredoc
+      let j = i + 1;
+      if (text[j] === ">") j++;                                    // >>
+      if (text[j] === "&") {                                       // >&1, >&2
+        if (!/[12]/.test(text[j + 1] ?? "") || /[^\s;&|]/.test(text[j + 2] ?? " ")) return null;
+        i = j + 2; continue;
+      }
+      while (text[j] === " ") j++;
+      const m = /^\/dev\/null(?=$|[\s;&|])/.exec(text.slice(j));
+      if (!m) return null;                                         // writing a file: asks
+      i = j + m[0].length; continue;
+    }
+    if (c === "'" || c === '"') {
+      const j = text.indexOf(c, i + 1);
+      if (j < 0) return null;
+      const inner = text.slice(i + 1, j);
+      if (c === '"' && /[$`\\!]/.test(inner)) return null;
+      cur += inner; open = true; i = j + 1; continue;
+    }
+    if (/[`$(){}\\*?\[\]~!#&\r]/.test(c)) return null;
+    cur += c; open = true; i++;
+  }
+  endSeg();
+  if (!segs.length) return null;
+  return segs.filter((w) => !(w[0] === "cd" && w.length <= 2));    // cd changes nothing outside this command
+}
+
+/** What a request needs: `ask` when some part must always ask; `quiet` when every part is a
+ *  plain read; otherwise the kinds a rule (or the user) must cover. */
+export function analyze(req: { tool: string; base?: string; spec?: string; input: Record<string, unknown> }): Analysis {
+  const tool = baseTool(req);
+  const runner = (k: Kind): Kind => (req.spec ? { key: `runner:${k.key}`, label: `a Runner's ${k.label}` } : k);
+  if (tool === "Bash" || tool === "codex command") {
+    let command = req.input.command;
+    if (Array.isArray(command) && command.length === 3 && ["bash", "sh", "zsh"].includes(String(command[0])) && ["-c", "-lc"].includes(String(command[1]))) command = command[2];
+    let segs: string[][] | null = null;
+    if (typeof command === "string") {
+      const w = shellWords(command);
+      // Codex's string wrapper: /usr/bin/bash -lc '<command>'
+      if (w && w.length === 3 && /^(?:\/usr\/bin\/|\/bin\/)?(?:bash|sh|zsh)$/.test(w[0]) && ["-c", "-lc"].includes(w[1])) command = w[2];
+      segs = shellSegments(String(command));
+    } else if (Array.isArray(command)) {
+      const w = plainWords(command);
+      segs = w ? [w] : null;
+    }
+    if (!segs) return { ask: true, quiet: false, kinds: [] };
+    if (!segs.length) return { ask: false, quiet: true, kinds: [] };   // only cd
+    const kinds: Kind[] = [];
+    for (const w of segs) {
+      if (!w.length || w[0].includes("=") || w[0].includes("/")) return { ask: true, quiet: false, kinds: [] };
+      if (QUIET_READS.has(w[0]) && quietArgs(w)) continue;
+      const k = commandKind(w);
+      if (!k) return { ask: true, quiet: false, kinds: [] };
+      if (!kinds.some((x) => x.key === runner(k).key)) kinds.push(runner(k));
+    }
+    return { ask: false, quiet: kinds.length === 0, kinds };
+  }
+  // Handing a job to a local model costs no quota: a kind like any other. A paid Runner always asks.
+  if (/^(mcp__governcode__delegate|governcode delegate)$/.test(tool)) {
+    return LOCAL_RUNNERS.includes(String(req.input.to ?? "")) ? { ask: false, quiet: false, kinds: [runner({ key: "delegate:local", label: "handing jobs to a local model" })] }
+      : { ask: true, quiet: false, kinds: [] };
+  }
+  if (/^(mcp__governcode__spec_discard|governcode spec_discard)$/.test(tool)) {
+    return { ask: false, quiet: false, kinds: [runner({ key: "spec:discard", label: "throwing away a Spec it proposed (accepting is always yours)" })] };
+  }
+  const k = kindOf(req);
+  return k ? { ask: false, quiet: false, kinds: [k] } : { ask: true, quiet: false, kinds: [] };
+}
+const LOCAL_RUNNERS = ["ollama"];
 
 /** The scopes a Gate may offer: a Controller's steps per turn or project, a Runner's per Spec or
  *  project; Home (no project) per turn only. */

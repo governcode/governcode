@@ -52,7 +52,7 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.deepEqual(checkCall("proposal.answer", { id: "P-2", answer: "create" }).params, { id: "P-2", answer: "create" });
   for (const bad of [{ id: "P-2", answer: "yes" }, { id: "G-2", answer: "create" }]) assert.throws(() => checkCall("proposal.answer", bad));
   // Settings: reserves are whole percents from 0 to 90, keyed by Runner and window.
-  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true }, local: { maxRunning: 1, maxMinutes: 10 } });
+  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null } });
   assert.throws(() => checkCall("settings.set", { specModels: "anything" }));
   assert.throws(() => checkCall("settings.set", { runners: { codex: { model: "m", effort: "huge" } } }));
   for (const bad of [{ codex: { weekly: 91 } }, { codex: { weekly: 1.5 } }, { "../x": { weekly: 5 } }]) assert.throws(() => checkCall("settings.set", { reserves: bad }));

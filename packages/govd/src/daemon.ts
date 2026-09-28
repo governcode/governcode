@@ -16,7 +16,7 @@ import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { LimitGate, type UsageSource } from "./limits.ts";
 import { ollamaUsage } from "./local.ts";
-import { Allows, isQuietRead, kindOf, scopesFor, type AllowScope, type GateContext, type Kind } from "./allows.ts";
+import { Allows, analyze, scopesFor, type AllowRule, type AllowScope, type GateContext, type Kind } from "./allows.ts";
 import { openControllerSocket, openTurnSocket, accept, discard } from "./delegate.ts";
 import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot, specPaths, turnStore } from "./specstore.ts";
 
@@ -34,7 +34,7 @@ export type DaemonOptions = { socketPath: string; ledgerPath: string; policyDir:
 // its Gates are denied rather than left for a Controller to wait on forever.
 type Gate = { id: string; project: string | null; tool: string; canonical: string; opened: string;
   owner: Socket; answer: (a: "allow" | "deny") => void;
-  kind: Kind | null; scopes: AllowScope[]; ctx: GateContext };   // what a standing allow would cover
+  kinds: Kind[]; scopes: AllowScope[]; ctx: GateContext };   // what a standing allow would cover
 
 export class Daemon {
   readonly ledger: Ledger;
@@ -68,6 +68,27 @@ export class Daemon {
     this.limits.setReserves(this.settings().reserves);
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
+  }
+
+  /** The project's recent conversation, since its last reset: the user's messages and the
+   *  Controller's replies, newest last, trimmed to a budget. Each turn starts a fresh session
+   *  of the Controller's tool; this is how it knows what was said before (first fresh-install
+   *  test, 2026-09-27: "1" meant nothing to it). Tool output is not included. */
+  private conversation(project: string | null): string {
+    const events = this.ledger.events(project ?? undefined, 600).filter((e) => (e.project ?? null) === project);
+    const reset = events.map((e) => e.kind).lastIndexOf("conversation.reset");
+    const turns: Array<{ you: string; ai: string }> = [];
+    for (const e of events.slice(reset + 1)) {
+      if (e.kind === "turn.started") turns.push({ you: String(e.data.prompt ?? ""), ai: "" });
+      else if ((e.kind === "turn.completed" || e.kind === "turn.failed") && turns.length && !turns.at(-1)!.ai) turns.at(-1)!.ai = String(e.data.summary ?? "");
+    }
+    let out = "", used = 0;
+    for (const t of turns.slice(-10).reverse()) {
+      const block = `User: ${t.you.slice(0, 1500)}\nYou replied: ${(t.ai || "(no reply: the turn ended early)").slice(0, 2500)}\n\n`;
+      if (used + block.length > 12_000) break;
+      out = block + out; used += block.length;
+    }
+    return out ? "The conversation so far in this project (your earlier replies, as GovernCode recorded them; the output of the commands you ran is not included, so look again if you need it):\n\n" + out.trim() : "";
   }
 
   /** A project name must be new; say which folder already has it, never a database error. */
@@ -224,12 +245,13 @@ export class Daemon {
   private settle(id: string, answer: "allow" | "deny", by: string, remember?: AllowScope): boolean {
     const g = this.gates.get(id);
     if (!g) return false;
-    if (remember && (answer !== "allow" || !g.kind || !g.scopes.includes(remember))) {
-      throw new RpcError(Errors.refused, g.kind ? `this Gate can be remembered only for: ${g.scopes.join(", ") || "nothing"}` : "this kind of step always asks");
+    if (remember && (answer !== "allow" || !g.kinds.length || !g.scopes.includes(remember))) {
+      throw new RpcError(Errors.refused, g.kinds.length ? `this Gate can be remembered only for: ${g.scopes.join(", ") || "nothing"}` : "this kind of step always asks");
     }
     this.gates.delete(id);
-    if (remember && g.kind) {
-      const rule = this.allows.add(remember, g.kind, g.ctx);
+    // A command made of several (cd x && npm test | tail) is remembered as each of its kinds.
+    if (remember) for (const k of g.kinds) {
+      const rule = this.allows.add(remember, k, g.ctx);
       this.ledger.append(g.project, "allow.added", "user", { rule: rule.id, scope: rule.scope, key: rule.key, label: rule.label, from: id });
     }
     this.ledger.append(g.project, answer === "allow" ? "gate.allowed" : "gate.denied", "user", { gate: id, tool: g.tool, by });
@@ -306,6 +328,10 @@ export class Daemon {
         return { events: L.events(p.project, p.limit) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
+      case "conversation.reset":
+        if (p.project !== null && !L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
+        L.append(p.project, "conversation.reset", "user", {});
+        return { ok: true };
       case "allows.list":
         return { rules: this.allows.list(p.project) };
       case "allows.revoke": {
@@ -373,7 +399,9 @@ export class Daemon {
         return { id: s.id, discarded: true };
       }
       case "gate.list":
-        return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, kind, ...g }) => ({ ...g, covers: kind?.label ?? null })) };
+        return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, kinds, ...g }) => ({ ...g,
+          covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
+          suggest: this.settings().gates.level === "balanced" && g.scopes.includes("project") ? "project" : null })) };
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
@@ -396,6 +424,7 @@ export class Daemon {
     const project = found ?? { name: null, path: this.opts.homeDir, controller: this.homeController(), readOnly: true };
     const actor = `controller · ${project.controller.provider}`;
     const L = this.ledger;
+    const history = this.conversation(project.name);
     L.append(project.name, "turn.started", "user", { prompt: prompt.slice(0, 2000), controller: project.controller, home: !found });
     if (found) this.turning.set(found.name, (this.turning.get(found.name) ?? 0) + 1);
     // A tool that can write the project can write .git; hooks and some config keys would then
@@ -417,26 +446,33 @@ export class Daemon {
             // Before asking: a plain read-only command, or a standing allow the user made, skips
             // the question (never the sandbox). Either way the step is in the Trace.
             const ctx: GateContext = { project: project.name, turn: turnId, spec: req.spec };
-            const kind = kindOf(req);
-            if (this.settings().gates.quietReads && isQuietRead(req)) {
-              L.append(project.name, "gate.allowed", "govd", { tool: req.tool, by: "quiet read", request: req.canonical.slice(0, 4000), turn: turnId, spec: req.spec ?? null });
-              notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why: "a read-only command (quiet reads are on)" });
-              return answer("allow");
-            }
-            const rule = this.allows.match(kind, ctx);
-            if (rule) {
-              L.append(project.name, "gate.allowed", "govd", { tool: req.tool, by: `rule ${rule.id}`, rule: rule.id, scope: rule.scope,
-                request: req.canonical.slice(0, 4000), turn: turnId, spec: req.spec ?? null });
-              notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why: `your rule ${rule.id}: ${rule.label}, for this ${rule.scope}` });
-              return answer("allow");
+            const { level, quietReads } = this.settings().gates;
+            const a = analyze(req);
+            const pass = (by: string, why: string, extra: Record<string, unknown> = {}) => {
+              L.append(project.name, "gate.allowed", "govd", { tool: req.tool, by, ...extra, request: req.canonical.slice(0, 4000), turn: turnId, spec: req.spec ?? null });
+              notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why });
+              answer("allow");
+            };
+            if (!a.ask) {
+              if (a.quiet && quietReads) return pass("quiet read", "a read-only command (quiet reads are on)");
+              if (level === "relaxed") return pass("relaxed", "not on the always-ask list (Gates: relaxed; the sandbox still applies)");
+              const rules = a.kinds.map((k) => this.allows.match(k, ctx));
+              if (!a.quiet && rules.every(Boolean)) {
+                const r = rules as AllowRule[];
+                return pass(`rule ${r.map((x) => x.id).join(", ")}`, `your rule${r.length > 1 ? "s" : ""}: ${r.map((x) => `${x.label}, for this ${x.scope}`).join("; ")}`,
+                  { rule: r.map((x) => x.id).join(","), scope: r[0].scope });
+              }
             }
             const id = `G-${++this.gateSeq}`;
-            const scopes = scopesFor(kind, ctx);
+            // Only the kinds no rule covers yet are offered to remember.
+            const kinds = a.ask ? [] : a.kinds.filter((k) => !this.allows.match(k, ctx));
+            const scopes = kinds.length ? scopesFor(kinds[0], ctx) : [];
             this.gates.set(id, { id, project: project.name, tool: req.tool, canonical: req.canonical,
-              opened: new Date().toISOString(), owner: sock, answer, kind, scopes, ctx });
+              opened: new Date().toISOString(), owner: sock, answer, kinds, scopes, ctx });
             L.append(project.name, "gate.opened", req.actor ?? actor, { gate: id, tool: req.tool });
             this.gatesChanged();
-            notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical, covers: kind?.label ?? null, scopes });
+            notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical, covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
+              scopes, level, suggest: level === "balanced" && scopes.includes("project") ? "project" : null });
           }),
           done: (r) => {
             if (found) this.turning.set(found.name, (this.turning.get(found.name) ?? 1) - 1);
@@ -465,7 +501,8 @@ export class Daemon {
           },
       };
       const common = { supervisor: this.opts.supervisor, policyDir: this.opts.policyDir, worktree: project.path,
-        readOnly: "readOnly" in project, prompt, hooks };
+        readOnly: "readOnly" in project, prompt, hooks, history,
+        personal: this.settings().personal[project.controller.provider === "codex" ? "codex" : "claude"] === true };
       // Either Controller gets GovernCode's tools on a socket that exists only for this turn:
       // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
       const ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, ledger: L, limits: this.limits,

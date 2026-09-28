@@ -63,9 +63,27 @@ function answers(): { next(prompt: string): Promise<string>; close(): void } {
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
+/** The first time a Controller works, ask once whether the user's own instructions come along
+ *  (off by default; said plainly both ways). */
+async function askPersonal(api: Awaited<ReturnType<typeof open>>, project: string | null, tty: ReturnType<typeof answers>): Promise<void> {
+  const { settings } = await api.call("settings.get", {});
+  const { projects } = await api.call("project.list", {});
+  const provider = projects.find((p: any) => p.name === project)?.controller.provider === "codex" ? "codex" : "claude";
+  if (settings.personal?.[provider] !== null) return;
+  const tool = provider === "codex" ? "Codex" : "Claude Code";
+  const files = provider === "codex" ? "your AGENTS.md" : "your CLAUDE.md, skills, agents, commands, plugins and hooks";
+  console.log(warn(`\nUse your own ${tool} instructions in GovernCode?`));
+  console.log(`  No (the default): ${tool} starts clean, from its own defaults and GovernCode's instructions only.`);
+  console.log(`  Yes: it reads ${files}, as it does outside GovernCode, so what you have built up comes along.`);
+  console.log(dim("  The sandbox and Gates apply the same either way. Change it later: gov personal " + provider + " on|off"));
+  const a = (await tty.next("Use your own instructions? [y/N] ")).trim().toLowerCase();
+  await api.call("settings.set", { ...settings, personal: { ...settings.personal, [provider]: a === "y" || a === "yes" } });
+}
+
 /** One Controller turn in the terminal: text streams, Gates ask (with standing-allow choices). */
 export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: string | null, prompt: string,
     tty: ReturnType<typeof answers>): Promise<{ ok: boolean; summary: string }> {
+  await askPersonal(api, project, tty);
   api.onEvent(async (ev) => {
     if (ev.kind === "text") process.stdout.write(ev.text + "\n");
     else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
@@ -82,6 +100,7 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
       const keys: Record<string, string> = { turn: "t", spec: "s", project: "p" };
       if (scopes.length) console.log(dim(`  Also allow ${ev.covers} for: ${scopes.map((s) => `[${keys[s]}] this ${s}`).join(", ")}.` +
         " That only skips this question; the sandbox still applies to every step."));
+      if (ev.suggest) console.log(dim(`  Suggested: [${keys[ev.suggest]}], so this kind of step stops asking in this ${ev.suggest}.`));
       const choices = ["y", ...scopes.map((s) => keys[s])].join("/");
       const a = (await tty.next(`Allow? [${choices}/N] `)).trim().toLowerCase();
       if (!a) console.log("");
@@ -213,6 +232,31 @@ async function main(argv: string[]): Promise<number> {
         console.log(`${provider}: defaults to ${model} · ${effort ?? "n/a"}`);
         return 0;
       }
+      case "level": {
+        // gov level relaxed|balanced|strict: how often Gates ask. The sandbox is the same at every level.
+        const level = rest[0];
+        if (!["relaxed", "balanced", "strict"].includes(level)) throw new Error("usage: gov level relaxed|balanced|strict");
+        const { settings } = await api.call("settings.get", {});
+        await api.call("settings.set", { ...settings, gates: { ...settings.gates, level } });
+        console.log(`Gates: ${level} (the sandbox applies the same at every level)`);
+        return 0;
+      }
+      case "personal": {
+        // gov personal claude|codex on|off: whether that Controller brings the user's own instructions.
+        const [provider, state] = rest;
+        if (!["claude", "codex"].includes(provider) || !["on", "off"].includes(state)) throw new Error("usage: gov personal claude|codex on|off");
+        const { settings } = await api.call("settings.get", {});
+        await api.call("settings.set", { ...settings, personal: { ...settings.personal, [provider]: state === "on" } });
+        console.log(`${provider}: personal instructions ${state}`);
+        return 0;
+      }
+      case "reset": {
+        // gov reset: the Controller forgets this project's conversation (the Trace keeps it all).
+        const project = await currentProject(api);
+        await api.call("conversation.reset", { project });
+        console.log(`new conversation${project ? ` in ${project}` : " at Home"}`);
+        return 0;
+      }
       case "spec-models": {
         // gov spec-models free|within|defaults: how far a Controller may depart from the defaults per Spec.
         const policy = rest[0];
@@ -290,7 +334,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|reset|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

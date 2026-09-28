@@ -10,8 +10,15 @@ import type { ProviderLimit } from "./Limits.tsx";
 type Reserves = Record<string, Record<string, number>>;
 type Effort = "low" | "medium" | "high" | "max" | null;
 type SettingsValue = { reserves: Reserves; runners: Record<string, { model: string; effort: Effort }>; specModels: "free" | "within" | "defaults";
-  gates: { quietReads: boolean }; local: { maxRunning: number; maxMinutes: number } };
-const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free", gates: { quietReads: true }, local: { maxRunning: 1, maxMinutes: 10 } };
+  gates: { quietReads: boolean; level: "relaxed" | "balanced" | "strict" }; local: { maxRunning: number; maxMinutes: number };
+  personal: { claude: boolean | null; codex: boolean | null } };
+const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" },
+  local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null } };
+const LEVELS: Array<[SettingsValue["gates"]["level"], string, string]> = [
+  ["relaxed", "Relaxed", "Only risky steps ask: deleting, git commands that change the repository, installing packages, network tools, sudo, interpreters, and handing work to a paid Runner. Everything else runs and is recorded in the Trace."],
+  ["balanced", "Balanced (default)", "Each new kind of command asks once; answer \u201cAllow for this project\u201d and that kind stops asking here. Risky steps always ask."],
+  ["strict", "Strict", "Every step asks, except plain reads (if quiet reads are on) and rules you made. For demos, audits, or when you want to watch everything."],
+];
 type AllowRule = { id: string; project: string | null; label: string; created: string };
 const POLICIES: Array<[SettingsValue["specModels"], string, string]> = [
   ["free", "Controller picks", "It chooses the model and effort for each Spec."],
@@ -132,8 +139,23 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
           </label>
         </div>
 
+        <h2>Personal instructions</h2>
+        <p className="dim small">Whether a Controller brings the instructions you set up for it outside GovernCode. Off: it starts clean, the same for everyone. On: your own setup comes along. The sandbox and Gates apply the same either way.</p>
+        {([["claude", "Claude Code", "CLAUDE.md, skills, agents, commands, plugins and hooks"], ["codex", "Codex", "AGENTS.md"]] as const).map(([k, tool, files]) => (
+          <label key={k} className="policy-option">
+            <input type="checkbox" checked={draft.personal[k] === true} onChange={(e) => setDraft((d) => ({ ...d, personal: { ...d.personal, [k]: e.target.checked } }))} />
+            <span><b>{tool}: use my instructions</b><span className="dim small"> · {files}{draft.personal[k] === null ? " (not chosen yet: off, and asked the first time)" : ""}</span></span>
+          </label>
+        ))}
+
         <h2>Gates</h2>
-        <p className="dim small">The sandbox applies to every step, always. These settings only decide which steps stop to ask you first.</p>
+        <p className="dim small">The sandbox applies to every step at every level: it is what keeps the AI inside the project. These settings only decide which steps stop to ask you first.</p>
+        {LEVELS.map(([v, title, text]) => (
+          <label key={v} className="policy-option">
+            <input type="radio" name="gate-level" checked={draft.gates.level === v} onChange={() => setDraft((d) => ({ ...d, gates: { ...d.gates, level: v } }))} />
+            <span><b>{title}</b><span className="dim small"> · {text}</span></span>
+          </label>
+        ))}
         <label className="policy-option">
           <input type="checkbox" checked={draft.gates.quietReads} onChange={(e) => setDraft((d) => ({ ...d, gates: { ...d.gates, quietReads: e.target.checked } }))} />
           <span><b>Quiet reads</b><span className="dim small"> · plain read-only commands (ls, cat, grep, rg…) run without asking. Everything else still asks.</span></span>

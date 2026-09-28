@@ -28,10 +28,12 @@ export const SpecInput = z.object({
     read: z.array(z.string().min(1)).max(50).default([]),
     write: z.array(z.string().min(1)).max(50).default([]),
   }),
-  budgetPercent: z.number().min(1).max(100),             // a request; govd clamps it
+  budgetPercent: z.number().min(1).max(100).default(10), // a request; govd clamps it
   workspace: z.enum(["worktree", "shared"]).default("worktree"),
-  model: z.string().min(1).max(80),
-  effort: Effort.nullable(),
+  // Empty: the Runner's default (the user's Settings, else the tool's own). The Controller need
+  // not know model names.
+  model: z.string().max(80).default(""),
+  effort: Effort.nullable().default(null),
   reason: z.string().min(1).max(2_000),                  // why this Runner, shown to the user
 });
 export type SpecInput = z.infer<typeof SpecInput>;
@@ -55,7 +57,16 @@ export const Settings = z.object({
   runners: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.object({ model: z.string().min(1).max(80), effort: Effort.nullable() })).default({}),
   specModels: z.enum(["free", "within", "defaults"]).default("free"),
   // Plain read-only commands (ls, cat, grep...) run without a Gate. The sandbox still applies.
-  gates: z.object({ quietReads: z.boolean().default(true) }).default({ quietReads: true }),
+  // How strict Gates are. relaxed: only steps on the always-ask list (and paid delegation) ask;
+  // balanced: each new kind of command asks once, then the user can remember it for the project;
+  // strict: everything asks except quiet reads and rules the user made. The sandbox is the same
+  // at every level.
+  gates: z.object({ quietReads: z.boolean().default(true), level: z.enum(["relaxed", "balanced", "strict"]).default("balanced") })
+    .default({ quietReads: true, level: "balanced" }),
+  // The user's own instructions for each Controller (CLAUDE.md, skills, agents and hooks for
+  // Claude Code; AGENTS.md for Codex). null: not asked yet, treated as off.
+  personal: z.object({ claude: z.boolean().nullable().default(null), codex: z.boolean().nullable().default(null) })
+    .default({ claude: null, codex: null }),
   // Local models (Ollama): no quota, so the Limit is the machine's. At most this many local Specs
   // at once, each stopped after this many minutes.
   local: z.object({ maxRunning: z.number().int().min(1).max(8).default(1), maxMinutes: z.number().int().min(1).max(120).default(10) })
@@ -86,6 +97,7 @@ export const Params = {
   // skips the question; the sandbox still applies to every step.
   "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]),
     remember: z.enum(["turn", "spec", "project"]).optional() }),
+  "conversation.reset": z.object({ project: ProjectName.nullable() }),
   "allows.list": z.object({ project: ProjectName.optional() }),
   "allows.revoke": z.object({ id: z.string().regex(/^R-\d+$/) }),
   "proposal.answer": z.object({ id: z.string().regex(/^P-\d+$/), answer: z.enum(["create", "cancel"]) }),
@@ -112,7 +124,7 @@ export type TraceEvent = {
     | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed" | "allow.added" | "allow.revoked"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
-    | "git.scrubbed" | "git.guard_failed" | "checkpoint.taken" | "checkpoint.undone"
+    | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;

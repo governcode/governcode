@@ -37,6 +37,10 @@ const EFFORT_ORDER = ["low", "medium", "high", "max"] as const;
 export function specModel(input: { to: string; model: string; effort: SpecInput["effort"] }, s: Pick<SettingsValue, "runners" | "specModels"> | undefined):
     { model: string; effort: SpecInput["effort"]; note: string | null } {
   const def = s?.runners[input.to];
+  // "default", "auto" or nothing: the Runner's default (a Controller once guessed "default").
+  if (/^(default|auto)?$/i.test(input.model.trim())) {
+    return def ? { model: def.model, effort: input.effort ?? def.effort, note: null } : { model: "", effort: input.effort, note: null };
+  }
   if (!def || !s || s.specModels === "free") return { model: input.model, effort: input.effort, note: null };
   if (s.specModels === "defaults") {
     const same = def.model === input.model && def.effort === input.effort;
@@ -56,6 +60,16 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
   return openTurnSocket(ctx.runtimeDir, async (method, params) => {
     if (method === "controller.delegate") return delegate(ctx, params);
     if (method === "controller.crew") return crew(ctx);
+    if (method === "controller.spec_discard") {
+      // The Controller may throw away its own proposal (a bad draft it wants to redo). Accepting
+      // stays the user's alone.
+      const s = ctx.ledger.spec(String((params as any)?.id));
+      if (!s || s.project !== ctx.project.name) throw new Error("no such Spec in this project");
+      if (!["needs-review", "failed", "held"].includes(s.status)) throw new Error(`${s.id} is ${s.status}; only a Spec waiting for review, failed or held can be discarded`);
+      discard(ctx.stateDir, s.id);
+      ctx.ledger.updateSpec(s.id, { status: "undone", note: "discarded by the Controller" }, "controller");
+      return { id: s.id, discarded: true };
+    }
     if (method === "controller.spec_status") {
       const s = ctx.ledger.spec(String((params as any)?.id));
       if (!s || s.project !== ctx.project.name) throw new Error("no such Spec in this project");
@@ -181,7 +195,9 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     const result = await new Promise<{ ok: boolean; summary: string }>((done) => {
       if (local) {
         // No tools and no commands: govd itself writes the model's proposed files, checked against the scope.
-        runLocalTurn({ model: input.model, work: paths.work, scope: input.scope, prompt, maxMinutes: local.maxMinutes, signal: stop.signal,
+        const model = input.model || ctx.usage[input.to].models?.()[0] || "";
+        if (!model) { done({ ok: false, summary: "no local model is installed (ollama pull a model first)" }); return; }
+        runLocalTurn({ model, work: paths.work, scope: input.scope, prompt, maxMinutes: local.maxMinutes, signal: stop.signal,
           hooks: { text: (t) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); }, done } })
           .catch((e) => done({ ok: false, summary: `the local Runner failed: ${e instanceof Error ? e.message : e}` }));   // never an unhandled rejection
         return;

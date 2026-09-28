@@ -54,6 +54,14 @@ test("a Controller turn's changes are checkpointed and can be undone exactly onc
   const args: string[] = JSON.parse(readFileSync(join(bin, "last-args.json"), "utf8"));
   const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
   for (const t of ["Bash", "Edit", "Write", "WebFetch", "mcp__governcode__delegate"]) assert.ok(settings.permissions.ask.includes(t), t);
+  // The next message carries the conversation so far; a reset starts clean.
+  const systemOf = () => { const a: string[] = JSON.parse(readFileSync(join(bin, "last-args.json"), "utf8")); return a[a.indexOf("--append-system-prompt") + 1]; };
+  assert.ok(!systemOf().includes("The conversation so far"), "the first message has no history");
+  await c.call("ask", { project: "proj", prompt: "and now?" });
+  assert.match(systemOf(), /User: edit things\nYou replied: edited/);
+  await c.call("conversation.reset", { project: "proj" });
+  await c.call("ask", { project: "proj", prompt: "fresh start" });
+  assert.ok(!systemOf().includes("edit things"), "a reset forgets the earlier conversation");
   const { result: { turns } } = await c.call("turn.list", { project: "proj" });
   assert.equal(turns.length, 1);
   assert.deepEqual(turns[0].files.sort(), ["README.md", "notes.txt"]);

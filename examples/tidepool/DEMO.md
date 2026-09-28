@@ -1,11 +1,11 @@
 # The GovernCode demo, with Tidepool
 
-About fifteen minutes. Each step shows one part of GovernCode; the prompts are ready to paste
-into the Dashboard's **Terminal** view (or `gov ask "..."` in a shell).
+About fifteen minutes. Talk to the Controller in plain words; the prompts below are only
+suggestions. Paste them into the Dashboard's **Terminal** view, or run `gov ask "..."` in a shell.
 
-**You need:** GovernCode installed (`./install.sh` from a release), `govd` running, Claude Code
-logged in (the Controller), and optionally Codex logged in and Ollama with `qwen3.5:9b` pulled
-(the two Runners). Every AI step runs inside the sandbox, always.
+**You need:** GovernCode installed (`./install.sh` from a release), `govd` running, and Claude
+Code logged in (the Controller). Optional: Codex logged in, and Ollama with a model pulled
+(`ollama pull qwen3.5:9b`), for the two Runners. Every AI step runs inside the sandbox, always.
 
 ## 0. A copy to work on
 
@@ -16,54 +16,53 @@ cp -r tidepool ~/tidepool && cd ~/tidepool
 git init -q && git add -A && git commit -qm "Tidepool, before the crew"
 ```
 
-In the Dashboard: **Open folder** → `~/tidepool`. Pick **Claude Code** as the Controller.
+In the Dashboard: **Open folder** → `~/tidepool`, and pick **Claude Code** as the Controller. The
+first message asks whether to use your own Claude Code instructions: **Start clean** is right for
+a demo.
 
-## 1. The Controller, and a Gate
+## 1. Ask, and meet a Gate
 
-> Run the tests and tell me what fails, in one line.
+> Run the tests and tell me what fails.
 
-The Controller wants to run `npm test`, so a **Gate** shows you exactly that command. Choose
-**Allow for this turn**: the question goes away for the rest of the turn, the sandbox does not.
-One test fails: a high tide in the second-to-last hour is missed.
+Reading files needs no question. Running `npm test` stops at a **Gate** showing exactly what will
+run. Choose **Allow for this project**: `npm test` won't ask again here (Settings › Gates is on
+**Balanced**; **Relaxed** asks less, **Strict** asks about everything). One test fails.
 
-## 2. A fix, and a Checkpoint
+## 2. Carry on, and undo
 
-> Fix the bug that test found, then run the tests again.
+> Fix it.
 
-It edits `src/tides.js` (the first edit asks: **Allow for this turn** again) and runs the
-tests. Open **Checkpoints**: the turn's change is there, before and after. Try **Undo**,
-look, then ask it to fix it again. Undo never overwrites a file you edited since.
+It remembers the conversation, so "it" is the failing test. The first file edit asks once (allow
+it for the project). Then open **Checkpoints**: the change is there, before and after. Try
+**Undo**, look, and ask it to fix it again. Undo never overwrites a file you edited since.
 
 ## 3. Something that always asks
 
-> The data file is old. Delete data/harbor.csv.
+> Delete the data file, we don't need it.
 
-`rm` always asks, however you answered before. Say **Deny**. Nothing is deleted.
+Deleting always asks, at every level. Say **Deny**. Nothing is deleted.
 
 ## 4. A job for a local model
 
-> Use the governcode delegate tool to have ollama (model qwen3.5:9b) add a "Reading the
-> output" section to README.md explaining high water, low water and range for someone who has
-> never read a tide table. Scope: read ["src", "data"], write ["README.md"].
+> Have the local model add a short section to the README explaining how to read the output.
 
-A **Spec** goes to the local model. It runs no commands and can only propose files inside its
-scope; GovernCode checks every path. Open **Pipeline**: review the **Diff**, then **Accept** or
-**Discard**. Nothing reached your folder until you chose.
+The Controller hands a **Spec** to the local model: no quota, no commands, and it can only
+propose the files it was given. Open **Pipeline**, read the **Diff**, then **Accept** or
+**Discard**. Small local models make mistakes; the Controller reviews the draft too, and can
+throw a bad one away and try again.
 
-## 5. A job for Codex, with its Limit
+## 5. A job for Codex
 
-> Use the governcode delegate tool to have codex add a --json flag to src/cli.js that prints
-> the high waters, low waters and range as JSON, with a test for it. Scope: read ["src",
-> "test", "data"], write ["src/cli.js", "test"]. Keep it small.
+> Now have Codex add a --json flag to the CLI, with a test.
 
-Before it starts, GovernCode checks Codex's measured usage against the reserve you keep
-(**Limits**). Codex works in its own copy, in its own sandbox; its steps show up as Gates marked
-with the Spec. Review the diff in **Pipeline** and accept it.
+Handing work to a paid Runner always asks. GovernCode checks Codex's measured usage against the
+reserve you keep (**Limits**), then Codex works in its own copy, in its own sandbox; its steps
+show up as Gates marked with the Spec. Review the diff in **Pipeline** and accept it.
 
 ## 6. Look around
 
-- **Trace:** everything that happened, including every step allowed without asking.
-- **Limits:** each Runner's usage and reserve; the local model's machine limit.
-- **Settings:** quiet reads on or off, the local-model limits, each Runner's default model.
+- **Trace:** everything that happened, including every step allowed without asking and why.
+- **Settings:** how strict Gates are, your own instructions on or off, local-model limits.
+- **New conversation** (Terminal) when you want the Controller to start fresh.
 
 Then read the diff one last time. It works, and it's yours now.

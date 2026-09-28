@@ -203,3 +203,22 @@ test("delegate: a new Dockerfile is a file, a name ending in / a folder, and an 
   const c = await empty.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["pkg/__init__.py"] } });
   assert.deepEqual([c.result.status, c.result.files], ["needs-review", ["pkg/__init__.py"]], "an empty file written on purpose is a change");
 });
+
+test("the model may be left out, or given as \"default\": the Runner's own default is used", () => {
+  const input = { to: "codex", model: "default", effort: null } as any;
+  assert.deepEqual(specModel(input, undefined), { model: "", effort: null, note: null });
+  assert.deepEqual(specModel({ ...input, model: "" }, { runners: { codex: { model: "gpt-x", effort: "low" } }, specModels: "free" } as any),
+    { model: "gpt-x", effort: "low", note: null });
+});
+
+test("the Controller can discard its own Spec, but not one that was accepted", async () => {
+  const t = setup("allow");
+  await new Promise((r) => setTimeout(r, 50));
+  const r = await t.call("controller.delegate", SPEC);
+  assert.equal(r.result.status, "needs-review");
+  const d = await t.call("controller.spec_discard", { id: r.result.id });
+  assert.equal(d.result.discarded, true);
+  assert.equal(t.ledger.spec(r.result.id)!.status, "undone");
+  const again = await t.call("controller.spec_discard", { id: r.result.id });
+  assert.match(again.error.message, /only a Spec waiting for review, failed or held/);
+});

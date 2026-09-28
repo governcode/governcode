@@ -44,7 +44,8 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
   say(`  ${warn("y")}  allow this one step   ${warn("t")}  allow this kind of step for the rest of this turn`);
   say(`  ${warn("p")}  remember it for this project   ${warn("N")}  deny`);
   say(dim("\"t\" and \"p\" only skip the question for that kind of step. They never widen the sandbox, and"));
-  say(dim("every step is still recorded. Deleting, networking, git and handing work to another AI always ask."));
+  say(dim("every step is still recorded. Deleting, networking, changing the git repository, installing packages and"));
+  say(dim("handing work to a paid AI always ask. How often the rest asks is yours to set: gov level relaxed|balanced|strict."));
   if ((await o.tty.next("\nReady? [Y/n] ")).trim().toLowerCase().startsWith("n")) return 0;
 
   step(1, "a sample project");

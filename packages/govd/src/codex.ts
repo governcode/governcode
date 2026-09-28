@@ -27,7 +27,7 @@ export function codexBinary(): string {
  * before each run, holds them; the user's config and login are linked in and read-only in
  * the policy, so a run cannot rewrite what the next run trusts.
  */
-export function prepareCodexHome(stateDir: string): string {
+export function prepareCodexHome(stateDir: string, personal = false): string {
   const user = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const home = join(stateDir, "codex-home");
   mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -35,18 +35,19 @@ export function prepareCodexHome(stateDir: string): string {
     const p = join(home, name);
     if (lstatSync(p).isSymbolicLink() || ["config.toml", "auth.json", "AGENTS.md"].includes(name)) rmSync(p, { force: true });
   }
-  for (const name of ["config.toml", "auth.json"]) if (existsSync(join(user, name))) symlinkSync(join(user, name), join(home, name));
+  // AGENTS.md is the user's own instructions: a Controller brings it only when they chose to.
+  for (const name of ["config.toml", "auth.json", ...(personal ? ["AGENTS.md"] : [])]) if (existsSync(join(user, name))) symlinkSync(join(user, name), join(home, name));
   return home;
 }
 
 export function codexPolicy(worktree: string, sessionTmp: string, codexHome: string, bin: string, readOnly = false,
-                            writePaths?: string[], gitDir?: string): Policy {
+                            writePaths?: string[], gitDir?: string, personal = false): Policy {
   const user = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const exists = (p: string) => existsSync(p);
   return {
     version: 1,
     read: ["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/proc", "/sys", "/dev/zero", "/dev/urandom",
-      "/dev/random", dirname(bin), join(user, "config.toml"), join(user, "auth.json"), ...resolverFiles(),
+      "/dev/random", dirname(bin), join(user, "config.toml"), join(user, "auth.json"), ...(personal ? [join(user, "AGENTS.md")] : []), ...resolverFiles(),
       // A Spec's Runner reads its whole worktree (and the repo's git data) but writes only its scope.
       ...(readOnly || writePaths ? [worktree] : []), ...(gitDir ? [gitDir] : [])].filter((p) => p === worktree || exists(p)),
     write: [...(readOnly ? [] : writePaths ?? [worktree]), sessionTmp, codexHome, "/dev/null"],
@@ -95,13 +96,13 @@ function start(supervisor: string, policyFile: string, bin: string, env: Record<
 }
 
 async function session(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string; readOnly?: boolean;
-                           writePaths?: string[]; gitDir?: string; mcp?: McpServer }) {
+                           writePaths?: string[]; gitDir?: string; mcp?: McpServer; personal?: boolean }) {
   const bin = codexBinary();
   mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
   const tmp = mkdtempSync(join(tmpdir(), "governcode-codex-"));
-  const home = prepareCodexHome(o.stateDir);
+  const home = prepareCodexHome(o.stateDir, o.personal && !o.writePaths);   // never for a Runner
   const policyFile = join(o.policyDir, `codex-${process.pid}-${Date.now()}.json`);
-  const base = codexPolicy(o.worktree, tmp, home, bin, o.readOnly, o.writePaths, o.gitDir);
+  const base = codexPolicy(o.worktree, tmp, home, bin, o.readOnly, o.writePaths, o.gitDir, o.personal && !o.writePaths);
   // GovernCode's own MCP server for a Controller: node may run its script and reach this
   // turn's socket, nothing more (as for Claude).
   const policy = o.mcp ? withMcpRead({ ...base, exec: [...base.exec, dirname(o.mcp.node)], unix_connect: [...base.unix_connect, o.mcp.socket] }, o.mcp) : base;
@@ -155,7 +156,7 @@ export function matchMcpApproval(p: any, inflight: Map<string, { tool: string; a
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
 export async function runCodexTurn(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string;
   readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks;
-  signal?: AbortSignal; mcp?: McpServer }): Promise<void> {
+  signal?: AbortSignal; mcp?: McpServer; history?: string; personal?: boolean }): Promise<void> {
   let s: Awaited<ReturnType<typeof session>>;
   try {
     s = await session(o);   // o.mcp widens its policy for GovernCode's MCP server
@@ -226,10 +227,10 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   // Stopped from outside (a Limit crossed mid-run): end the process, report why.
   o.signal?.addEventListener("abort", () => finish({ ok: false, summary: `stopped: ${String(o.signal?.reason ?? "aborted")}` }), { once: true });
   try {
-    const t = await rpc.request("thread/start", { cwd: o.worktree, model: o.model, ephemeral: true,
+    const t = await rpc.request("thread/start", { cwd: o.worktree, ...(o.model ? { model: o.model } : {}), ephemeral: true,
       approvalPolicy: "untrusted", sandbox: o.readOnly ? "read-only" : "workspace-write",
       // A Runner has write paths (its Spec's scope); a Controller does not.
-      developerInstructions: o.writePaths ? RUNNER_CONTEXT : CONTROLLER_CONTEXT,
+      developerInstructions: o.writePaths ? RUNNER_CONTEXT : o.history ? `${CONTROLLER_CONTEXT}\n\n${o.history}` : CONTROLLER_CONTEXT,
       // ponytail: servers in the user's own config.toml still load (Claude gets --strict-mcp-config);
       // their approvals are declined above. Drop them when Codex offers a strict switch.
       ...(o.mcp ? { config: { mcp_servers: { governcode: { command: o.mcp.node, args: [o.mcp.script, o.mcp.socket, ...(o.mcp.mode ? [o.mcp.mode] : [])] } } } } : {}) });

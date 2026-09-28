@@ -21,7 +21,7 @@ export type GateState = "waiting" | "allow" | "deny" | "settled";
 const SCOPE_LABEL: Record<string, string> = { turn: "this turn", spec: "this Spec", project: "this project" };
 
 export function GateCard(props: { id: string; tool: string; canonical: string; project?: string | null; opened?: string;
-  covers?: string | null; scopes?: string[]; state: GateState; onAnswered: (a: "allow" | "deny") => void }) {
+  covers?: string | null; scopes?: string[]; suggest?: string | null; state: GateState; onAnswered: (a: "allow" | "deny") => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [remembered, setRemembered] = useState<string | null>(null);
@@ -57,8 +57,12 @@ export function GateCard(props: { id: string; tool: string; canonical: string; p
       <pre className="code">{props.canonical}</pre>
       {props.state === "waiting" && (
         <div className="row">
+          {/* Balanced: the suggested answer first, so the next similar step does not ask again. */}
+          {props.suggest && (props.scopes ?? []).includes(props.suggest) && (
+            <button className="btn btn-accent" disabled={busy} onClick={() => answer("allow", props.suggest!)}>Allow for {SCOPE_LABEL[props.suggest] ?? props.suggest}</button>
+          )}
           <button className="btn btn-ok" disabled={busy} onClick={() => answer("allow")}>Allow once</button>
-          {(props.scopes ?? []).map((s) => (
+          {(props.scopes ?? []).filter((s) => s !== props.suggest).map((s) => (
             <button key={s} className="btn btn-ok" disabled={busy} onClick={() => answer("allow", s)}>Allow for {SCOPE_LABEL[s] ?? s}</button>
           ))}
           <button className="btn btn-danger" disabled={busy} onClick={() => answer("deny")}>Deny</button>

@@ -75,11 +75,20 @@ gov turns          # Checkpoints of the Controller's turns that changed files
 gov undo T-12      # put those files back, if you have not changed them since
 ```
 
-At a Gate you can allow one step, or **allow that kind of step for the rest of this turn**
-(a Runner: this Spec) **or this project**, so you are not asked about every `npm test`. That
-only skips the question: the sandbox still applies to every step, some steps always ask
-(deleting, network, git, interpreters, handing work to another AI), and everything is in the
-Trace. Details: [docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
+How often Gates ask is your choice: **Relaxed**, **Balanced** (the default) or **Strict**
+(`gov level`, or Settings in the Dashboard). At a Gate you can allow one step, or **allow that
+kind of step for the rest of this turn** (a Runner: this Spec) **or this project**, so you are
+not asked about every `npm test`; a command like `cd app && npm test | tail` counts as
+`npm test`. That only skips the question: the sandbox applies to every step at every level,
+risky steps always ask (deleting, git commands that change the repository, installing packages,
+network tools, interpreters, handing work to a paid Runner), and everything is in the Trace. Details:
+[docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
+
+The Controller remembers the project's conversation until you start a new one (`gov reset`, or
+**New conversation** in the Dashboard). The first time a Controller works, GovernCode asks
+whether it should bring **your own instructions** (for Claude Code: your CLAUDE.md, skills,
+agents and hooks; for Codex: your AGENTS.md). Off by default: it starts clean. Change it any time
+with `gov personal claude on|off` or in Settings.
 
 Outside a project, `gov ask` runs in Home: the Controller can read and plan but cannot
 write anything. It can propose a new project (name, folder, git); you get Create or Cancel,

@@ -29,8 +29,14 @@ export const CONTROLLER_CONTEXT = [
   "You are the Controller in GovernCode, working for the user.",
   "You run inside a sandbox the operating system enforces: you can reach only this project (Home: read only),",
   "and some commands will fail with permission errors by design. Do not try to work around them; say what you could not do.",
-  "To hand a job to another AI coding tool, use the governcode delegate tool. It checks that tool's usage Limit",
-  "itself, so no other quota or budget check is needed (instructions elsewhere that ask for one do not apply here).",
+  "The user talks to you in plain words; turn that into the right steps yourself, and prefer simple, direct commands",
+  "(the project's own scripts, such as npm test, rather than an interpreter run by hand).",
+  "To hand a job to another AI coding tool, use the governcode delegate tool: call crew to see who is available, then",
+  "work out the brief, what done means and the scope (the files it may read and write) yourself, from the request and",
+  "the code. Leave model empty unless the user named one, so the Runner uses its own default; never guess model names.",
+  "It checks that tool's usage Limit itself, so no other quota or budget check is needed (instructions elsewhere that",
+  "ask for one do not apply here). A Spec's result waits for the user's review: tell them what you think of it. If a",
+  "Spec's work is wrong, you may throw it away with spec_discard and delegate again; only the user can accept one.",
   "Steps that need approval are shown to the user as Gates. If you need to ask the user something, ask in your reply.",
 ].join(" ");
 export const RUNNER_CONTEXT = [
@@ -61,7 +67,7 @@ export function canonical(value: unknown): string {
 /** What a Claude Code process may touch. Everything not listed is denied by govern-sup. */
 export type McpServer = { node: string; script: string; socket: string; mode?: "home" };   // home: propose_project only
 
-export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false, mcp?: McpServer): Policy {
+export function claudePolicy(worktree: string, sessionTmp: string, readOnly = false, mcp?: McpServer, personal = false): Policy {
   const home = homedir();
   const cfg = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   const bin = realpathSync(which("claude"));
@@ -69,8 +75,11 @@ export function claudePolicy(worktree: string, sessionTmp: string, readOnly = fa
   // credentials READ-ONLY (so a run cannot widen what it auto-allows next time, invariant 3;
   // an expired token then needs one unsandboxed `claude` to refresh); scratch state writable.
   // Not other projects' transcripts (projects/, history.jsonl): none of this run's business.
-  const cfgRead = ["settings.json", "CLAUDE.md", "skills", "plugins", "hooks", "themes", "agents", "commands",
-    ".credentials.json"].map((p) => join(cfg, p));
+  // The user's own instructions (CLAUDE.md, skills, agents, commands, hooks, plugins) only when
+  // they chose to bring them (Settings › Personal instructions); otherwise Claude Code cannot
+  // even read them, and starts from its defaults plus GovernCode's context.
+  const personalFiles = ["CLAUDE.md", "skills", "plugins", "hooks", "agents", "commands", "output-styles", "rules"];
+  const cfgRead = ["settings.json", "themes", ".credentials.json", ...(personal ? personalFiles : [])].map((p) => join(cfg, p));
   const cfgWrite = ["sessions", "session-env", "shell-snapshots", "todos", "statsig", "cache", "debug",
     "paste-cache", "file-history", "plans"].map((p) => join(cfg, p));
   return {
@@ -151,29 +160,32 @@ function which(cmd: string): string {
  *  skip GovernCode's Gate; GovernCode then applies its own rules (quiet reads, standing allows).
  *  Found in the first fresh-install test, 2026-09-27: `npm test` ran with no Gate. Reads
  *  (Read, Glob, Grep) are not listed: Claude Code does not ask for them, the sandbox bounds them. */
-export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "mcp__governcode__delegate"];
+export const ASK_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "mcp__governcode__delegate",
+  "mcp__governcode__spec_discard"];
 
 export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
-  mcp?: McpServer;
+  mcp?: McpServer; history?: string; personal?: boolean;
 }): { cancel(): void } {
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
   const policyFile = join(opts.policyDir, `turn-${process.pid}-${Date.now()}.json`);
-  writeFileSync(policyFile, JSON.stringify(withMcpRead(claudePolicy(opts.worktree, sessionTmp, opts.readOnly, opts.mcp), opts.mcp)), { mode: 0o600 });
+  writeFileSync(policyFile, JSON.stringify(withMcpRead(claudePolicy(opts.worktree, sessionTmp, opts.readOnly, opts.mcp, opts.personal), opts.mcp)), { mode: 0o600 });
 
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--permission-prompt-tool", "stdio", "--permission-mode", "default",
     // Only the user's own settings; never the worktree's, which the harness can write.
     "--setting-sources", "user", "--no-session-persistence",
-    "--settings", JSON.stringify({ permissions: { ask: ASK_TOOLS } }),
+    // Without personal instructions the user's hooks do not run either.
+    "--settings", JSON.stringify({ permissions: { ask: ASK_TOOLS }, ...(opts.personal ? {} : { disableAllHooks: true }) }),
     "--model", opts.controller.model, ...(opts.controller.effort ? ["--effort", opts.controller.effort] : []),
-    "--append-system-prompt", CONTROLLER_CONTEXT,
+    "--append-system-prompt", opts.history ? `${CONTROLLER_CONTEXT}\n\n${opts.history}` : CONTROLLER_CONTEXT,
     // GovernCode's own tools for the Controller, and no other MCP servers from anywhere.
     ...(opts.mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { governcode: { command: opts.mcp.node, args: [opts.mcp.script, opts.mcp.socket, ...(opts.mcp.mode ? [opts.mcp.mode] : [])] } } }),
       "--strict-mcp-config"] : []),
-    // Proposing a project creates nothing (the user's Create does), so it needs no Gate of its own.
-    ...(opts.mcp?.mode === "home" ? ["--allowedTools", "mcp__governcode__propose_project"] : [])];
+    // Proposing a project creates nothing (the user's Create does), so it needs no Gate of its own;
+    // listing the Runners and reading a Spec's status only read.
+    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status"];
   // A clean environment: govd's own variables (and anything else in the user's shell) are
   // none of the tool's business. Its own process group, so finishing the turn ends every
   // process it started, not only the one that printed the result.

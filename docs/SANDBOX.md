@@ -51,7 +51,23 @@ mode is not a boundary; this sandbox is.
 
 ## Gates and standing allows: fewer questions, the same sandbox
 
-A Gate asks you before a step. To keep that from turning into a click-fest, a Gate can also be
+A Gate asks you before a step. **How often is yours to choose** (Settings › Gates, or
+`gov level`), and the sandbox is exactly the same at every level:
+
+- **Relaxed:** only steps on the always-ask list below ask, and handing work to a paid Runner.
+  Everything else runs without a question and is recorded in the Trace.
+- **Balanced** (the default): each new kind of step asks; answer "allow for this project" and
+  that kind stops asking in that project. The always-ask list still asks every time.
+- **Strict:** every step asks, except quiet reads (if on) and rules you made.
+
+AI tools rarely run a bare command: they run `cd app && npm test 2>&1 | tail -20`. GovernCode
+reads such a command part by part, at `&&`, `||`, `;`, `|` and newlines, treats `cd`, `2>&1` and
+redirection to `/dev/null` as nothing, and judges each remaining part on its own; the example is
+simply `npm test`. Anything it cannot read safely makes the whole command ask: substitution
+(`$(...)`, backquotes, `$VAR`), subshells, background jobs, redirection into a file, input from a
+file, globs, comments.
+
+To keep that from turning into a click-fest, a Gate can also be
 answered **"allow for this turn"** (the Controller's steps), **"for this Spec"** (a Runner's
 steps in its own workspace) or **"for this project"** (remembered, listed in Settings and by
 `gov allows`, revocable). **A standing allow only skips the question.** It never widens what the
@@ -63,15 +79,21 @@ What a standing allow can cover is deliberately narrow:
 
 - **One kind of step.** For a command, its program and subcommand (`npm test`, `cargo build`);
   for edits, file edits (only where the sandbox already lets the tool write).
-- **Plain commands only.** A command with shell syntax that could chain, substitute, redirect or
-  hide a second command (`;` `&` `|` `$` backquotes `<` `>` quotes, globs, newlines) always asks.
-- **Some programs always ask**, whatever you allowed: deleting (`rm`), privilege (`sudo`),
-  network (`curl`, `ssh`), interpreters that run code given as an argument (`python`, `node`,
-  `bash`...), publishing, and every `git` command (git obeys settings in the project's
-  `.git/config`, which the AI can edit, and can run programs from them).
+- **Readable commands only.** A command is covered only if every part of it is; anything that
+  could substitute, redirect into a file or hide a command (above) always asks.
+- **The always-ask list**, at every level, whatever you allowed: deleting (`rm`), privilege
+  (`sudo`), network (`curl`, `ssh`...), installing packages (`npm install`, `pip install`,
+  `cargo add`...), interpreters that run code given as an argument (`python`, `node`, `bash`...),
+  launchers that run another program (`env`, `xargs`, `timeout`...), publishing, and every `git`
+  command that changes the repository or reaches the network (commit, push, pull, fetch, reset,
+  checkout, config...). Reading the repository (`git status`, `diff`, `log`, `show`...) is a kind
+  like any other: it runs inside the sandbox, and the .git guard puts back anything a turn changed
+  in `.git`.
 - **A Runner's allows are its own.** Allowing a step inside a Spec's workspace never covers the
   Controller's steps in your real project.
-- **Delegation always asks.** Handing work to another AI is never covered.
+- **Handing work to a paid Runner always asks.** Handing it to a local model (no quota) is a
+  kind of step like any other. A Controller may throw away a Spec it proposed; accepting one is
+  always yours.
 
 Be aware of one honest limit: allowing a build or test command (`npm test`) means allowing
 whatever the project's scripts say, and the AI can edit those scripts. The sandbox still bounds

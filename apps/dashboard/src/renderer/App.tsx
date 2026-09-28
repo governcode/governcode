@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AskEvent, Status } from "../shared/contract.ts";
 import { api, call, controllerLabel, START_GOVD, useFallbackPoll, useWatch, type Gate, type Project } from "./api.ts";
 import { Empty, Pill } from "./ui.tsx";
+import { PersonalDialog } from "./views/PersonalDialog.tsx";
 import { Terminal, type Entry, type Thread } from "./views/Terminal.tsx";
 import { Pipeline } from "./views/Pipeline.tsx";
 import { Gates } from "./views/Gates.tsx";
@@ -84,7 +85,31 @@ export function App() {
     if (ev.kind === "gate" && !live) void refreshGates();
   }), [push, refreshGates, live]);
 
+  // The first message to a Controller asks once whether the user's own instructions come along.
+  const [personalAsk, setPersonalAsk] = useState<{ provider: "claude" | "codex"; prompt: string } | null>(null);
   const send = useCallback(async (prompt: string) => {
+    const provider = projects.find((p) => p.name === project)?.controller.provider === "codex" ? "codex" : "claude";
+    const s = await call<{ settings: { personal?: Record<string, boolean | null> } }>("settings.get").catch(() => null);
+    if (s && s.settings.personal && s.settings.personal[provider] === null) { setPersonalAsk({ provider, prompt }); return; }
+    await sendNow(prompt);
+  }, [project, projects]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const choosePersonal = useCallback(async (use: boolean) => {
+    const ask = personalAsk;
+    if (!ask) return;
+    const s = await call<{ settings: Record<string, any> }>("settings.get");
+    await call("settings.set", { ...s.settings, personal: { ...s.settings.personal, [ask.provider]: use } });
+    setPersonalAsk(null);
+    await sendNow(ask.prompt);
+  }, [personalAsk]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const newConversation = useCallback(async () => {
+    const key = project;
+    await call("conversation.reset", { project: key === HOME ? null : key });
+    push(key, () => ({ entries: [], busy: false }));
+  }, [project, push]);
+
+  const sendNow = useCallback(async (prompt: string) => {
     const key = project;
     const askId = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     askThread.current.set(askId, key);
@@ -145,7 +170,7 @@ export function App() {
               <div className={project === HOME ? "home" : "contents"}>
                 <Terminal key={project} project={current ?? null}
                   thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
-                  onSend={send} onGate={(id, a) => markGate(project, id, a)} onOpenProject={setProject} />
+                  onSend={send} onGate={(id, a) => markGate(project, id, a)} onOpenProject={setProject} onNewConversation={newConversation} />
                 {project === HOME && <HomePanel projects={projects} gates={gates} onOpen={setProject} onGates={() => setView("gates")} />}
               </div>
             )}
@@ -161,6 +186,7 @@ export function App() {
 
       {up && dialog === "new" && <NewProject onClose={() => setDialog(null)} onDone={opened} />}
       {up && dialog === "open" && <OpenFolder onClose={() => setDialog(null)} onDone={opened} />}
+      {up && personalAsk && <PersonalDialog provider={personalAsk.provider} onChoose={(use) => void choosePersonal(use)} onClose={() => setPersonalAsk(null)} />}
       {up && dialog === "controller" && current && <ControllerPicker project={current} onClose={() => setDialog(null)}
         onDone={() => { setDialog(null); void loadProjects(); }} />}
 
@@ -182,7 +208,8 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
     case "text": return [...entries, { t: "text", text: String(e.text) }];
     case "tool": return [...entries, { t: "tool", name: String(e.name) }];
     case "gate": return [...entries, { t: "gate", id: String(e.id), tool: String(e.tool), canonical: String(e.canonical), arrived: Date.now(),
-      covers: typeof e.covers === "string" ? e.covers : null, scopes: Array.isArray(e.scopes) ? e.scopes.map(String) : [] }];
+      covers: typeof e.covers === "string" ? e.covers : null, scopes: Array.isArray(e.scopes) ? e.scopes.map(String) : [],
+      suggest: typeof e.suggest === "string" ? e.suggest : null }];
     case "allowed": return [...entries, { t: "allowed", tool: String(e.tool), why: String(e.why) }];
     case "spec": return [...entries, { t: "spec", id: String(e.id), to: String(e.to), brief: String(e.brief), lines: [] }];
     case "proposal": return [...entries, { t: "proposal", id: String(e.id), name: String(e.name), path: String(e.path), git: e.git === true, reason: String(e.reason ?? "") }];

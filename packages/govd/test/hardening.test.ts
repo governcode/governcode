@@ -7,6 +7,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { gitGuard } from "../src/gitguard.ts";
 import { toolEnv, claudePolicy, toolchainDirs } from "../src/claude.ts";
+import { codexPolicy } from "../src/codex.ts";
 import { Daemon } from "../src/daemon.ts";
 import { scratch } from "./scratch.ts";
 
@@ -161,4 +162,20 @@ test("toolchains from a version manager can run in the sandbox; home and ~/.dot 
   const dirs = toolchainDirs([join(node, "bin"), join(home, ".cargo/bin"), home, "/usr/bin"].join(":"), home);
   assert.deepEqual(dirs, [node]);
   assert.equal(toolEnv("/t").npm_config_cache, "/t/npm-cache", "npm keeps its cache in the run's scratch");
+});
+
+test("personal instructions: off, the Controller cannot even read them; on, it can", () => {
+  const cfg = join(homedir(), ".claude");
+  try {
+    const off = claudePolicy("/tmp/wt", "/tmp/t");
+    assert.ok(![...off.read].some((p) => p.startsWith(join(cfg, "CLAUDE.md")) || p.startsWith(join(cfg, "skills")) || p.startsWith(join(cfg, "hooks"))), off.read.join());
+    const on = claudePolicy("/tmp/wt", "/tmp/t", false, undefined, true);
+    for (const f of ["CLAUDE.md", "hooks"]) if (existsSync(join(cfg, f))) assert.ok(on.read.includes(join(cfg, f)), f);
+  } catch (e) {
+    if (!(e instanceof Error && /claude not found/.test(e.message))) throw e;   // CI has no Claude Code
+  }
+  const user = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  assert.ok(!codexPolicy("/tmp/wt", "/tmp/t", "/tmp/ch", "/usr/bin/true").read.includes(join(user, "AGENTS.md")));
+  const codexOn = codexPolicy("/tmp/wt", "/tmp/t", "/tmp/ch", "/usr/bin/true", false, undefined, undefined, true);
+  if (existsSync(join(user, "AGENTS.md"))) assert.ok(codexOn.read.includes(join(user, "AGENTS.md")));
 });

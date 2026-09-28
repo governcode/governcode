@@ -8,7 +8,7 @@ export type Entry =
   | { t: "you"; text: string }
   | { t: "text"; text: string }
   | { t: "tool"; name: string }
-  | { t: "gate"; id: string; tool: string; canonical: string; arrived: number; answered?: "allow" | "deny"; covers?: string | null; scopes?: string[] }
+  | { t: "gate"; id: string; tool: string; canonical: string; arrived: number; answered?: "allow" | "deny"; covers?: string | null; scopes?: string[]; suggest?: string | null }
   | { t: "allowed"; tool: string; why: string }
   | { t: "spec"; id: string; to: string; brief: string; lines: string[] }
   | { t: "checkpoint"; id: string; files: string[]; undone?: boolean }
@@ -18,7 +18,8 @@ export type Entry =
 export type Thread = { entries: Entry[]; busy: boolean };
 
 export function Terminal(props: { project: Project | null; thread: Thread; openGates: Gate[]; gatesAt: number;
-  onSend: (prompt: string) => void; onGate: (id: string, a: "allow" | "deny") => void; onOpenProject?: (name: string) => void }) {
+  onSend: (prompt: string) => void; onGate: (id: string, a: "allow" | "deny") => void; onOpenProject?: (name: string) => void;
+  onNewConversation?: () => void }) {
   const [draft, setDraft] = useState("");
   const log = useRef<HTMLDivElement>(null);
   const open = new Set(props.openGates.map((g) => g.id));
@@ -45,16 +46,21 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
           : "Home: the Controller can read and plan but cannot write anything."}</span>
         <span className="spacer" />
         {props.thread.busy && <Pill tone="accent">working</Pill>}
+        {props.onNewConversation && (
+          <button className="btn btn-quiet" disabled={props.thread.busy} title="The Controller forgets this conversation and starts fresh (the Trace keeps everything)"
+            onClick={props.onNewConversation}>New conversation</button>
+        )}
       </div>
       <div className="log" ref={log}>
-        {!props.thread.entries.length && <div className="dim pad">Ask the Controller something. Every step it takes that needs approval stops here as a Gate.</div>}
+        {!props.thread.entries.length && <div className="dim pad">Ask the Controller something, in plain words. It remembers this conversation until you start a new one.
+          Steps that need your say stop here as a Gate; how often depends on Settings › Gates.</div>}
         {props.thread.entries.map((e, i) => {
           switch (e.t) {
             case "you": return <div key={i} className="msg you"><span className="who">you</span><div className="body">{e.text}</div></div>;
             case "text": return <div key={i} className="msg ctl"><span className="who">Controller</span><div className="body">{e.text}</div></div>;
             case "tool": return <div key={i} className="tool dim mono">· {e.name}</div>;
             case "allowed": return <div key={i} className="tool dim mono">· {e.tool}: allowed without asking ({e.why}); the sandbox still applies</div>;
-            case "gate": return <GateCard key={i} id={e.id} tool={e.tool} canonical={e.canonical} covers={e.covers} scopes={e.scopes} state={gateState(e)}
+            case "gate": return <GateCard key={i} id={e.id} tool={e.tool} canonical={e.canonical} covers={e.covers} scopes={e.scopes} suggest={e.suggest} state={gateState(e)}
               onAnswered={(a) => props.onGate(e.id, a)} />;
             case "spec": return (
               <div key={i} className="spec-card">
