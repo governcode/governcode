@@ -2,7 +2,7 @@
 // govd is down, and a fresh connection for every ask. An ask gets its own connection
 // because govd ties that ask's Gates to it (the asker leaving denies them) and its events
 // carry no request id.
-import type { AskEvent, AskResult, Hello, Status, WatchEvent } from "../shared/contract.ts";
+import type { AskEvent, AskResult, ConnectResult, Hello, Status, WatchEvent } from "../shared/contract.ts";
 import { connect, GovdError, type Connection } from "./govd-client.ts";
 
 // ponytail: fixed 3 s retry while govd is down; upgrade to backoff if it ever matters.
@@ -89,6 +89,17 @@ export class GovdLink {
     try {
       c.onEvent((e) => { if (e && typeof e === "object" && typeof (e as AskEvent).kind === "string") onEvent(e as AskEvent); });
       return await c.call<AskResult>("ask", params);
+    } finally {
+      c.close();
+    }
+  }
+
+  /** A tool's sign-in on its own connection (like an ask): its events stream until it ends. */
+  async connect(params: { tool: string }, onEvent: (e: AskEvent) => void): Promise<ConnectResult> {
+    const c = await connect(this.path);
+    try {
+      c.onEvent((e) => { if (e && typeof e === "object" && (e as AskEvent).kind === "connect") onEvent(e as AskEvent); });
+      return await c.call<ConnectResult>("connect.start", params);
     } finally {
       c.close();
     }

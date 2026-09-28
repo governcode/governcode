@@ -25,6 +25,8 @@ const api: DashboardApi = {
     return () => { ipcRenderer.removeListener(Channel.watch, f); };
   },
   pickFolder: () => ipcRenderer.invoke(Channel.pickFolder),
+  connect: (streamId, tool) => ipcRenderer.invoke(Channel.connect, streamId, tool),
+  openSignIn: (url) => ipcRenderer.invoke(Channel.openSignIn, url),
 };
 
 contextBridge.exposeInMainWorld("governcode", api);

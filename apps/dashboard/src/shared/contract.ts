@@ -10,6 +10,8 @@ export const Channel = {
   status: "governcode:status", // invoke: the current connection status
   retry: "governcode:retry",   // invoke: try to reach govd now
   pickFolder: "governcode:pick-folder", // invoke: the native folder picker; returns a path or null
+  connect: "governcode:connect", // invoke: a tool's sign-in on its own connection; streams on `event`
+  openSignIn: "governcode:open-sign-in", // invoke: open a sign-in link govd sent (only that exact link)
   event: "governcode:event",   // main -> renderer: one streamed ask event, tagged with its askId
   watch: "governcode:watch",   // main -> renderer: one govd watch event (Trace append, Gate change)
   statusChanged: "governcode:status-changed", // main -> renderer
@@ -22,7 +24,7 @@ export const Channel = {
  */
 export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "controller.set", "gate.list",
   "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "trace.list", "turn.list", "turn.undo", "limits.list", "proposal.answer", "settings.get", "settings.set",
-  "allows.list", "allows.revoke", "conversation.reset"] as const;
+  "allows.list", "allows.revoke", "conversation.reset", "tools.list", "tools.disconnect", "connect.input", "connect.cancel"] as const;
 export type Callable = (typeof CALLABLE)[number];
 
 export function isCallable(m: unknown): m is Callable {
@@ -71,4 +73,9 @@ export type DashboardApi = {
   onStatus(listener: (status: Status) => void): () => void;
   onWatch(listener: (event: WatchEvent) => void): () => void;
   pickFolder(): Promise<string | null>;
+  /** Connect a tool: its sign-in's events arrive on onEvent under `streamId`. */
+  connect(streamId: string, tool: string): Promise<Outcome<ConnectResult>>;
+  /** Opens a sign-in link in the browser, only if govd sent exactly that link in a sign-in. */
+  openSignIn(url: string): Promise<boolean>;
 };
+export type ConnectResult = { id: string; connected: boolean; note: string };

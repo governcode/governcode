@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { checkAsk, checkCall, connect, socketPath } from "../src/main/govd-client.ts";
+import { checkAsk, checkCall, checkConnect, connect, socketPath } from "../src/main/govd-client.ts";
 import { GovdLink } from "../src/main/link.ts";
 import { CALLABLE, Channel } from "../src/shared/contract.ts";
 import { Daemon } from "../../../packages/govd/src/daemon.ts";
@@ -68,6 +68,15 @@ test("an ask needs a well-formed id and prompt; Home is a null project", () => {
   assert.throws(() => checkAsk("a 1", null, "hi"), /bad ask id/);
   assert.throws(() => checkAsk("a1", "Bad Name", "hi"));
   assert.throws(() => checkAsk("a1", null, ""));
+});
+
+test("a Connect needs a well-formed stream id and a tool GovernCode can connect", () => {
+  assert.deepEqual(checkConnect("connect-agy-1", "agy"), { streamId: "connect-agy-1", params: { tool: "agy" } });
+  assert.throws(() => checkConnect("bad id!", "agy"), /bad stream id/);
+  assert.throws(() => checkConnect("s1", "claude"), /Invalid/);
+  // A sign-in code is one printable line; the renderer cannot send control characters to the tool.
+  assert.throws(() => checkCall("connect.input", { id: "C-1", text: "abc\nrm -rf" }));
+  assert.doesNotThrow(() => checkCall("connect.input", { id: "C-1", text: "4/0AbC-dEf_123" }));
 });
 
 test("no govd: a clear message, not a hang", async () => {
@@ -129,7 +138,7 @@ test("against the real govd: hello reports the sandbox, and lists come back", as
     }
     // Unmeasured Runners show as held, not available (unknown usage holds).
     const { providers } = await link.call("limits.list", { measure: false }) as { providers: Array<{ provider: string; verdict: { ok: boolean } }> };
-    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false], ["ollama", false]]);
+    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false], ["ollama", false], ["agy", false]]);
     // The link watches: a project made and a Controller chosen arrive as live Trace events.
     const seen: string[] = [];
     link.onWatch((w) => { if (w.kind === "trace") seen.push(w.event.kind); });
@@ -163,7 +172,7 @@ test("the built preload needs only electron and exposes exactly the Dashboard AP
   });
   assert.deepEqual(required, ["electron"]);
   assert.deepEqual(Object.keys(exposed), ["governcode"]);
-  assert.deepEqual(Object.keys(exposed.governcode).sort(), ["ask", "call", "onEvent", "onStatus", "onWatch", "pickFolder", "retry", "status"]);
+  assert.deepEqual(Object.keys(exposed.governcode).sort(), ["ask", "call", "connect", "onEvent", "onStatus", "onWatch", "openSignIn", "pickFolder", "retry", "status"]);
   await exposed.governcode.call("gate.list");
   await exposed.governcode.ask("a1", null, "hi");
   await exposed.governcode.pickFolder();

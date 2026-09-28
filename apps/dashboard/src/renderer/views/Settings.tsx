@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { call, controllerLabel, type Project } from "../api.ts";
 import type { Hello } from "../../shared/contract.ts";
 import { Pill } from "../ui.tsx";
+import { Tools } from "./Tools.tsx";
 import type { ProviderLimit } from "./Limits.tsx";
 
 type Reserves = Record<string, Record<string, number>>;
@@ -75,6 +76,8 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
     <section className="view">
       <div className="view-head"><h1>Settings</h1><span className="dim">kept by govd, where no AI tool can change them</span></div>
       <div className="scroll settings">
+        <Tools />
+
         <h2>Controller per project</h2>
         <p className="dim small">Each project's lead model. It keeps its own subagents and gets GovernCode's delegate tool.</p>
         {!props.projects.length && <p className="dim small">No projects yet.</p>}

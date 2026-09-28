@@ -93,6 +93,13 @@ export function checkCall(method: unknown, params: unknown): { method: Callable;
   return { method, params: parsed.data };
 }
 
+export function checkConnect(streamId: unknown, tool: unknown): { streamId: string; params: { tool: "agy" } } {
+  if (typeof streamId !== "string" || !ASK_ID.test(streamId)) throw new GovdError("bad stream id");
+  const parsed = Params["connect.start"].safeParse({ tool });
+  if (!parsed.success) throw new GovdError(parsed.error.issues.map((i) => i.message).join("; "));
+  return { streamId, params: parsed.data };
+}
+
 export function checkAsk(askId: unknown, project: unknown, prompt: unknown): { askId: string; params: { project: string | null; prompt: string } } {
   if (typeof askId !== "string" || !ASK_ID.test(askId)) throw new GovdError("bad ask id");
   const parsed = Params.ask.safeParse({ project, prompt });

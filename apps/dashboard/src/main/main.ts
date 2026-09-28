@@ -1,11 +1,11 @@
 // The Dashboard's main process: a thin Electron shell. It owns the only connection to govd
 // and answers the renderer through a handful of checked IPC channels. The renderer runs
 // sandboxed with context isolation and no Node; it cannot open sockets or files.
-import { app, BrowserWindow, dialog, ipcMain, session, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Channel, type Outcome } from "../shared/contract.ts";
-import { checkAsk, checkCall, GovdError, socketPath } from "./govd-client.ts";
+import { checkAsk, checkCall, checkConnect, GovdError, socketPath } from "./govd-client.ts";
 import { GovdLink } from "./link.ts";
 
 // scripts/dev.ts sets this. A packaged app ignores it, and it must be local: whatever page it
@@ -55,6 +55,22 @@ handle(Channel.call, (method: unknown, params: unknown) => outcome(() => {
   const req = checkCall(method, params);
   return link.call(req.method, req.params);
 }));
+// Sign-in links govd sent during a Connect: the only links the Dashboard will open in the browser.
+// ponytail: kept for the session; a handful of links at most.
+const signInLinks = new Set<string>();
+handle(Channel.connect, (streamId: unknown, tool: unknown) => outcome(() => {
+  const req = checkConnect(streamId, tool);
+  return link.connect(req.params, (event) => {
+    const url = (event as { url?: unknown }).url;
+    if (typeof url === "string" && /^https:\/\/[^\s]+$/.test(url) && url.length < 4096) signInLinks.add(url);
+    win?.webContents.send(Channel.event, req.streamId, event);
+  });
+}));
+handle(Channel.openSignIn, async (url: unknown) => {
+  if (typeof url !== "string" || !signInLinks.has(url)) return false;
+  await shell.openExternal(url);
+  return true;
+});
 handle(Channel.ask, (askId: unknown, project: unknown, prompt: unknown) => outcome(() => {
   const req = checkAsk(askId, project, prompt);
   return link.ask(req.params, (event) => win?.webContents.send(Channel.event, req.askId, event));
