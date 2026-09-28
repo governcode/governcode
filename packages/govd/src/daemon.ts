@@ -567,7 +567,12 @@ export class Daemon {
     return new Promise((done) => {
       const hooks: TurnHooks = {
           text: (t) => { notify({ kind: "text", text: t }); L.append(project.name, "turn.text", actor, { text: t.slice(0, 4000) }); },
-          tool: (name, input) => { notify({ kind: "tool", name, input }); L.append(project.name, "turn.tool", actor, { name }); },
+          tool: (name, input) => {
+            notify({ kind: "tool", name, input });
+            // A subagent keeps what it was asked (short), so the Crew board and the Trace can show it.
+            const sub = name === "Task" || name === "Agent" ? String((input as Record<string, unknown>)?.description ?? (input as Record<string, unknown>)?.subagent_type ?? "").slice(0, 160) : null;
+            L.append(project.name, "turn.tool", actor, { name, ...(sub !== null ? { subagent: sub } : {}) });
+          },
           gate: (req) => new Promise((answer) => {
             // Before asking: a plain read-only command, or a standing allow the user made, skips
             // the question (never the sandbox). Either way the step is in the Trace.

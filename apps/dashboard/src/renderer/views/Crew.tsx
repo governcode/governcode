@@ -1,8 +1,9 @@
 // Crew: how this project's crew works (the Crew card, enforced by govd), and, below it, who is
 // doing what right now. The card is the user's; the AI is told it and cannot change it.
 import { useCallback, useEffect, useState } from "react";
-import { call, useWatch } from "../api.ts";
-import { Empty } from "../ui.tsx";
+import { call, clock, useWatch, type Gate, type Spec, type TraceEvent } from "../api.ts";
+import { Empty, Pill, SpecPill } from "../ui.tsx";
+import { buildBoard, type Board } from "../../shared/board.ts";
 
 type Crew = { controllerWorks: boolean; handoff: "ask" | "plan" | "off"; runners: string[] | null;
   maxPercent: Record<string, number>; subagents: { controller: boolean; runners: boolean } };
@@ -11,6 +12,46 @@ const HANDOFF: Array<[Crew["handoff"], string, string]> = [
   ["plan", "Follow the approved plan", "The Controller posts a game plan first; handoffs you approve there run without asking again. Anything not in the plan asks."],
   ["off", "Off", "The Controller works alone: no Runners for this project."],
 ];
+
+/** Who is doing what right now, from the Trace: the Controller, its subagents, each Spec and its Runner. */
+function CrewBoard({ project }: { project: string }) {
+  const [board, setBoard] = useState<Board | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const [t, s, g] = await Promise.all([call<{ events: TraceEvent[] }>("trace.list", { project, limit: 400 }),
+        call<{ specs: Spec[] }>("spec.list", { project }), call<{ gates: Gate[] }>("gate.list", {})]);
+      setBoard(buildBoard(t.events, s.specs, g.gates.filter((x) => x.project === project)));
+    } catch { /* shown by the status bar */ }
+  }, [project]);
+  useEffect(() => { void load(); }, [load]);
+  useWatch((w) => { if (w.kind === "gates" || (w.kind === "trace" && w.event.project === project)) void load(); });
+  if (!board) return null;
+  const waiting = (n: number) => n ? <Pill tone="warn">{n} Gate{n === 1 ? "" : "s"} waiting</Pill> : null;
+  return (
+    <>
+      <h2>Now</h2>
+      {!board.controller ? <p className="dim small">Nothing yet: ask the Controller something in the Terminal.</p> : (
+        <div className="crew-board">
+          <div className="crew-node">
+            <b>Controller</b> <span className="mono small">{board.controller.provider}</span>{" "}
+            {board.controller.working ? <Pill tone="accent">working</Pill> : <span className="dim small">idle since {clock(board.controller.since)}</span>}{" "}
+            {waiting(board.controller.gates.length)}
+          </div>
+          {board.subagents.map((a, i) => (
+            <div key={i} className="crew-node child"><span className="dim small">subagent</span> {a.what} <span className="dim small">· {clock(a.at)}</span></div>
+          ))}
+          {board.specs.map((s) => (
+            <div key={s.id} className="crew-node child">
+              <b className="mono">{s.id}</b> <span className="dim">→</span> <b>{s.to}</b> <SpecPill status={s.status as never} /> {waiting(s.gates.length)}
+              <div className="dim small">{s.brief.slice(0, 160)}{s.lastStep ? ` · latest step: ${s.lastStep}` : ""}</div>
+            </div>
+          ))}
+          {!board.specs.length && !board.subagents.length && <div className="crew-node child dim small">No subagents or Runners in this turn.</div>}
+        </div>
+      )}
+    </>
+  );
+}
 
 export function CrewView({ project }: { project: string | null }) {
   const [saved, setSaved] = useState<Crew | null>(null);
@@ -46,6 +87,8 @@ export function CrewView({ project }: { project: string | null }) {
     <section className="view">
       <div className="view-head"><h1>Crew</h1><span className="dim">how {project}'s crew works · enforced by GovernCode, not asked of the AI</span></div>
       <div className="scroll settings">
+        <CrewBoard project={project} />
+
         <h2>The Controller</h2>
         <label className="policy-option"><input type="radio" checked={draft.controllerWorks} onChange={() => setDraft({ ...draft, controllerWorks: true })} />
           <span><b>Works itself and hands off</b><span className="dim small"> · it changes the project under the usual Gates, and gives jobs to Runners.</span></span></label>

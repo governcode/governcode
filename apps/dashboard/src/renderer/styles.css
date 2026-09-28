@@ -202,3 +202,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 /* Notes: the project's brief, and its preview in the share question. */
 textarea.notes { width: 100%; resize: vertical; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; line-height: 1.5; }
 pre.notes-preview { max-height: 220px; overflow: auto; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+/* The Crew board: the Controller, then its subagents and Runners indented under it. */
+.crew-board { display: flex; flex-direction: column; gap: 6px; }
+.crew-node { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.crew-node.child { margin-left: 22px; }

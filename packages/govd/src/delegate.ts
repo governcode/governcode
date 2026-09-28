@@ -334,7 +334,11 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
       }
       const hooks = {
         text: (t: string) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); },
-        tool: (name: string) => ctx.notify({ kind: "spec.tool", id: spec.id, name }),
+        tool: (name: string) => {
+          ctx.notify({ kind: "spec.tool", id: spec.id, name });
+          // Each Runner step is on the record too (the Crew board shows the latest).
+          L.append(ctx.project.name, "spec.step", `runner · ${input.to} · ${spec.id}`, { spec: spec.id, name: name.slice(0, 80) });
+        },
         gate: (req: GateRequest) => ctx.gate({ ...req, tool: `${req.tool} (Runner · ${input.to}, ${spec.id})`, actor: `runner · ${input.to} · ${spec.id}`,
           base: req.tool, spec: spec.id }),
         done,
