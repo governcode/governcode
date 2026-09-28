@@ -5,7 +5,8 @@
 **Govern your AI coding crew.** Pick one AI coding tool as the Controller. It keeps its own
 subagents and hands bounded jobs (Specs) to the other tools you already use, as Runners.
 Every Spec is written down, runs in a sandbox on its own copy of the project, and can be
-diffed and undone. A Limit keeps each provider's usage above the reserve you set, and risky
+diffed and undone. A Limit holds a Spec back before it would reach into the reserve you set for
+that provider (usage reports lag, so a running Spec can overshoot a little), and risky
 steps wait at a Gate for your approval, in the Dashboard or your terminal (on your phone once
 the Pager app ships, phase 3).
 
@@ -27,20 +28,25 @@ releases, tagged `vX.Y.Z`). The first Motion is
 
 > **Status: pre-alpha, release candidate.** Developers can try it on Linux, from the
 > CLI or the early Dashboard: the sandbox, Gates, Checkpoints, Limits, and delegation from a
-> Claude Code or Codex Controller to a Codex or local-model Runner work end to end. Expect
-> rough edges.
+> Claude Code or Codex Controller to a Codex, Antigravity or local-model Runner work end to end.
+> Expect rough edges.
 
 **Install the release candidate (Linux x86_64):** download
-`governcode-0.1.0-motion.5-linux-x86_64.tar.gz` and `SHA256SUMS` from the
+`governcode-0.1.0-motion.6-linux-x86_64.tar.gz` and `SHA256SUMS` from the
 [releases page](https://github.com/governcode/governcode/releases), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar xzf governcode-0.1.0-motion.5-linux-x86_64.tar.gz
-cd governcode-0.1.0-motion.5-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
+tar xzf governcode-0.1.0-motion.6-linux-x86_64.tar.gz
+cd governcode-0.1.0-motion.6-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
 govd &
 gov demo
 ```
+
+To remove it: `./install.sh --uninstall` takes out the service, the commands, the launcher entry
+and every release it installed, and keeps your settings and Trace; add `--purge` to remove those
+too. It removes only what it can show is GovernCode's (releases installed before motion.6 carry
+no mark: it lists them for you to remove) and does not touch your project folders.
 
 For a longer tour, [examples/tidepool](examples/tidepool) is a small project with a real bug and
 a missing feature, and [DEMO.md](examples/tidepool/DEMO.md) walks through every part of
@@ -49,8 +55,9 @@ GovernCode with it in about fifteen minutes.
 ## Try it (developers, Linux)
 
 You need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, and
-Claude Code installed and logged in (Codex too, to see delegation). Every AI tool runs in the
-sandbox, always; there is no switch to turn it off.
+Claude Code installed and logged in (Codex too, to see delegation). Every AI coding tool
+GovernCode starts runs in the sandbox, always; there is no switch to turn it off. (A local model
+is different: GovernCode sends it text through Ollama's own server and gives it no tools.)
 
 ```sh
 git clone https://github.com/governcode/governcode && cd governcode
@@ -84,8 +91,9 @@ risky steps always ask (deleting, git commands that change the repository, insta
 network tools, interpreters, handing work to a paid Runner), and everything is in the Trace. Details:
 [docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
 
-The Controller remembers the project's conversation until you start a new one (`gov reset`, or
-**New conversation** in the Dashboard). The first time a Controller works, GovernCode asks
+The Controller remembers the project's recent conversation (the last 10 exchanges, up to about
+12,000 characters) until you start a new one (`gov reset`, or **New conversation** in the
+Dashboard). The first time a Controller works, GovernCode asks
 whether it should bring **your own instructions** (for Claude Code: your CLAUDE.md, skills,
 agents and hooks; for Codex: your AGENTS.md). Off by default: it starts clean. Change it any time
 with `gov personal claude on|off` or in Settings.
@@ -128,8 +136,42 @@ proposes whole new files; GovernCode itself checks each path against the write s
 outside it, nothing in `.git`, never through a symlink) before writing it into the Spec's
 workspace, and you review it like any other Spec. There is no quota to measure, so its Limit is
 your machine's: at most 1 local Spec at once, each stopped after 10 minutes (Settings › Local
-models). If Ollama refuses (busy, not running, model missing), the Spec is held with Ollama's own
-words.
+models). If Ollama is not running, the Spec is held; if it refuses the job (busy, model
+missing), the Spec fails with Ollama's own words.
+
+### Antigravity (Google) as a Runner
+
+With the [Antigravity CLI](https://antigravity.google) (`agy`) installed, connect it once:
+
+```sh
+gov connect agy     # or Settings › Tools › Connect in the Dashboard
+```
+
+GovernCode runs Antigravity's own sign-in (under a terminal from `script`, part of util-linux)
+inside the sandbox, in a home that belongs to
+GovernCode: open the link it shows, sign in with Google, paste the code back (Antigravity waits
+about a minute). Your own Antigravity setup, keyring and settings are not used, and GovernCode
+never reads the login Antigravity keeps there. `gov disconnect agy` removes it.
+
+Then `agy` is a Runner like `codex`. Every tool call Antigravity makes passes GovernCode's Gate
+(through Antigravity's own pre-tool hook): plain reads run, commands get the same checks as any
+other command, file changes show exactly what will be written (for an edit, the text replaced and
+its replacement), and anything else asks. Its Limit comes from
+Antigravity's own usage report (weekly and 5-hour windows).
+
+Honest limits, for now:
+- It runs **Gemini models only** (or Antigravity's default): its Limit reads Antigravity's Gemini
+  pool, and Claude or GPT models through Antigravity draw on another pool it does not watch yet.
+- The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
+  and the sandbox limits where it can write, not which HTTPS sites it can reach.
+- `gov disconnect agy` deletes GovernCode's copy of the login. Revoking Antigravity's access in
+  your Google account ends every Antigravity sign-in, your own included.
+- A project that contains Antigravity customization folders (`.agents/`, `.agent/`, `_agents/`,
+  `_agent/`) is refused: their hooks could switch GovernCode's Gate off. A Runner that creates one
+  fails its Spec.
+
+Claude Code and Codex still use your own logins; they move to the same Connect step in a later
+release. Gemini CLI (for Gemini API keys) comes after that, once GovernCode can hold a key safely.
 
 ### The Dashboard (desktop app, early)
 
@@ -140,8 +182,9 @@ npm start -w apps/dashboard
 
 It talks to the same `govd`: chat with the Controller and answer Gates inline, review
 Specs (diff side by side, accept, discard), undo Checkpoints, see and set each Runner's
-Limits, change each project's Controller, Gates across projects and the Trace. The window's page
-has no access to your files or sockets; only the app's main process talks to `govd`.
+Limits, connect tools (Settings › Tools), change each project's Controller, Gates across projects
+and the Trace. The window's page has no direct access to your files or sockets: it can only ask
+the app's main process, which passes a fixed list of requests to `govd`.
 
 ## Plan
 

@@ -39,6 +39,7 @@ test("connect: the tool's own sign-in link is shown once, the pasted code goes t
   assert.equal(r.connected, true, JSON.stringify(r));
   assert.deepEqual(seen.filter((n) => n.url).map((n) => n.url), ["https://accounts.example/auth?client=x&code_challenge=y"]);
   assert.ok(seen.some((n) => n.text === "Authentication required. Please visit the URL to log in:"));
+  assert.ok(!JSON.stringify(seen).includes("good-code"), "the pasted code is never shown back");
   assert.ok(c.list()[0].connected);
   // Connecting again finds the login and needs nothing from the user.
   const again = await c.start("agy", (n: any) => assert.ok(!n.url, "no link when already signed in"));

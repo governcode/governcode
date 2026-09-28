@@ -92,10 +92,12 @@ export function openTurnSocket(runtimeDir: string, handle: (method: string, para
     sock.on("error", () => sock.destroy());
     // Whatever a tool sends here is untrusted: a line over 1 MB ends the connection, and anything
     // that is not a JSON object with a method gets no reply (never a crash).
-    let pending = 0;
+    let pending = 0;   // bytes of the line still being received
     sock.on("data", (c: Buffer) => {
-      const nl = c.lastIndexOf(10);
-      pending = nl < 0 ? pending + c.length : c.length - nl - 1;
+      const first = c.indexOf(10);
+      if (first < 0) pending += c.length;
+      else if (pending + first > 1_000_000) return sock.destroy();   // the line this chunk completes
+      else pending = c.length - c.lastIndexOf(10) - 1;               // (lines wholly inside a chunk are under 64 KB)
       if (pending > 1_000_000) sock.destroy();
     });
     const lines = createInterface({ input: sock });
@@ -156,8 +158,8 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   input.model = picked.model; input.effort = picked.effort;
   // ponytail: the Antigravity Runner's Limit reads its Gemini pool, so it runs Gemini models only;
   // Claude and GPT through Antigravity have their own pool. Upgrade: a Limit per model group.
-  if (input.to === "agy" && /claude|gpt|opus|sonnet/i.test(input.model)) {
-    throw new Error("the Antigravity Runner runs Gemini models (its Limit reads the Gemini pool); use another Runner for Claude or GPT models, or leave model empty");
+  if (input.to === "agy" && input.model && !/^gemini[a-z0-9.\- ()]*$/i.test(input.model)) {
+    throw new Error("the Antigravity Runner runs Gemini models (its Limit reads the Gemini pool); name a Gemini model or leave model empty");
   }
   const spec = L.createSpec(ctx.project.name, input, "controller");
   if (picked.note) L.updateSpec(spec.id, { note: picked.note }, "govd");

@@ -58,17 +58,24 @@ export class Connector {
     // The tool signs in only with a terminal ("no controlling terminal; cannot complete interactive
     // login"), so the sandboxed command runs under a pseudo-terminal from `script` (util-linux).
     const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
-    const inner = [this.o.supervisor, "run", "--policy", policyFile, "--", bin, "-p", "/quota", "--output-format", "json"].map(q).join(" ");
+    // Echo off first, so the code the user pastes is not printed back.
+    const inner = "stty -echo 2>/dev/null; exec " + [this.o.supervisor, "run", "--policy", policyFile, "--", bin, "-p", "/quota", "--output-format", "json"].map(q).join(" ");
     const child = spawn(process.env.GOVERNCODE_SCRIPT_BIN ?? "script", ["-qfec", inner, "/dev/null"],
       { cwd: work, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     child.stdin!.on("error", () => {});
     this.sessions.set(id, { tool, child, sent });
     let shownUrl = false;
     const clean = (x: string) => x.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+    // Output is shown line by line (a chunk can end mid-line), with anything the user pasted cut out.
+    let partial = "";
     const show = (chunk: string) => {
-      for (const line of clean(chunk).split("\n")) {
-        const t = line.trim();
-        if (sent.has(t)) continue;
+      const parts = (partial + clean(chunk)).split("\n");
+      partial = parts.pop() ?? "";
+      if (partial.length > 8192) { parts.push(partial); partial = ""; }
+      for (const line of parts) {
+        let t = line.trim();
+        for (const code of sent) if (code) t = t.split(code).join("[code]");
+        if (!t || t === "[code]") continue;
         if (!t || t.startsWith("{")) continue;             // the final usage JSON is read, not shown
         const url = URL_RE.exec(t)?.[0];
         if (url && !shownUrl) { shownUrl = true; notify({ kind: "connect", id, url }); continue; }
@@ -96,7 +103,8 @@ export class Connector {
         release();
         ok({ id, connected, note: connected ? `${TOOLS[tool].name} is connected for GovernCode` : `${TOOLS[tool].name} did not finish signing in` });
       });
-      child.on("error", () => { clearTimeout(timer); this.sessions.delete(id); release(); ok({ id, connected: false, note: `${TOOLS[tool].name} did not start` }); });
+      child.on("error", (e: NodeJS.ErrnoException) => { clearTimeout(timer); this.sessions.delete(id); release();
+        ok({ id, connected: false, note: e.code === "ENOENT" ? "the sign-in needs the script command (util-linux), which was not found" : `${TOOLS[tool].name} did not start` }); });
     });
   }
 

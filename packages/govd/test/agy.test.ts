@@ -227,6 +227,7 @@ test("review: odd quota output is a failed reading, never a crash; Claude or GPT
   const t = setup("allow", (w) => [write(w, "notes/hello.txt")]);
   const r = await t.call("controller.delegate", { ...SPEC, model: "claude-sonnet-5" });
   assert.match(r.error.message, /runs Gemini models/);
+  assert.match((await t.call("controller.delegate", { ...SPEC, model: "gpt-oss-120b" })).error.message, /runs Gemini models/);
   assert.equal(t.gates.length, 0);
 });
 
@@ -248,6 +249,7 @@ test("review: junk on a turn socket gets no reply and does not crash govd; an ov
     assert.equal(await send("null\n"), null);
     assert.equal(await send("[1,2]\n"), null);
     assert.equal(await send("x".repeat(1_200_000)), null);
+    assert.equal(await send("y".repeat(990_000) + "z".repeat(60_000) + "\n"), null, "a line completed past the cap is refused too");
     // The server is still up and answers a proper request.
     assert.equal(JSON.parse((await send(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "ping" }) + "\n"))!).result.ok, "ping");
   } finally { sock.close(); }

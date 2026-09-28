@@ -448,7 +448,8 @@ export class Daemon {
         let r;
         try { r = this.connector.disconnect(p.tool); } catch (e) { throw new RpcError(Errors.refused, e instanceof Error ? e.message : String(e)); }
         L.append(null, "tool.disconnected", "user", { tool: p.tool });
-        return { ...r, note: `${TOOLS[p.tool as keyof typeof TOOLS].name} is disconnected. To revoke its access to your account too: ${r.revoke}` };
+        const name = TOOLS[p.tool as keyof typeof TOOLS].name;
+        return { ...r, note: `${name} is disconnected: GovernCode's copy of its login is deleted. Revoking ${name}'s access in your account (${r.revoke}) ends every ${name} sign-in, your own included.` };
       }
       case "watch":
         this.watch(sock, notify);
