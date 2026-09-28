@@ -19,6 +19,19 @@ if [ "$here" != "$dest" ]; then
 fi
 mkdir -p "$bindir"
 for b in gov govd governcode-dashboard; do ln -sf "$dest/bin/$b" "$bindir/$b"; done
+# The Dashboard in the desktop's app launcher (XDG desktop entry; the release's own logo).
+apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$apps"
+cat > "$apps/governcode-dashboard.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=GovernCode Dashboard
+Comment=Your AI coding crew: Gates, Specs, Checkpoints and Limits
+Exec=$dest/bin/governcode-dashboard
+Icon=$dest/docs/brand/governcode-mark.svg
+Categories=Development;
+Terminal=false
+DESKTOP
 echo "Installed GovernCode $ver in $dest"
 echo "Linked gov, govd and governcode-dashboard into $bindir"
 
