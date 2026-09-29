@@ -58,7 +58,8 @@ if (!args.includes("-N")) {
 }
 if (process.env.FAKE_FORWARD === "fail") { process.stderr.write("unix_listener: cannot bind to path: Address already in use\\n"); process.exit(255); }
 const local = args[args.indexOf("-L") + 1].split(":")[0];
-fs.writeFileSync(process.env.FAKE_SSH_LOG + ".pid", String(process.pid));
+const stat = fs.readFileSync("/proc/self/stat", "utf8");
+fs.writeFileSync(process.env.FAKE_SSH_LOG + ".pid", process.pid + " " + stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
 const server = net.createServer((s) => {
   if (process.env.FAKE_FORWARD === "mute") return s.end();
   let buf = "";
@@ -88,11 +89,16 @@ function setup(extra: Record<string, string> = {}) {
   const gov1 = (...a: string[]) => spawnSync(process.execPath, [gov, ...a], { env, encoding: "utf8" });
   const procs: ChildProcess[] = [];
   // Whatever an assertion left running (gov, the fake ssh, helpers) is killed and waited for.
+  // Our own children are killed (if still running) and waited for, never signalled again once
+  // reaped; the fake ssh (a grandchild) only while its pid still has the start time it wrote.
   const done = async () => {
-    const pids = [...procs.map((p) => p.pid), ...[".pid"].map((x) => existsSync(log + x) ? Number(readFileSync(log + x, "utf8")) : undefined)];
     for (const p of procs) if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL");
     await Promise.all(procs.map((p) => p.exitCode !== null || p.signalCode !== null ? null : new Promise((ok) => p.once("exit", ok))));
-    for (const pid of pids) if (pid) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    const [pid, start] = existsSync(log + ".pid") ? readFileSync(log + ".pid", "utf8").split(" ") : [];
+    if (pid && start && startTime(Number(pid)) === start) {
+      try { process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ }
+      await until(() => startTime(Number(pid)) !== start);
+    }
     rmSync(t, { recursive: true, force: true });
   };
   return { t, run, env, log, calls, gov: gov1, procs, done };
@@ -293,12 +299,30 @@ test("ssh dies with gov, even when gov is SIGKILLed", { skip: !setpriv && "needs
     const tun = start(s, "build-box");
     await until(() => /tunnel to build-box/.test(tun.out()));
     const rec = JSON.parse(readFileSync(join(s.run, "governcode-tunnels/build-box/tunnel.pid"), "utf8"));
-    assert.equal(rec.ssh.pid, Number(readFileSync(s.log + ".pid", "utf8")), "the ssh pid is recorded");
+    assert.equal(rec.ssh.pid, Number(readFileSync(s.log + ".pid", "utf8").split(" ")[0]), "the ssh pid is recorded");
     assert.equal(rec.ssh.start, startTime(rec.ssh.pid));
     tun.p.kill("SIGKILL");
     await tun.exit;
     await until(() => existsSync(s.log + ".stopped"));
     assert.match(s.gov("tunnel", "--stop", "build-box").stdout, /no tunnel to build-box is running/);
     assert.ok(!existsSync(join(s.run, "governcode-tunnels/build-box")));
+  } finally { await s.done(); }
+});
+
+test("--stop checks the folders as a start does before trusting a record", async () => {
+  const s = setup();
+  try {
+    const other = bystander(s);
+    await until(() => startTime(other.pid!) !== null);
+    const dir = join(s.run, "governcode-tunnels/build-box");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "tunnel.pid"), JSON.stringify({ gov: { pid: other.pid, start: startTime(other.pid!) } }));
+    chmodSync(dir, 0o770);
+    const r = s.gov("tunnel", "--stop", "build-box");
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /refusing .*build-box: it must be your own folder with mode 0700/);
+    await new Promise((ok) => setTimeout(ok, 200));
+    assert.ok(isAlive(other), "nothing was signalled");
+    assert.ok(existsSync(join(dir, "tunnel.pid")), "nothing was removed");
   } finally { await s.done(); }
 });

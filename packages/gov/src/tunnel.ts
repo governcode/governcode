@@ -73,7 +73,7 @@ const others = (mode: number) => (mode & 0o077) !== 0;
 /** The runtime folder must be this user's and closed to everyone else (as XDG requires), and
  *  no folder above it may be writable by anyone but its owner (root or this user) unless it is
  *  root's sticky /tmp kind. Nothing is repaired: an unsafe folder is refused, not chmodded. */
-function checkRoot(root: string, create: boolean): void {
+function checkRoot(root: string, create: boolean): string {
   if (create) mkdirSync(root, { recursive: true, mode: 0o700 });
   let real: string;
   try { real = realpathSync(root); } catch { throw new Error(`refusing ${root}: it does not exist`); }
@@ -85,14 +85,39 @@ function checkRoot(root: string, create: boolean): void {
     if ((a.uid !== 0 && a.uid !== uid()) || ((a.mode & 0o022) && !sticky)) throw new Error(`refusing ${root}: ${d} above it can be changed by other users`);
     if (d === "/") break;
   }
+  return real;
 }
 
-/** A folder under the checked root: made 0700 if missing; if it exists, it must already be a
- *  real directory of this user with mode 0700. */
-function privateDir(dir: string): void {
-  try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+/** A folder under the checked root: made 0700 if missing (when creating); if it exists, it must
+ *  already be a real directory of this user with mode 0700. */
+function privateDir(dir: string, create: boolean): void {
+  if (create) try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
   const st = lstatSync(dir);
   if (!st.isDirectory() || st.uid !== uid() || (st.mode & 0o777) !== 0o700) throw new Error(`refusing ${dir}: it must be your own folder with mode 0700 (remove it if you do not know what it is)`);
+}
+
+/** The host's tunnel folder, checked, as a resolved path used for everything after: the root is
+ *  resolved once and every folder below it is checked with lstat, so no symlink swapped in
+ *  later can redirect a later step. Null when it does not exist and create is false. */
+function hostDir(host: string, env: Env, create: boolean): string | null {
+  const root = checkRoot(tunnelRoot(env), create && env.XDG_RUNTIME_DIR === undefined);
+  const base = join(root, "governcode-tunnels"), dir = join(base, checkHost(host));
+  if (!create && !existsSync(dir)) return null;
+  privateDir(base, create);
+  privateDir(dir, create);
+  checkSocketPath(join(dir, "govd.sock"), "local socket");
+  return dir;
+}
+
+/** A file's identity (device and inode, not following symlinks), to unlink it only if it is
+ *  still the one that was read. */
+function fileId(path: string): string | null {
+  try { const st = lstatSync(path); return `${st.dev}:${st.ino}`; } catch { return null; }
+}
+function unlinkIf(path: string, id: string | null): boolean {
+  if (id === null || fileId(path) !== id) return false;
+  rmSync(path, { force: true });
+  return true;
 }
 
 const lastLine = (s: string) => (s.trim().split("\n").filter(Boolean).at(-1) ?? "").replace(/\.$/, "");
@@ -152,29 +177,45 @@ function lock(dir: string, host: string, me: Rec): number {
  *  stopped); one that turns out to be live after all is put back. */
 function setAside(dir: string, path: string, host: string): void {
   const held = () => new Error(`a tunnel to ${host} is already running; gov tunnel --stop ${host}`);
+  const id = fileId(path);
   const rec = readRec(path);
   if (rec && maybeRunning(rec.gov)) throw held();
   const aside = join(dir, `tunnel.pid.old-${process.pid}`);
   try { renameSync(path, aside); } catch { return; }
   const taken = readRec(aside);
-  if (taken && maybeRunning(taken.gov)) {   // another start won the race meanwhile: put it back
-    try { linkSync(aside, path); } catch { /* a third start holds it now */ }
+  if (fileId(aside) !== id || (taken && maybeRunning(taken.gov))) {   // not the stale one we read: put it back
+    try { linkSync(aside, path); } catch { /* another start holds the lock now */ }
     rmSync(aside, { force: true });
-    throw held();
+    if (taken && maybeRunning(taken.gov)) throw held();
+    return;
   }
   if (same(taken?.ssh)) process.kill(taken!.ssh!.pid, "SIGTERM");   // ssh left behind by a crashed tunnel
   rmSync(aside, { force: true });
-  rmSync(join(dir, "govd.sock"), { force: true });
+  // The stale socket is left for the new owner, which removes it once it holds the lock.
 }
 
-/** Removes what a tunnel left in its folder, then the folder if it is empty. */
-function clean(dir: string): void {
-  for (const f of ["govd.sock", "tunnel.pid"]) rmSync(join(dir, f), { force: true });
+// ponytail: the lock is a file, not a kernel-released lock. Several starts of the SAME host by
+// the same user racing one stale lock can, at worst, lose a record (the put-back above fails),
+// leaving a tunnel --stop cannot see. Ceiling: same-user only, and only after a crash. Upgrade
+// trigger: a report of it happening; then take an flock through a small helper instead.
+
+/** Removes what a tunnel left in its folder, but only while the lock is still the one read
+ *  (lockId), then the folder if it is empty. */
+function clean(dir: string, lockId: string | null): void {
+  const lockPath = join(dir, "tunnel.pid");
+  if (fileId(lockPath) !== lockId) return;
+  rmSync(join(dir, "govd.sock"), { force: true });
+  unlinkIf(lockPath, lockId);
   try { rmdirSync(dir); } catch { /* something else is in it: leave it */ }
 }
 
 /** ssh dies with gov where util-linux's setpriv can arrange it (Linux PR_SET_PDEATHSIG), so even a
- *  SIGKILLed gov leaves no forward behind. Elsewhere --stop, or the next start, stops it. */
+ *  SIGKILLed gov leaves no forward behind. Elsewhere --stop, or the next start, stops it.
+ *  ponytail: without setpriv (macOS), a gov killed between spawning ssh and recording its pid
+ *  leaves an ssh nothing names; ceiling: that window is microseconds and needs a SIGKILL. Upgrade
+ *  trigger: macOS support leaves preview; then run ssh from a helper that watches its parent.
+ *  ponytail: setpriv and ssh come from PATH, the same trust gov already gives ssh itself (a
+ *  hostile PATH could replace ssh too). Upgrade trigger: gov resolving ssh to a fixed path. */
 function spawnSsh(args: string[]): ChildProcess {
   const pdeath = process.platform === "linux" && spawnSync("setpriv", ["--help"], { stdio: "ignore" }).status === 0;
   return spawn(pdeath ? "setpriv" : "ssh", pdeath ? ["--pdeathsig", "TERM", "--", "ssh", ...args] : args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -200,17 +241,14 @@ function hello(path: string, timeoutMs = 8000): Promise<string | null> {
 /** gov tunnel HOST [--remote-socket PATH]: runs until Ctrl-C, SIGTERM or `gov tunnel --stop HOST`. */
 export async function runTunnel(hostArg: string | undefined, remoteArg: string | undefined, env: Env = process.env): Promise<number> {
   const host = checkHost(hostArg);
-  const dir = tunnelDir(host, env), local = tunnelSocket(host, env);
-  checkSocketPath(local, "local socket");
-  checkRoot(tunnelRoot(env), env.XDG_RUNTIME_DIR === undefined);
-  privateDir(tunnelBase(env));
-  privateDir(dir);
+  const dir = hostDir(host, env, true)!, local = join(dir, "govd.sock");
   const me: Rec = { gov: { pid: process.pid, start: startTime(process.pid) } };
   const fd = lock(dir, host, me);
+  const lockId = fileId(join(dir, "tunnel.pid"));
   let ssh: ChildProcess | undefined;
   let exited = true;
   let exit: Promise<number | null> = Promise.resolve(null);
-  const stop = async () => { if (ssh && !exited) ssh.kill("SIGTERM"); await exit; closeSync(fd); clean(dir); };
+  const stop = async () => { if (ssh && !exited) ssh.kill("SIGTERM"); await exit; closeSync(fd); clean(dir, lockId); };
   try {
     let remote = remoteArg;
     if (remote === undefined) {
@@ -273,14 +311,17 @@ export async function runTunnel(hostArg: string | undefined, remoteArg: string |
  *  crashed one left behind. Signals only processes it can verify by pid and start time. */
 export function stopTunnel(hostArg: string | undefined, env: Env = process.env): string {
   const host = checkHost(hostArg);
-  const dir = tunnelDir(host, env);
+  const dir = hostDir(host, env, false);
+  if (!dir) return `no tunnel to ${host} is running`;
+  const lockId = fileId(join(dir, "tunnel.pid"));
   const rec = readRec(join(dir, "tunnel.pid"));
   if (!rec) return `no tunnel to ${host} is running`;
+  if (fileId(join(dir, "tunnel.pid")) !== lockId) throw new Error(`the tunnel to ${host} changed while it was being read; try again`);
   if (!canVerify()) throw new Error(`cannot verify which process holds the tunnel to ${host} on this system (no /proc), so nothing was signalled; stop it with Ctrl-C where it runs`);
   if (same(rec.gov)) { process.kill(rec.gov.pid, "SIGTERM"); return `stopping the tunnel to ${host} (pid ${rec.gov.pid})`; }
   const orphan = same(rec.ssh);
   if (orphan) process.kill(rec.ssh!.pid, "SIGTERM");
-  clean(dir);
+  clean(dir, lockId);
   return orphan ? `stopped the ssh a closed tunnel to ${host} left running (pid ${rec.ssh!.pid})` : `no tunnel to ${host} is running (tidied what was left)`;
 }
 
