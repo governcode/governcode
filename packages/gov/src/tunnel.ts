@@ -2,12 +2,12 @@
 // socket in a private local folder, and `gov --host HOST ...` (or the Dashboard, pointed at that
 // folder) talks to it as if it were local. The SSH user is the govd user there, so nothing new is
 // trusted: whoever can ssh in could already run gov on that machine.
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeSync } from "node:fs";
 
 type Env = NodeJS.ProcessEnv;
 
@@ -21,9 +21,11 @@ export function localSocket(env: Env = process.env): string {
   return join(env.GOVERNCODE_RUNTIME_DIR ?? join(env.XDG_RUNTIME_DIR ?? stateDir(env), "governcode"), "govd.sock");
 }
 
-/** The private folder that holds each host's forwarded socket. */
+/** The user's runtime folder (the state folder where there is none), and the private folder
+ *  under it that holds each host's forwarded socket. */
+const tunnelRoot = (env: Env) => env.XDG_RUNTIME_DIR ?? stateDir(env);
 export function tunnelBase(env: Env = process.env): string {
-  return join(env.XDG_RUNTIME_DIR ?? stateDir(env), "governcode-tunnels");
+  return join(tunnelRoot(env), "governcode-tunnels");
 }
 export const tunnelDir = (host: string, env: Env = process.env) => join(tunnelBase(env), checkHost(host));
 export const tunnelSocket = (host: string, env: Env = process.env) => join(tunnelDir(host, env), "govd.sock");
@@ -65,32 +67,117 @@ export function forwardArgs(host: string, local: string, remote: string): string
     "-L", `${checkSocketPath(local, "local socket")}:${checkSocketPath(remote, "remote govd socket")}`, "--", checkHost(host)];
 }
 
-/** Creates (or checks) a folder only this user can enter: a real directory, ours, mode 0700. */
+const uid = () => process.getuid!();
+const others = (mode: number) => (mode & 0o077) !== 0;
+
+/** The runtime folder must be this user's and closed to everyone else (as XDG requires), and
+ *  no folder above it may be writable by anyone but its owner (root or this user) unless it is
+ *  root's sticky /tmp kind. Nothing is repaired: an unsafe folder is refused, not chmodded. */
+function checkRoot(root: string, create: boolean): void {
+  if (create) mkdirSync(root, { recursive: true, mode: 0o700 });
+  let real: string;
+  try { real = realpathSync(root); } catch { throw new Error(`refusing ${root}: it does not exist`); }
+  const st = lstatSync(real);
+  if (!st.isDirectory() || st.uid !== uid() || others(st.mode)) throw new Error(`refusing ${root}: it must be your own folder with mode 0700`);
+  for (let d = dirname(real); ; d = dirname(d)) {
+    const a = lstatSync(d);
+    const sticky = (a.mode & 0o1000) !== 0 && a.uid === 0;
+    if ((a.uid !== 0 && a.uid !== uid()) || ((a.mode & 0o022) && !sticky)) throw new Error(`refusing ${root}: ${d} above it can be changed by other users`);
+    if (d === "/") break;
+  }
+}
+
+/** A folder under the checked root: made 0700 if missing; if it exists, it must already be a
+ *  real directory of this user with mode 0700. */
 function privateDir(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
   const st = lstatSync(dir);
-  if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid())) throw new Error(`refusing ${dir}: not a directory of this user`);
-  chmodSync(dir, 0o700);
+  if (!st.isDirectory() || st.uid !== uid() || (st.mode & 0o777) !== 0o700) throw new Error(`refusing ${dir}: it must be your own folder with mode 0700 (remove it if you do not know what it is)`);
 }
 
 const lastLine = (s: string) => (s.trim().split("\n").filter(Boolean).at(-1) ?? "").replace(/\.$/, "");
 const SSH_ONLY_KEYS = "gov tunnel uses key-based ssh only (BatchMode): check that `ssh -o BatchMode=yes HOST true` works";
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); } catch { return false; }
-  // Where /proc exists, make sure the pid is still a gov tunnel and not a reused number.
-  try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("tunnel"); } catch { return true; }
+// A process is named by its pid and its start time (field 22 of /proc/PID/stat), so a pid the
+// system has since given to something else is never mistaken for it.
+type Proc = { pid: number; start: string | null };
+type Rec = { gov: Proc; ssh?: Proc };
+export function startTime(pid: number): string | null {
+  try { const st = readFileSync(`/proc/${pid}/stat`, "utf8"); return st.slice(st.lastIndexOf(")") + 2).split(" ")[19] ?? null; } catch { return null; }
+}
+const canVerify = () => startTime(process.pid) !== null;
+/** Verified to be the same process: needs /proc. */
+const same = (p: Proc | undefined) => !!p && p.start !== null && startTime(p.pid) === p.start;
+/** For refusing a second start: verified where /proc exists; elsewhere any live pid counts. */
+function maybeRunning(p: Proc): boolean {
+  if (canVerify()) return same(p);
+  try { process.kill(p.pid, 0); return true; } catch { return false; }
 }
 
-function readPid(dir: string): number | null {
-  try { const n = Number(readFileSync(join(dir, "tunnel.pid"), "utf8").trim()); return Number.isInteger(n) && n > 1 ? n : null; }
-  catch { return null; }
+function readRec(path: string): Rec | null {
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return null; }
+  try {
+    const r = JSON.parse(readFileSync(fd, "utf8"));
+    const ok = (p: any) => p && Number.isInteger(p.pid) && p.pid > 1 && (p.start === null || typeof p.start === "string");
+    return ok(r.gov) && (r.ssh === undefined || ok(r.ssh)) ? r : null;
+  } catch { return null; } finally { closeSync(fd); }
+}
+
+/** Rewrites the record in place. Records only grow (the ssh entry is added), so no reader ever
+ *  sees an empty or half-old file. */
+function writeRec(fd: number, rec: Rec): void {
+  writeSync(fd, JSON.stringify(rec) + "\n", 0);
+}
+
+/** Takes the host's lock: tunnel.pid, created exclusively and never through a symlink. A lock
+ *  left by a tunnel that is gone is set aside atomically (and its ssh stopped) before retrying. */
+function lock(dir: string, host: string, me: Rec): number {
+  const path = join(dir, "tunnel.pid");
+  // The record is written in full to a new file first and then linked into place: link() is
+  // atomic, never follows a symlink and fails if tunnel.pid exists, so it is the lock.
+  const fresh = join(dir, `tunnel.pid.new-${process.pid}`);
+  const fd = openSync(fresh, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    writeRec(fd, me);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { linkSync(fresh, path); return fd; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+      setAside(dir, path, host);
+    }
+    throw new Error(`could not take the lock for ${host} in ${dir}`);
+  } catch (e) { closeSync(fd); throw e; } finally { rmSync(fresh, { force: true }); }
+}
+
+/** A tunnel.pid whose tunnel is gone is moved aside atomically (and the ssh it left, if any,
+ *  stopped); one that turns out to be live after all is put back. */
+function setAside(dir: string, path: string, host: string): void {
+  const held = () => new Error(`a tunnel to ${host} is already running; gov tunnel --stop ${host}`);
+  const rec = readRec(path);
+  if (rec && maybeRunning(rec.gov)) throw held();
+  const aside = join(dir, `tunnel.pid.old-${process.pid}`);
+  try { renameSync(path, aside); } catch { return; }
+  const taken = readRec(aside);
+  if (taken && maybeRunning(taken.gov)) {   // another start won the race meanwhile: put it back
+    try { linkSync(aside, path); } catch { /* a third start holds it now */ }
+    rmSync(aside, { force: true });
+    throw held();
+  }
+  if (same(taken?.ssh)) process.kill(taken!.ssh!.pid, "SIGTERM");   // ssh left behind by a crashed tunnel
+  rmSync(aside, { force: true });
+  rmSync(join(dir, "govd.sock"), { force: true });
 }
 
 /** Removes what a tunnel left in its folder, then the folder if it is empty. */
 function clean(dir: string): void {
   for (const f of ["govd.sock", "tunnel.pid"]) rmSync(join(dir, f), { force: true });
   try { rmdirSync(dir); } catch { /* something else is in it: leave it */ }
+}
+
+/** ssh dies with gov where util-linux's setpriv can arrange it (Linux PR_SET_PDEATHSIG), so even a
+ *  SIGKILLed gov leaves no forward behind. Elsewhere --stop, or the next start, stops it. */
+function spawnSsh(args: string[]): ChildProcess {
+  const pdeath = process.platform === "linux" && spawnSync("setpriv", ["--help"], { stdio: "ignore" }).status === 0;
+  return spawn(pdeath ? "setpriv" : "ssh", pdeath ? ["--pdeathsig", "TERM", "--", "ssh", ...args] : args, { stdio: ["ignore", "ignore", "pipe"] });
 }
 
 /** Sends govd's hello over the forwarded socket; the version it reports, or null. */
@@ -115,79 +202,86 @@ export async function runTunnel(hostArg: string | undefined, remoteArg: string |
   const host = checkHost(hostArg);
   const dir = tunnelDir(host, env), local = tunnelSocket(host, env);
   checkSocketPath(local, "local socket");
-  const running = readPid(dir);
-  if (running && alive(running)) throw new Error(`a tunnel to ${host} is already running (pid ${running}); gov tunnel --stop ${host}`);
-
-  let remote = remoteArg;
-  if (remote === undefined) {
-    const r = spawnSync("ssh", discoverArgs(host), { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
-    if (r.error) throw new Error((r.error as NodeJS.ErrnoException).code === "ENOENT" ? "ssh is not installed" : `ssh failed: ${r.error.message}`);
-    if (r.status !== 0) throw new Error(`could not ask ${host} where govd listens (ssh exit ${r.status}): ${lastLine(r.stderr) || "no message"}. ${SSH_ONLY_KEYS.replace("HOST", host)}`);
-    remote = r.stdout.replace(/\n$/, "");
-  }
-  checkSocketPath(remote, `the govd socket ${host} reported`);
-
+  checkRoot(tunnelRoot(env), env.XDG_RUNTIME_DIR === undefined);
   privateDir(tunnelBase(env));
   privateDir(dir);
-  rmSync(local, { force: true });
-  writeFileSync(join(dir, "tunnel.pid"), `${process.pid}\n`, { mode: 0o600 });
-
-  const ssh = spawn("ssh", forwardArgs(host, local, remote), { stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = "";
-  ssh.stderr.on("data", (d) => { stderr = (stderr + d).slice(-4000); });
-  let exited = false;
-  const exit = new Promise<number | null>((ok) => {
-    ssh.on("exit", (code) => { exited = true; ok(code); });
-    ssh.on("error", (e) => { exited = true; stderr += (e as NodeJS.ErrnoException).code === "ENOENT" ? "ssh is not installed" : e.message; ok(null); });
-  });
-  const stop = async () => { if (!exited) ssh.kill("SIGTERM"); await exit; clean(dir); };
-  let stopping = false;
-  const signalled = new Promise<void>((ok) => {
-    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(sig, () => { stopping = true; ok(); });
-  });
-
-  // Up means: ssh bound the local socket, and govd answered hello through it.
-  const up = await (async () => {
-    for (let i = 0; i < 300 && !exited && !stopping; i++) {
-      if (existsSync(local)) return true;
-      await new Promise((r) => setTimeout(r, 100));
+  const me: Rec = { gov: { pid: process.pid, start: startTime(process.pid) } };
+  const fd = lock(dir, host, me);
+  let ssh: ChildProcess | undefined;
+  let exited = true;
+  let exit: Promise<number | null> = Promise.resolve(null);
+  const stop = async () => { if (ssh && !exited) ssh.kill("SIGTERM"); await exit; closeSync(fd); clean(dir); };
+  try {
+    let remote = remoteArg;
+    if (remote === undefined) {
+      const r = spawnSync("ssh", discoverArgs(host), { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
+      if (r.error) throw new Error((r.error as NodeJS.ErrnoException).code === "ENOENT" ? "ssh is not installed" : `ssh failed: ${r.error.message}`);
+      if (r.status !== 0) throw new Error(`could not ask ${host} where govd listens (ssh exit ${r.status}): ${lastLine(r.stderr) || "no message"}. ${SSH_ONLY_KEYS.replace("HOST", host)}`);
+      remote = r.stdout.replace(/\n$/, "");
     }
-    return false;
-  })();
-  if (stopping) { await stop(); return 0; }
-  if (!up) {
-    const timedOut = !exited;
-    await stop();
-    throw new Error(timedOut ? `ssh to ${host} did not open the tunnel within 30 s` :
-      `ssh to ${host} exited before the tunnel was up: ${lastLine(stderr) || "no message"}. ${SSH_ONLY_KEYS.replace("HOST", host)}`);
-  }
-  const version = await hello(local);
-  if (!version) {
-    await stop();
-    throw new Error(`the tunnel to ${host} opened, but no govd answered at ${remote} there${lastLine(stderr) ? ` (${lastLine(stderr)})` : ""}. Is govd running on ${host}?`);
-  }
+    checkSocketPath(remote, `the govd socket ${host} reported`);
+    rmSync(local, { force: true });
 
-  console.log(`tunnel to ${host}: govd ${version} at ${remote} there, reachable here at ${local}`);
-  console.log(`  gov --host ${host} status        # any gov command, run against ${host}`);
-  console.log(`  GOVERNCODE_RUNTIME_DIR=${dir}    # set for the Dashboard to use it`);
-  console.log(`Ctrl-C (or gov tunnel --stop ${host}) closes it.`);
+    const child = ssh = spawnSsh(forwardArgs(host, local, remote));
+    exited = false;
+    if (child.pid) writeRec(fd, { ...me, ssh: { pid: child.pid, start: startTime(child.pid) } });
+    let stderr = "";
+    child.stderr!.on("data", (d) => { stderr = (stderr + d).slice(-4000); });
+    exit = new Promise<number | null>((ok) => {
+      child.on("exit", (code) => { exited = true; ok(code); });
+      child.on("error", (e) => { exited = true; stderr += (e as NodeJS.ErrnoException).code === "ENOENT" ? "ssh is not installed" : e.message; ok(null); });
+    });
+    let stopping = false;
+    const signalled = new Promise<void>((ok) => {
+      for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(sig, () => { stopping = true; ok(); });
+    });
 
-  await Promise.race([exit, signalled]);
-  const lost = !stopping;
-  await stop();
-  if (lost) { console.error(`gov: the tunnel to ${host} closed: ${lastLine(stderr) || "ssh exited"}`); return 1; }
-  console.log(`tunnel to ${host} closed`);
-  return 0;
+    // Up means: ssh bound the local socket, and govd answered hello through it.
+    const up = await (async () => {
+      for (let i = 0; i < 300 && !exited && !stopping; i++) {
+        if (existsSync(local)) return true;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return false;
+    })();
+    if (stopping) { await stop(); return 0; }
+    if (!up) {
+      throw new Error(!exited ? `ssh to ${host} did not open the tunnel within 30 s` :
+        `ssh to ${host} exited before the tunnel was up: ${lastLine(stderr) || "no message"}. ${SSH_ONLY_KEYS.replace("HOST", host)}`);
+    }
+    const version = await hello(local);
+    if (!version) throw new Error(`the tunnel to ${host} opened, but no govd answered at ${remote} there${lastLine(stderr) ? ` (${lastLine(stderr)})` : ""}. Is govd running on ${host}?`);
+
+    console.log(`tunnel to ${host}: govd ${version} at ${remote} there, reachable here at ${local}`);
+    console.log(`  gov --host ${host} status        # any gov command, run against ${host}`);
+    console.log(`  GOVERNCODE_RUNTIME_DIR=${dir}    # set for the Dashboard to use it`);
+    console.log(`Ctrl-C (or gov tunnel --stop ${host}) closes it.`);
+
+    await Promise.race([exit, signalled]);
+    const lost = !stopping;
+    await stop();
+    if (lost) { console.error(`gov: the tunnel to ${host} closed: ${lastLine(stderr) || "ssh exited"}`); return 1; }
+    console.log(`tunnel to ${host} closed`);
+    return 0;
+  } catch (e) {
+    await stop();
+    throw e;
+  }
 }
 
-/** gov tunnel --stop HOST: stops a running tunnel (the tunnel removes its own socket). */
+/** gov tunnel --stop HOST: stops a running tunnel (it removes its own socket), or the ssh a
+ *  crashed one left behind. Signals only processes it can verify by pid and start time. */
 export function stopTunnel(hostArg: string | undefined, env: Env = process.env): string {
   const host = checkHost(hostArg);
   const dir = tunnelDir(host, env);
-  const pid = readPid(dir);
-  if (!pid || !alive(pid)) { if (existsSync(dir)) clean(dir); return `no tunnel to ${host} is running`; }
-  process.kill(pid, "SIGTERM");
-  return `stopping the tunnel to ${host} (pid ${pid})`;
+  const rec = readRec(join(dir, "tunnel.pid"));
+  if (!rec) return `no tunnel to ${host} is running`;
+  if (!canVerify()) throw new Error(`cannot verify which process holds the tunnel to ${host} on this system (no /proc), so nothing was signalled; stop it with Ctrl-C where it runs`);
+  if (same(rec.gov)) { process.kill(rec.gov.pid, "SIGTERM"); return `stopping the tunnel to ${host} (pid ${rec.gov.pid})`; }
+  const orphan = same(rec.ssh);
+  if (orphan) process.kill(rec.ssh!.pid, "SIGTERM");
+  clean(dir);
+  return orphan ? `stopped the ssh a closed tunnel to ${host} left running (pid ${rec.ssh!.pid})` : `no tunnel to ${host} is running (tidied what was left)`;
 }
 
 /** gov tunnel: the tunnels this user has open. */
@@ -195,7 +289,8 @@ export function listTunnels(env: Env = process.env): string[] {
   let hosts: string[] = [];
   try { hosts = readdirSync(tunnelBase(env)); } catch { return []; }
   return hosts.sort().map((h) => {
-    const pid = readPid(join(tunnelBase(env), h));
-    return pid && alive(pid) ? `${h.padEnd(24)} running (pid ${pid})  gov --host ${h} status` : `${h.padEnd(24)} not running (left over; gov tunnel --stop ${h} tidies it)`;
+    const rec = readRec(join(tunnelBase(env), h, "tunnel.pid"));
+    return rec && maybeRunning(rec.gov) ? `${h.padEnd(24)} running (pid ${rec.gov.pid})  gov --host ${h} status`
+      : `${h.padEnd(24)} not running (left over; gov tunnel --stop ${h} tidies it)`;
   });
 }

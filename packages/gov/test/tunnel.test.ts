@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkHost, checkSocketPath, discoverArgs, forwardArgs, tunnelSocket } from "../src/tunnel.ts";
+import { checkHost, checkSocketPath, discoverArgs, forwardArgs, startTime, tunnelSocket } from "../src/tunnel.ts";
 
 const gov = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 
@@ -86,11 +86,21 @@ function setup(extra: Record<string, string> = {}) {
   delete (env as any).GOVERNCODE_RUNTIME_DIR;
   const calls = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]) : [];
   const gov1 = (...a: string[]) => spawnSync(process.execPath, [gov, ...a], { env, encoding: "utf8" });
-  return { t, run, env, log, calls, gov: gov1, done: () => rmSync(t, { recursive: true, force: true }) };
+  const procs: ChildProcess[] = [];
+  // Whatever an assertion left running (gov, the fake ssh, helpers) is killed and waited for.
+  const done = async () => {
+    const pids = [...procs.map((p) => p.pid), ...[".pid"].map((x) => existsSync(log + x) ? Number(readFileSync(log + x, "utf8")) : undefined)];
+    for (const p of procs) if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL");
+    await Promise.all(procs.map((p) => p.exitCode !== null || p.signalCode !== null ? null : new Promise((ok) => p.once("exit", ok))));
+    for (const pid of pids) if (pid) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    rmSync(t, { recursive: true, force: true });
+  };
+  return { t, run, env, log, calls, gov: gov1, procs, done };
 }
 
 function start(s: ReturnType<typeof setup>, ...a: string[]): { p: ChildProcess; out: () => string; exit: Promise<number | null> } {
   const p = spawn(process.execPath, [gov, "tunnel", ...a], { env: s.env });
+  s.procs.push(p);
   let out = "";
   p.stdout!.on("data", (d) => (out += d)); p.stderr!.on("data", (d) => (out += d));
   return { p, out: () => out, exit: new Promise((ok) => p.on("exit", ok)) };
@@ -127,7 +137,7 @@ test("gov tunnel HOST: discovers the socket, forwards it into a private folder, 
     assert.ok(existsSync(s.log + ".stopped"), "ssh was stopped");
     assert.ok(!existsSync(dirname(local)), "the tunnel folder is gone");
     assert.match(s.gov("--host", "build-box", "status").stderr, /no tunnel to build-box .*gov tunnel build-box/);
-  } finally { s.done(); }
+  } finally { await s.done(); }
 });
 
 test("gov tunnel --stop HOST stops a running tunnel; --remote-socket skips discovery", async () => {
@@ -141,10 +151,10 @@ test("gov tunnel --stop HOST stops a running tunnel; --remote-socket skips disco
     assert.equal(await tun.exit, 0);
     assert.ok(!existsSync(join(s.run, "governcode-tunnels/build-box")));
     assert.match(s.gov("tunnel", "--stop", "build-box").stdout, /no tunnel to build-box is running/);
-  } finally { s.done(); }
+  } finally { await s.done(); }
 });
 
-test("option injection and unsafe remote paths are refused before any forward starts", () => {
+test("option injection and unsafe remote paths are refused before any forward starts", async () => {
   const s = setup({ FAKE_DISCOVER: "/tmp/x:/etc/govd.sock\n" });
   try {
     for (const bad of ["-oProxyCommand=touch pwned", "-L", "a;b"]) {
@@ -161,7 +171,7 @@ test("option injection and unsafe remote paths are refused before any forward st
     assert.equal(s.calls().length, 1, "only the discovery call");
     assert.match(s.gov("tunnel", "build-box", "--remote-socket", "relative/govd.sock").stderr, /refusing/);
     assert.equal(s.calls().length, 1);
-  } finally { s.done(); }
+  } finally { await s.done(); }
 });
 
 test("failures say what went wrong and leave nothing behind", async () => {
@@ -170,7 +180,7 @@ test("failures say what went wrong and leave nothing behind", async () => {
     const r = s.gov("tunnel", "build-box");
     assert.equal(r.status, 1);
     assert.match(r.stderr, /could not ask build-box where govd listens \(ssh exit 255\): me@build-box: Permission denied \(publickey\)\. .*BatchMode/);
-  } finally { s.done(); }
+  } finally { await s.done(); }
 
   const f = setup({ FAKE_FORWARD: "fail" });
   try {
@@ -178,7 +188,7 @@ test("failures say what went wrong and leave nothing behind", async () => {
     assert.equal(r.status, 1);
     assert.match(r.stderr, /ssh to build-box exited before the tunnel was up: unix_listener: cannot bind/);
     assert.ok(!existsSync(join(f.run, "governcode-tunnels/build-box")));
-  } finally { f.done(); }
+  } finally { await f.done(); }
 
   const m = setup({ FAKE_FORWARD: "mute" });
   try {
@@ -187,5 +197,108 @@ test("failures say what went wrong and leave nothing behind", async () => {
     assert.match(r.stderr, /the tunnel to build-box opened, but no govd answered at \/run\/user\/2\/governcode\/govd\.sock there/);
     assert.ok(existsSync(m.log + ".stopped"), "ssh was stopped");
     assert.ok(!existsSync(join(m.run, "governcode-tunnels/build-box")));
-  } finally { m.done(); }
+  } finally { await m.done(); }
+});
+
+/** A live process of this user to stand in for an unrelated one, and a pid that is gone. */
+function bystander(s: ReturnType<typeof setup>): ChildProcess {
+  const p = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  s.procs.push(p);
+  return p;
+}
+const deadPid = () => spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" }).stdout.trim();
+const isAlive = (p: ChildProcess) => p.exitCode === null && p.signalCode === null;
+
+test("unsafe folders are refused and left as they were; a planted tunnel.pid symlink is never followed", async () => {
+  const s = setup();
+  try {
+    chmodSync(s.run, 0o755);
+    let r = s.gov("tunnel", "build-box");
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /refusing .*run: it must be your own folder with mode 0700/);
+    assert.equal(statSync(s.run).mode & 0o777, 0o755, "not repaired");
+    chmodSync(s.run, 0o700);
+
+    const dir = join(s.run, "governcode-tunnels/build-box");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o770);
+    r = s.gov("tunnel", "build-box");
+    assert.match(r.stderr, /refusing .*build-box: it must be your own folder with mode 0700/);
+    assert.equal(statSync(dir).mode & 0o777, 0o770, "not repaired");
+    assert.equal(s.calls().length, 0, "ssh never ran");
+
+    chmodSync(dir, 0o700);
+    const victim = join(s.t, "victim.txt");
+    writeFileSync(victim, "keep me");
+    symlinkSync(victim, join(dir, "tunnel.pid"));
+    const tun = start(s, "build-box");
+    await until(() => /tunnel to build-box/.test(tun.out()));
+    assert.equal(readFileSync(victim, "utf8"), "keep me");
+    tun.p.kill("SIGTERM");
+    assert.equal(await tun.exit, 0);
+    assert.equal(readFileSync(victim, "utf8"), "keep me");
+  } finally { await s.done(); }
+});
+
+test("a pid the system gave to another process is never signalled", async () => {
+  const s = setup();
+  try {
+    const other = bystander(s);
+    await until(() => startTime(other.pid!) !== null);
+    const dir = join(s.run, "governcode-tunnels/build-box");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // The record names the bystander's pid, but with another start time: a reused pid.
+    writeFileSync(join(dir, "tunnel.pid"), JSON.stringify({ gov: { pid: other.pid, start: "1" }, ssh: { pid: other.pid, start: "1" } }));
+    assert.match(s.gov("tunnel").stdout, /build-box\s+not running/);
+    assert.match(s.gov("tunnel", "--stop", "build-box").stdout, /no tunnel to build-box is running/);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.ok(isAlive(other), "the bystander was not signalled");
+    assert.ok(!existsSync(dir), "the stale record was tidied");
+  } finally { await s.done(); }
+});
+
+test("two starts at once: one tunnel, the other refused", async () => {
+  const s = setup();
+  try {
+    const a = start(s, "build-box"), b = start(s, "build-box");
+    await until(() => /tunnel to build-box: govd/.test(a.out() + b.out()) && /already running/.test(a.out() + b.out()));
+    const [winner, loser] = /tunnel to build-box: govd/.test(a.out()) ? [a, b] : [b, a];
+    assert.equal(await loser.exit, 1);
+    assert.equal(s.calls().filter((c) => c[0] === "-N").length, 1, "one forward");
+    assert.equal(s.gov("--host", "build-box", "status").status, 0);
+    winner.p.kill("SIGTERM");
+    assert.equal(await winner.exit, 0);
+  } finally { await s.done(); }
+});
+
+test("an ssh left behind is stopped by --stop, verified by pid and start time", async () => {
+  const s = setup();
+  try {
+    const orphan = bystander(s);
+    await until(() => startTime(orphan.pid!) !== null);
+    const dir = join(s.run, "governcode-tunnels/build-box");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "tunnel.pid"), JSON.stringify({ gov: { pid: Number(deadPid()), start: "1" }, ssh: { pid: orphan.pid, start: startTime(orphan.pid!) } }));
+    assert.match(s.gov("tunnel", "--stop", "build-box").stdout, /stopped the ssh a closed tunnel to build-box left running/);
+    await until(() => !isAlive(orphan));
+    assert.equal(orphan.signalCode, "SIGTERM");
+    assert.ok(!existsSync(dir));
+  } finally { await s.done(); }
+});
+
+const setpriv = spawnSync("setpriv", ["--help"], { stdio: "ignore" }).status === 0;
+test("ssh dies with gov, even when gov is SIGKILLed", { skip: !setpriv && "needs util-linux setpriv" }, async () => {
+  const s = setup();
+  try {
+    const tun = start(s, "build-box");
+    await until(() => /tunnel to build-box/.test(tun.out()));
+    const rec = JSON.parse(readFileSync(join(s.run, "governcode-tunnels/build-box/tunnel.pid"), "utf8"));
+    assert.equal(rec.ssh.pid, Number(readFileSync(s.log + ".pid", "utf8")), "the ssh pid is recorded");
+    assert.equal(rec.ssh.start, startTime(rec.ssh.pid));
+    tun.p.kill("SIGKILL");
+    await tun.exit;
+    await until(() => existsSync(s.log + ".stopped"));
+    assert.match(s.gov("tunnel", "--stop", "build-box").stdout, /no tunnel to build-box is running/);
+    assert.ok(!existsSync(join(s.run, "governcode-tunnels/build-box")));
+  } finally { await s.done(); }
 });
