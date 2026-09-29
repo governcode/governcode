@@ -155,6 +155,7 @@ gov diff S-0001      # exactly what the Runner changed
 gov accept S-0001    # apply it to your project (or: gov discard S-0001)
 gov limits           # each Runner's measured usage against its Limit
 gov reserve codex weekly 15   # keep 15% of Codex's weekly window back (default 10)
+gov budget codex daily 20 turns   # also: at most 20 Runner turns a day, counted by GovernCode
 gov runner codex --model gpt-5.5 --effort medium   # the Runner's defaults
 gov spec-models within        # Controller keeps to them: free | within | defaults
 ```
@@ -162,6 +163,12 @@ gov spec-models within        # Controller keeps to them: free | within | defaul
 GovernCode checks Codex's measured usage against your Limit first, runs it in a workspace
 of its own inside the sandbox (it can write only the scope), shows every step that needs
 approval as a Gate, and applies nothing until you accept.
+
+A **budget** is optional, for any cloud Runner: a cap per window (`5-hour`, `daily`, `weekly`,
+`monthly`) in tokens where the Runner reports them, turns otherwise. It is counted by GovernCode
+only: GovernCode sees what its own Runners use, not your own sessions or other apps, so set it
+below your real plan. When the provider reports its own usage too, the stricter of the two holds.
+`gov budget` lists budgets; `gov budget codex daily off` removes one.
 
 **Local models.** With [Ollama](https://ollama.com) running and a model pulled, `ollama` is a
 Runner too: good for small, well-scoped jobs (docs, comments, small fixes) that cost no quota.
@@ -177,7 +184,7 @@ proposes whole new files; GovernCode itself checks each path against the write s
 outside it, nothing in `.git`, never through a symlink) before writing it into the Spec's
 workspace, and you review it like any other Spec. There is no quota to measure, so its Limit is
 your machine's: at most 1 local Spec at once, each stopped after 10 minutes (Settings › Local
-models). If Ollama is not running, the Spec is held; if it refuses the job (busy, model
+models, or `gov local 2 15`). If Ollama is not running, the Spec is held; if it refuses the job (busy, model
 missing), the Spec fails with Ollama's own words.
 
 ### Antigravity (Google) as a Runner

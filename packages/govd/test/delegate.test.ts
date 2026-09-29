@@ -9,7 +9,7 @@ import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ledger } from "../src/ledger.ts";
-import { LimitGate } from "../src/limits.ts";
+import { CountedStore, LimitGate, withBudget } from "../src/limits.ts";
 import { codexUsage } from "../src/codex.ts";
 import { openControllerSocket, accept, specModel } from "../src/delegate.ts";
 import { scratch } from "./scratch.ts";
@@ -60,7 +60,8 @@ function project() {
   return dir;
 }
 
-function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settings?: any, turnEnded?: AbortSignal) {
+function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settings?: any, turnEnded?: AbortSignal,
+    budget?: (usage: any, state: string) => object) {
   const proj = project();
   const state = mkdtempSync(join(root, "state-"));
   // Connected for GovernCode; the fake's settings sit beside its home (govd cleans the home before each run).
@@ -75,6 +76,7 @@ function setup(gateAnswer: "allow" | "deny" = "allow", fake: object = {}, settin
     runtimeDir: join(state, "run"), supervisor, policyDir: join(state, "pol"), stateDir: state,
     gate: async (r: { tool?: string; canonical: string }) => { if (r.tool === "governcode delegate") return "allow" as const; gates.push(r.canonical); return gateAnswer; }, notify: () => {},
     ...(settings ? { settings: () => settings } : {}), ...(turnEnded ? { turnEnded } : {}) };
+  if (budget) Object.assign(ctx, budget(ctx.usage.codex, state));
   const sock = openControllerSocket(ctx);
   const call = (method: string, params: unknown) => new Promise<any>((ok) => {
     const s = connect(sock.path);
@@ -235,4 +237,19 @@ test("review: a Runner whose Controller's turn has ended is stopped, not left ru
   const r = await t.call("controller.delegate", SPEC);
   assert.equal(r.result.status, "failed");
   assert.match(r.result.note, /stopped: the Controller's turn ended/);
+});
+
+test("delegate: a counted budget counts each Runner turn, and the stricter reading holds the next Spec", async () => {
+  // Codex reports 10% used (room to spare); the user's budget allows one Runner turn a day.
+  const t = setup("allow", {}, undefined, undefined, (codex, state) => {
+    const counted = new CountedStore(join(state, "counted.json"));
+    return { counted, usage: { codex: withBudget("codex", codex, counted, () => ({ unit: "turns", windows: { daily: 1 } })) } };
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  const first = await t.call("controller.delegate", SPEC);
+  assert.equal(first.result.status, "needs-review", JSON.stringify(first));
+  assert.equal(JSON.parse(readFileSync(join(t.state, "counted.json"), "utf8")).codex.daily.turns, 1);
+  const second = await t.call("controller.delegate", SPEC);
+  assert.equal(second.result.status, "held");
+  assert.match(second.result.reason, /inside its daily budget \(1 of 1 turns used; counted by GovernCode only\)/);
 });

@@ -20,7 +20,7 @@ import { Connector, TOOLS } from "./connect.ts";
 import { contextState, mayShare, notesHistory, notesOf, projectRecord, setNotes } from "./memory.ts";
 import { crewBrief, crewOf, setCrew, DEFAULT_CREW } from "./crew.ts";
 import type { PlanItem } from "./delegate.ts";
-import { LimitGate, type UsageSource } from "./limits.ts";
+import { CountedStore, LimitGate, withBudget, type UsageSource } from "./limits.ts";
 import { ollamaUsage } from "./local.ts";
 import { Allows, analyze, scopesFor, type AllowRule, type AllowScope, type GateContext, type Kind } from "./allows.ts";
 import { openControllerSocket, openTurnSocket, accept, discard } from "./delegate.ts";
@@ -58,6 +58,7 @@ export class Daemon {
   // cannot swap a folder for a symlink while govd writes into the project.
   private turning = new Map<string, number>();
   private usage: Record<string, UsageSource> = {};
+  private counted!: CountedStore;        // what our own Runners used, for counted budgets (#185 A)
   private gateSeq = 0;
   // Projects a Home Controller proposed, waiting for the user's Create or Cancel.
   // ponytail: in memory; a govd restart drops them (the Controller can propose again).
@@ -75,8 +76,11 @@ export class Daemon {
     this.opts = opts;
     this.ledger = new Ledger(opts.ledgerPath);
     const stateDir = resolve(opts.ledgerPath, "..");
-    this.usage = { codex: codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") }),
-      ollama: ollamaUsage(), agy: agyUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir }) };
+    this.counted = new CountedStore(join(stateDir, "counted.json"));
+    // A cloud Runner's own usage report, with the user's counted budget on top when one is set.
+    const budgeted = (provider: string, native?: UsageSource) => withBudget(provider, native, this.counted, () => this.settings().budgets[provider]);
+    this.usage = { codex: budgeted("codex", codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") })),
+      ollama: ollamaUsage(), agy: budgeted("agy", agyUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir })) };
     this.limits.setReserves(this.settings().reserves);
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
@@ -424,7 +428,7 @@ export class Daemon {
         this.saveSettings(p);
         this.limits.setReserves(p.reserves);
         this.limits.setLocal(p.local);
-        L.append(null, "settings.changed", "user", { reserves: p.reserves, runners: p.runners, specModels: p.specModels, local: p.local });
+        L.append(null, "settings.changed", "user", { reserves: p.reserves, runners: p.runners, specModels: p.specModels, local: p.local, budgets: p.budgets });
         return { settings: p };
       }
       case "limits.list": {
@@ -688,7 +692,7 @@ export class Daemon {
           }),
           justYou: () => this.turnPlans.get(turnId)?.justYou === true,
         },
-        usage: this.usage, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
+        usage: this.usage, counted: this.counted, runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor,
         policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify,
         settings: () => this.settings() })
         : openTurnSocket(resolve(this.opts.socketPath, ".."), async (method, params) => {

@@ -8,6 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { COUNTED_LABEL, COUNTED_WINDOWS, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
 
 const env = process.env;
@@ -305,6 +306,53 @@ async function main(argv: string[]): Promise<number> {
         for (const [provider, windows] of rows) console.log(`${provider.padEnd(8)} ${Object.entries(windows).map(([w, n]) => `${w} ${n}%`).join(", ")}`);
         for (const [provider, d] of Object.entries(settings.runners as Record<string, { model: string; effort: string | null }>)) console.log(`${provider.padEnd(8)} defaults to ${d.model} · ${d.effort ?? "n/a"}`);
         console.log(`per-Spec models: ${settings.specModels}`);
+        for (const [provider, b] of Object.entries(settings.budgets as Record<string, { unit: string; windows: Record<string, number> }>)) {
+          if (!Object.keys(b.windows).length) continue;
+          console.log(`${provider.padEnd(8)} budget ${Object.entries(b.windows).map(([w, n]) => `${n} ${b.unit} ${w}`).join(", ")} ${dim(`(${COUNTED_LABEL})`)}`);
+        }
+        console.log(`local models: at most ${settings.local.maxRunning} at once, ${settings.local.maxMinutes} min each`);
+        return 0;
+      }
+      case "budget": {
+        // gov budget codex daily 20 turns: at most 20 Runner turns a day, counted by GovernCode.
+        // gov budget codex daily off; gov budget codex off. Without arguments: the budgets.
+        const [provider, window, value, unitArg] = rest;
+        const { settings } = await api.call("settings.get", {});
+        const usage = `usage: gov budget [PROVIDER (${Object.keys(COUNTED_WINDOWS).join("|")}) N tokens|turns | PROVIDER [WINDOW] off]`;
+        if (!provider) {
+          const rows = Object.entries(settings.budgets as Record<string, { unit: string; windows: Record<string, number> }>).filter(([, b]) => Object.keys(b.windows).length);
+          if (!rows.length) console.log(dim("no budgets: Runners are held by their own usage reports only"));
+          for (const [p, b] of rows) console.log(`${p.padEnd(8)} ${Object.entries(b.windows).map(([w, n]) => `${n} ${b.unit} ${w}`).join(", ")}`);
+          if (rows.length) console.log(dim(`${COUNTED_LABEL}: use outside GovernCode is not seen`));
+          return 0;
+        }
+        let budgets = settings.budgets;
+        if (window === "off") {
+          budgets = { ...budgets }; delete budgets[provider];
+        } else {
+          if (!(window in COUNTED_WINDOWS)) throw new Error(usage);
+          const cap = value === "off" ? null : Number(value);
+          const unit = unitArg ?? budgets[provider]?.unit;   // the budget's unit, once it has one
+          if (cap !== null && (!Number.isInteger(cap) || cap < 1 || (unit !== "tokens" && unit !== "turns"))) throw new Error(usage);
+          budgets = setBudget(budgets, provider, window as CountedWindow, cap, cap === null ? undefined : unit as "tokens" | "turns");
+        }
+        await api.call("settings.set", { ...settings, budgets });   // the whole object: set replaces it
+        const b = budgets[provider];
+        if (!b) { console.log(`${provider}: no budget`); return 0; }
+        console.log(`${provider}: at most ${Object.entries(b.windows).map(([w, n]) => `${n} ${b.unit} ${w}`).join(", ")}, ${COUNTED_LABEL}`);
+        console.log(dim("GovernCode cannot see use outside it (your own sessions, other apps), so set this below your real plan." +
+          (b.unit === "tokens" ? " A Runner that does not report tokens holds a token budget until the window resets: count it in turns." : "")));
+        return 0;
+      }
+      case "local": {
+        // gov local 2 15: at most 2 local-model Specs at once, each stopped after 15 minutes.
+        const [running, minutes] = rest.map(Number);
+        if (!Number.isInteger(running) || running < 1 || running > 8 || !Number.isInteger(minutes) || minutes < 1 || minutes > 120) {
+          throw new Error("usage: gov local N M   (at most N local Specs at once, 1-8; each stopped after M minutes, 1-120)");
+        }
+        const { settings } = await api.call("settings.get", {});
+        await api.call("settings.set", { ...settings, local: { maxRunning: running, maxMinutes: minutes } });
+        console.log(`local models: at most ${running} at once, ${minutes} min each`);
         return 0;
       }
       case "runner": {
@@ -410,10 +458,10 @@ async function main(argv: string[]): Promise<number> {
         const { providers } = await api.call("limits.list", { measure: true });
         if (!providers.length) console.log(dim("no measured Runners"));
         for (const x of providers) {
-          const windows = x.readings.map((r: any) => `${r.window} ${r.usedPercent}%${r.resetsAt ? ` (resets ${r.resetsAt})` : ""}`).join(", ") || "not measured";
+          const windows = x.readings.map((r: any) => `${r.window} ${r.counted ? `${r.counted.used}/${r.counted.cap} ${r.counted.unit}` : `${r.usedPercent}%`}${r.resetsAt ? ` (resets ${r.resetsAt})` : ""}`).join(", ") || "not measured";
           const held = [x.reservedPercent ? `${x.reservedPercent}% reserved` : "", x.owedPercent ? `${x.owedPercent}% owed` : ""].filter(Boolean).join(", ");
           const rule = x.local ? `local: at most ${x.local.maxRunning} at once, ${x.local.maxMinutes} min each` : `${windows}  · keeps ${x.reservePercent}% back`;
-          console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${rule}${held ? ` · ${held}` : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
+          console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${rule}${held ? ` · ${held}` : ""}${x.counted ? ` · ${x.counted}` : ""}${x.unmetered ? " · unmetered (your opt-in)" : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
         }
         return 0;
       }
@@ -463,7 +511,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall]");
+        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall]");
         return 2;
     }
   } finally {

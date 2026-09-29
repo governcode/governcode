@@ -152,6 +152,13 @@ test("local: the caller's stop ends a model that never answers", async () => {
   assert.equal(r.summary, "Limit: stopping");
 });
 
+test("local: a model still answering at its minutes Limit is stopped, and says so", async () => {
+  const f = await ollama({ hang: true });
+  const r = await run({ host: f.host, model: "m", work: work(), scope: { read: [], write: [] }, prompt: "p", maxMinutes: 0.005 });
+  assert.equal(r.ok, false);
+  assert.match(r.summary, /stopped at its 0\.005-minute local Limit/);
+});
+
 test("local Limits: held with the reason while Ollama is away; at most N at once; no quota debit", () => {
   const g = new LimitGate();
   g.forget("ollama", "Ollama is not answering at http://127.0.0.1:11434");

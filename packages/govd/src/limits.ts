@@ -3,9 +3,15 @@
 // overshoot a little; in-flight polling (phase 1) interrupts a Spec that crosses the line.
 // Rules: unknown or stale usage holds; in-flight Specs count against the same window
 // (atomic reservation); the Controller's own budget number is a request, never authority.
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { COUNTED_LABEL, COUNTED_WINDOWS, type BudgetValue, type CountedWindow } from "@governcode/protocol";
 
-export type Reading = { window: string; usedPercent: number; resetsAt: string | null };
-export type Measurement = { provider: string; measuredAt: number; readings: Reading[] };
+// counted: this reading is govd's own count against a budget the user set (not the vendor's).
+export type Reading = { window: string; usedPercent: number; resetsAt: string | null;
+  counted?: { unit: BudgetValue["unit"]; used: number; cap: number } };
+// exact: every reading is govd's own count, which already includes every finished Spec.
+export type Measurement = { provider: string; measuredAt: number; readings: Reading[]; exact?: boolean };
 
 /** Where a provider's usage comes from. A driver ships only with one of these (or opts out). */
 export interface UsageSource {
@@ -50,7 +56,7 @@ export class LimitGate {
   record(m: Measurement): void {
     this.latest.set(m.provider, m);
     this.whyNot.delete(m.provider);
-    if (this.debitFor(m.provider) === 0) this.debits = this.debits.filter((d) => d.provider !== m.provider);
+    if (m.exact || this.debitFor(m.provider) === 0) this.debits = this.debits.filter((d) => d.provider !== m.provider);
   }
 
   /** Forget a provider's measurement (a failed reading): it is held until measured again. */
@@ -70,11 +76,12 @@ export class LimitGate {
     this.config = { ...this.config, local: { ...this.config.local, ...local } };
   }
 
-  /** The share of a window held back for the user: per window if set, else per provider, else 10. */
-  private reserve(provider: string, window?: string): number {
+  /** The share of a window held back for the user: per window if set, else per provider, else 10.
+   *  A counted budget is already the user's own line (set below the plan), so it keeps 0 unless set. */
+  private reserve(provider: string, window?: string, counted = false): number {
     const r = this.config.reservePercent[provider];
     if (typeof r === "number") return r;
-    return (window !== undefined ? r?.[window] : undefined) ?? 10;
+    return (window !== undefined ? r?.[window] : undefined) ?? (counted ? 0 : 10);
   }
 
   /** Change reserves while running (Settings); takes effect for the next check. */
@@ -105,7 +112,7 @@ export class LimitGate {
       return { verdict: { ok: true, provider, note: `local: at most ${local.maxRunning} at once, ${local.maxMinutes} min each` }, percent: 0, baseline: 0 };
     }
     if (this.config.unmetered.includes(provider)) {
-      return { verdict: { ok: true, provider, note: "unmetered (opt-in): spend not tracked" }, percent: 0, baseline: 0 };
+      return { verdict: { ok: true, provider, note: "unmetered (your opt-in): nothing counted, no Limit" }, percent: 0, baseline: 0 };
     }
     const m = this.latest.get(provider);
     if (!m || !m.readings.length) return no(`${this.whyNot.get(provider) ?? "no usage source"} · held`);
@@ -113,9 +120,21 @@ export class LimitGate {
       return no(`usage stale (measured ${Math.round((this.now() - m.measuredAt) / 1000)} s ago) · held`);
     }
     const pending = this.reserved(provider) + this.debitFor(provider);
+    const running = [...this.inflight.values()].filter((f) => f.provider === provider).length;
+    // Every reading of every source is checked, so the stricter one decides.
     for (const r of m.readings) {
-      if (r.usedPercent + pending + percent > 100 - this.reserve(provider, r.window)) {
-        return no(`inside its ${this.reserve(provider, r.window)}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})`, r.resetsAt);
+      const c = r.counted, keep = this.reserve(provider, r.window, !!c);
+      if (c?.unit === "turns") {
+        // A Spec is exactly one turn: counted in turns, not in a requested percent.
+        if (c.used + running + 1 > c.cap * (100 - keep) / 100 + 1e-9) {
+          return no(`inside its ${r.window} budget (${c.used} of ${c.cap} turns used${running ? `, ${running} running` : ""}${keep ? `, ${keep}% kept back` : ""}; ${COUNTED_LABEL})`, r.resetsAt);
+        }
+      } else if (c) {
+        if ((c.used / c.cap) * 100 + pending + percent > 100 - keep) {
+          return no(`inside its ${r.window} budget (${c.used} of ${c.cap} tokens used${pending ? `, ${pending}% reserved by running Specs` : ""}${keep ? `, ${keep}% kept back` : ""}; ${COUNTED_LABEL})`, r.resetsAt);
+        }
+      } else if (r.usedPercent + pending + percent > 100 - keep) {
+        return no(`inside its ${keep}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})`, r.resetsAt);
       }
     }
     return { verdict: { ok: true, provider }, percent, baseline: Math.max(...m.readings.map((r) => r.usedPercent)) };
@@ -128,9 +147,11 @@ export class LimitGate {
   /** What a Limits screen shows for one provider: the reading, the reserve, what is held back. */
   view(provider: string) {
     const m = this.latest.get(provider);
+    const readings = (m?.readings ?? []).map((r) => ({ ...r, reservePercent: this.reserve(provider, r.window, !!r.counted) }));
     return { provider, unmetered: this.config.unmetered.includes(provider), local: this.localRule(provider), reservePercent: this.reserve(provider),
-      reserves: Object.fromEntries((m?.readings ?? []).map((r) => [r.window, this.reserve(provider, r.window)])),
-      measuredAt: m?.measuredAt ?? null, readings: m?.readings ?? [], reservedPercent: this.reserved(provider),
+      reserves: Object.fromEntries(readings.filter((r) => !r.counted).map((r) => [r.window, r.reservePercent])),
+      counted: readings.some((r) => r.counted) ? COUNTED_LABEL : null,
+      measuredAt: m?.measuredAt ?? null, readings, reservedPercent: this.reserved(provider),
       owedPercent: this.debitFor(provider), verdict: this.check(provider) };
   }
 
@@ -141,8 +162,10 @@ export class LimitGate {
     if (this.config.unmetered.includes(f.provider) || this.localRule(f.provider)) return { ok: true, provider: f.provider };  // local: its minutes cap stops it
     const m = this.latest.get(f.provider);
     if (!m || this.now() - m.measuredAt > this.config.ttlMs) return { ok: false, provider: f.provider, reason: "usage no longer measured · stop", resetsAt: null };
-    const over = m.readings.find((r) => r.usedPercent > 100 - this.reserve(f.provider, r.window));
-    return over ? { ok: false, provider: f.provider, reason: `crossed its ${over.window} Limit (${over.usedPercent}% used)`, resetsAt: over.resetsAt }
+    const over = m.readings.find((r) => r.usedPercent > 100 - this.reserve(f.provider, r.window, !!r.counted));
+    return over ? { ok: false, provider: f.provider, reason: over.counted
+        ? `crossed its ${over.window} budget (${over.counted.used} of ${over.counted.cap} ${over.counted.unit}; ${COUNTED_LABEL})`
+        : `crossed its ${over.window} Limit (${over.usedPercent}% used)`, resetsAt: over.resetsAt }
                 : { ok: true, provider: f.provider };
   }
 
@@ -162,4 +185,105 @@ export class LimitGate {
     this.inflight.delete(spec);
     if (f && f.percent > 0) this.debits.push({ provider: f.provider, percent: f.percent, baseline: f.baseline, at: this.now() });
   }
+}
+
+// Counted budgets (#185 A): a cloud provider with no usage report of its own gets a budget the
+// user sets, per window, in the provider's unit; govd counts what its own Runners report and
+// turns it into the same percent readings, so the Limit, reserves and in-flight holds work
+// unchanged. Always fresh (govd is the source), and blind to use outside GovernCode.
+
+type Tally = { start: number; tokens: number; turns: number; unreported: number };
+
+/** The token count a driver reported for a run, or null if it reported none. */
+export function reportedTokens(usage: unknown): number | null {
+  const u = (usage ?? {}) as Record<string, unknown>;
+  const n = (k: string) => (typeof u[k] === "number" && Number.isFinite(u[k]) && (u[k] as number) >= 0 ? u[k] as number : null);
+  const total = n("total_tokens") ?? n("totalTokens");
+  if (total !== null) return total;
+  const inp = n("input_tokens") ?? n("inputTokens"), out = n("output_tokens") ?? n("outputTokens");
+  return inp !== null || out !== null ? (inp ?? 0) + (out ?? 0) : null;
+}
+
+/** What govd's own Runners used, per provider and window, kept in govd's state so a restart
+ *  does not forget it. Every cloud Runner is counted in every window, so a budget set mid-window
+ *  sees what that window already used. */
+export class CountedStore {
+  private data: Record<string, Record<string, Tally>> = {};
+  private file: string | null;
+  private now: () => number;
+
+  constructor(file: string | null, now: () => number = Date.now) {
+    this.file = file; this.now = now;
+    if (!file) return;
+    try {
+      const d = JSON.parse(readFileSync(file, "utf8"));
+      if (d && typeof d === "object" && !Array.isArray(d)) this.data = d;
+    } catch { /* none yet (or unreadable: counting starts again, never blocks) */ }
+  }
+
+  /** A window's tally, or null before its first run and after it reset. */
+  private live(provider: string, window: CountedWindow): Tally | null {
+    const t = this.data[provider]?.[window];
+    return t && typeof t.start === "number" && this.now() < t.start + COUNTED_WINDOWS[window] ? t : null;
+  }
+
+  /** One finished Runner run: a turn, and its tokens if the driver reported them. */
+  count(provider: string, tokens: number | null): void {
+    const p = (this.data[provider] ??= {});
+    for (const w of Object.keys(COUNTED_WINDOWS) as CountedWindow[]) {
+      const t = this.live(provider, w) ?? (p[w] = { start: this.now(), tokens: 0, turns: 0, unreported: 0 });
+      t.turns += 1;
+      if (tokens === null) t.unreported += 1; else t.tokens += tokens;
+    }
+    this.save();
+  }
+
+  /** The provider's readings against its budget; null (held) when there is none to give. */
+  measure(provider: string, budget: BudgetValue | undefined): { m: Measurement | null; why: string | null } {
+    const windows = Object.entries(budget?.windows ?? {}) as Array<[CountedWindow, number]>;
+    if (!budget || !windows.length) return { m: null, why: `no usage source and no budget (gov budget ${provider} WINDOW N tokens|turns)` };
+    const readings: Reading[] = [];
+    for (const [w, cap] of windows) {
+      const t = this.live(provider, w);
+      if (budget.unit === "tokens" && t?.unreported) {
+        return { m: null, why: `a run in its ${w} window did not report tokens, so a token budget cannot be counted (count it in turns)` };
+      }
+      const used = t?.[budget.unit] ?? 0;
+      readings.push({ window: w, usedPercent: Math.round((used / cap) * 1000) / 10,
+        resetsAt: t ? new Date(t.start + COUNTED_WINDOWS[w]).toISOString() : null, counted: { unit: budget.unit, used, cap } });
+    }
+    return { m: { provider, measuredAt: this.now(), readings, exact: true }, why: null };
+  }
+
+  private save(): void {
+    if (!this.file) return;
+    const tmp = `${this.file}.${process.pid}.tmp`;
+    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, JSON.stringify(this.data), { mode: 0o600 });
+    renameSync(tmp, this.file);
+  }
+}
+
+/**
+ * A Runner's usage source with the user's budget applied: the native source alone when there is
+ * no budget, the count alone when there is no native source, and both when there are both (every
+ * reading is checked, so the stricter one decides; either failing holds). A provider plugin with
+ * its own reading would join the same way.
+ */
+export function withBudget(provider: string, native: UsageSource | undefined, store: CountedStore,
+    budget: () => BudgetValue | undefined): UsageSource {
+  let why: string | null = null;
+  return {
+    provider,
+    why: () => why,
+    async read() {
+      const b = budget();
+      const counted = b && Object.keys(b.windows).length ? store.measure(provider, b) : null;
+      if (!native) { const r = counted ?? store.measure(provider, undefined); why = r.why; return r.m; }
+      const m = await native.read();
+      why = m ? counted?.why ?? null : native.why?.() ?? "no usage reading";
+      if (!m || !counted) return m;
+      return counted.m ? { provider, measuredAt: m.measuredAt, readings: [...m.readings, ...counted.m.readings] } : null;
+    },
+  };
 }

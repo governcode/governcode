@@ -10,7 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { SpecInput, type SettingsValue } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
-import type { LimitGate, UsageSource } from "./limits.ts";
+import { reportedTokens, type CountedStore, type LimitGate, type UsageSource } from "./limits.ts";
 import { canonical, type GateRequest } from "./claude.ts";
 import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
@@ -57,6 +57,7 @@ export type DelegationContext = {
   ledger: Ledger;
   limits: LimitGate;
   usage: Record<string, UsageSource>;      // providers that can be Runners, with a usage source
+  counted?: CountedStore;                  // every cloud Runner's use, for counted budgets
   runtimeDir: string;
   supervisor: string; policyDir: string; stateDir: string;
   gate(req: GateRequest): Promise<"allow" | "deny">;   // the user's terminal
@@ -277,6 +278,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   }
 
   let poll: ReturnType<typeof setInterval> | undefined;
+  let ran = false, runUsage: unknown;   // a cloud Runner was started: its use counts, whatever the outcome
   try {
     // 2. Its own workspace in govd's state (out of every AI tool's reach): the project's
     //    committed HEAD, exported without filters, with its own git dir for snapshots.
@@ -321,7 +323,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
       if (!v.ok) { ctx.notify({ kind: "spec.text", id: spec.id, text: `Limit: ${v.reason}; stopping.` }); stop.abort(v.reason); }
     }, POLL_MS);
     const local = ctx.limits.localRule(input.to);
-    const result = await new Promise<{ ok: boolean; summary: string }>((done) => {
+    const result = await new Promise<{ ok: boolean; summary: string; usage?: unknown }>((done) => {
       // Already stopped (the turn ended while this handoff waited): nothing starts.
       if (stop.signal.aborted) { done({ ok: false, summary: `stopped: ${String(stop.signal.reason ?? "aborted")}` }); return; }
       if (local) {
@@ -347,6 +349,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
           base: req.tool, spec: spec.id }),
         done,
       };
+      ran = true;
       if (input.to === "agy") {
         void runAgyTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, runtimeDir: ctx.runtimeDir,
           worktree: paths.work, writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks,
@@ -359,6 +362,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
         writePaths, model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks, noSubagents: ctx.crew?.()?.subagents.runners === false });
     });
     clearInterval(poll);
+    runUsage = result.usage;
     // An untouched placeholder (still empty, same timestamp) was never the Runner's: remove it.
     // An empty file the Runner wrote on purpose (__init__.py, .gitkeep) has a new timestamp and stays.
     for (const ph of placeholders) {
@@ -382,6 +386,8 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     throw e;
   } finally {
     clearInterval(poll);
+    // Counted before the Limit is released, so the next check already sees it.
+    if (ran) ctx.counted?.count(input.to, reportedTokens(runUsage));
     ctx.limits.release(spec.id);
   }
 }

@@ -66,6 +66,21 @@ per Spec: `free` (its pick), `within` (the default model, effort never heavier),
 The Controller's pick is a request: the Spec records what ran and, when a setting changed it,
 why. The `crew` tool tells the Controller the defaults and the policy before it asks.
 
+A Runner can also have a **counted budget** (`gov budget`, or Settings in the Dashboard): a cap
+per window (5-hour, daily, weekly, monthly) in the provider's unit, tokens where its driver
+reports them and turns (one per Spec) otherwise. govd counts what its own Runners use, in its
+state (`counted.json`, 0600), and turns the count into the same percent readings a usage report
+gives, so the Limit gate, in-flight holds and the Dashboard treat it like any other window. A
+window starts at the first run counted after the previous one ended and resets that long after.
+The count is always fresh, but it is **counted by GovernCode only**: use outside GovernCode (the
+user's own sessions, other apps) is invisible to it, so the budget should sit below the real plan,
+and it keeps no reserve unless one is set. A token budget holds if a run reported no tokens. When
+the provider has its own usage report too, both are read and every reading is checked, so the
+stricter one decides; if either cannot be read, the Runner is held. A provider with neither a
+report nor a budget is held, unless the user explicitly opts it in to run unmetered (no Limit,
+nothing counted). Local models have no quota: their Limit is the machine's (`gov local N M`: at
+most N local Specs at once, each stopped after M minutes).
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the

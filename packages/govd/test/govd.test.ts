@@ -290,7 +290,7 @@ test("settings: reserves are validated, reach the Limit gate, and survive a rest
   let c = client(join(root, "settings", "govd.sock"));
   assert.ok((await c.call("settings.set", { reserves: { codex: { weekly: 95 } } })).error, "over 90% is refused");
   assert.ok((await c.call("settings.set", { reserves: { "Bad Name": { weekly: 5 } } })).error);
-  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null } });
+  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null }, budgets: {} });
   (d as any).limits.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 70, resetsAt: null }] });
   const view = (await c.call("limits.list", {})).result.providers[0];
   assert.deepEqual([view.reserves, view.verdict.ok], [{ weekly: 25 }, true]);   // 70 + 1 <= 75
@@ -302,6 +302,23 @@ test("settings: reserves are validated, reach the Limit gate, and survive a rest
   await d.listen();
   c = client(join(root, "settings", "govd.sock"));
   assert.deepEqual((await c.call("settings.get", {})).result.settings.reserves, { codex: { weekly: 25 } });
+  c.end(); d.close();
+});
+
+test("settings: counted budgets are validated and survive a restart", async () => {
+  let d = daemon("budgets");
+  await d.listen();
+  let c = client(join(root, "budgets", "govd.sock"));
+  assert.ok((await c.call("settings.set", { budgets: { codex: { unit: "dollars", windows: { daily: 5 } } } })).error, "no unit a driver does not report");
+  assert.ok((await c.call("settings.set", { budgets: { codex: { unit: "turns", windows: { hourly: 5 } } } })).error, "only the known windows");
+  assert.ok((await c.call("settings.set", { budgets: { codex: { unit: "turns", windows: { daily: 0 } } } })).error);
+  const budgets = { codex: { unit: "turns", windows: { daily: 20, weekly: 80 } } };
+  assert.deepEqual((await c.call("settings.set", { budgets })).result.settings.budgets, budgets);
+  c.end(); d.close();
+  d = daemon("budgets");
+  await d.listen();
+  c = client(join(root, "budgets", "govd.sock"));
+  assert.deepEqual((await c.call("settings.get", {})).result.settings.budgets, budgets);
   c.end(); d.close();
 });
 

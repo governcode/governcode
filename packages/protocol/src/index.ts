@@ -49,6 +49,31 @@ export const ProjectProposal = z.object({
   reason: z.string().max(1000).default(""),
 });
 
+/** How a counted budget is labelled wherever it is shown: it is blind to use outside GovernCode. */
+export const COUNTED_LABEL = "counted by GovernCode only";
+/** The windows a counted budget can have, and their length. A window starts at the first run
+ *  counted after the previous one ended, and resets that long after (as the vendors' do). */
+export const COUNTED_WINDOWS = { "5-hour": 5 * 3_600_000, daily: 86_400_000, weekly: 7 * 86_400_000, monthly: 30 * 86_400_000 } as const;
+export type CountedWindow = keyof typeof COUNTED_WINDOWS;
+const Cap = z.number().int().min(1).max(1_000_000_000_000);
+export const Budget = z.object({
+  unit: z.enum(["tokens", "turns"]),
+  windows: z.object({ "5-hour": Cap.optional(), daily: Cap.optional(), weekly: Cap.optional(), monthly: Cap.optional() }).strict(),
+});
+export type BudgetValue = z.infer<typeof Budget>;
+
+/** One budget change, as `gov budget` and the Dashboard make it: a cap for one window (null
+ *  removes it). Caps in another unit mean something else, so switching the unit drops them. */
+export function setBudget(budgets: Record<string, BudgetValue>, provider: string, window: CountedWindow, cap: number | null,
+    unit: BudgetValue["unit"] = budgets[provider]?.unit ?? "turns"): Record<string, BudgetValue> {
+  const old = budgets[provider];
+  const windows: BudgetValue["windows"] = old && old.unit === unit ? { ...old.windows } : {};
+  if (cap === null) delete windows[window]; else windows[window] = cap;
+  const next = { ...budgets };
+  if (Object.keys(windows).length) next[provider] = { unit, windows }; else delete next[provider];
+  return next;
+}
+
 /** What the user sets in Settings. Reserves: per Runner, per usage window, the % held back. */
 export const Settings = z.object({
   reserves: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.record(z.string().regex(/^[a-z0-9-]{1,20}$/), z.number().int().min(0).max(90))).default({}),
@@ -71,6 +96,11 @@ export const Settings = z.object({
   // at once, each stopped after this many minutes.
   local: z.object({ maxRunning: z.number().int().min(1).max(8).default(1), maxMinutes: z.number().int().min(1).max(120).default(10) })
     .default({ maxRunning: 1, maxMinutes: 10 }),
+  // Counted budgets, per Runner: at most this much per window, in the provider's unit (tokens
+  // where its driver reports them, turns otherwise). govd counts only what its own Runners use,
+  // so a budget cannot see use outside GovernCode: set it below the real plan. When the provider
+  // also reports its own usage, both are checked and the stricter one decides.
+  budgets: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), Budget).default({}),
 });
 export type SettingsValue = z.infer<typeof Settings>;
 
