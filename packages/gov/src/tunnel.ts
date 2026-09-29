@@ -196,7 +196,9 @@ function setAside(dir: string, path: string, host: string): void {
 
 // ponytail: the lock is a file, not a kernel-released lock. Several starts of the SAME host by
 // the same user racing one stale lock can, at worst, lose a record (the put-back above fails),
-// leaving a tunnel --stop cannot see. Ceiling: same-user only, and only after a crash. Upgrade
+// leaving a tunnel --stop cannot see. The same holds for a --stop cleaning a stale lock while a
+// start takes it over: the check and the unlink are separate steps, so the new start can lose its
+// socket. Ceiling: same-user only, and only after a crash. Upgrade
 // trigger: a report of it happening; then take an flock through a small helper instead.
 
 /** Removes what a tunnel left in its folder, but only while the lock is still the one read
