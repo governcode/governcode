@@ -236,6 +236,13 @@ export function reportedTokens(usage: unknown): number | null {
   return inp !== null || out !== null ? (inp ?? 0) + (out ?? 0) : null;
 }
 
+/** Whether a driver's usage report is the run's whole use. A driver marks it `complete: false`
+ *  when it saw only part of it (the run ended early, or a report could not be read): its tokens
+ *  then count as a floor and the run as unreported, so a token budget holds. */
+export function usageComplete(usage: unknown): boolean {
+  return !(usage && typeof usage === "object" && (usage as Record<string, unknown>).complete === false);
+}
+
 /** What govd's own Runners used, per provider and window, kept in govd's state so a restart
  *  does not forget it. Every cloud Runner is counted in every window, so a budget set mid-window
  *  sees what that window already used. A run is written down (synced to disk) before it starts
@@ -294,21 +301,23 @@ export class CountedStore {
   }
 
   /** A Runner run ended (or was found open after a restart): count it, once. */
-  settle(spec: string, tokens: number | null): void {
+  settle(spec: string, tokens: number | null, complete = true): void {
     const o = this.open[spec];
     if (!o) return;
     delete this.open[spec];
-    this.count(o.provider, tokens);
+    this.count(o.provider, tokens, complete);
   }
 
-  /** One Runner run: a turn, and its tokens if the driver reported them. */
-  count(provider: string, tokens: number | null): void {
+  /** One Runner run: a turn, and its tokens if the driver reported them. Tokens that are not the
+   *  whole run's (complete false) are added as a floor, and the run also counts as unreported. */
+  count(provider: string, tokens: number | null, complete = true): void {
     if (provider in this.bad) return;   // held until the user fixes it; its entry is kept as read
     const p = (this.tallies[provider] ??= {});
     for (const w of Object.keys(COUNTED_WINDOWS) as CountedWindow[]) {
       const t = this.live(provider, w) ?? (p[w] = { start: this.now(), tokens: 0, turns: 0, unreported: 0 });
       t.turns += 1;
-      if (tokens === null) t.unreported += 1; else t.tokens += tokens;
+      if (tokens !== null) t.tokens += tokens;
+      if (tokens === null || !complete) t.unreported += 1;
     }
     try { this.save(); } catch (e) { this.broken ??= `could not be written (${(e as NodeJS.ErrnoException).code ?? e})`; }
   }

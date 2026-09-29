@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, setBudget, type BudgetValue } from "@governcode/protocol";
-import { CountedStore, LimitGate, reportedTokens, withBudget, type Measurement, type UsageSource } from "../src/limits.ts";
+import { CountedStore, LimitGate, reportedTokens, usageComplete, withBudget, type Measurement, type UsageSource } from "../src/limits.ts";
 import { scratch } from "./scratch.ts";
 
 const H = 3_600_000;
@@ -29,6 +29,19 @@ test("counted: reported tokens in the common shapes, null when a driver reports 
   assert.equal(reportedTokens({ inputTokens: 5, outputTokens: 6 }), 11);
   assert.equal(reportedTokens({ totalTokens: 7 }), 7);
   for (const none of [undefined, null, {}, { total_tokens: -1 }, { total_tokens: "9" }]) assert.equal(reportedTokens(none), null);
+  // Only an explicit complete: false marks a report as partial.
+  assert.equal(usageComplete({ totalTokens: 7, complete: false }), false);
+  for (const whole of [undefined, null, {}, { totalTokens: 7 }, { complete: true }]) assert.equal(usageComplete(whole), true);
+});
+
+test("counted: a partial report adds its tokens as a floor and counts the run as unreported", () => {
+  const store = new CountedStore(null);
+  store.begin("S-1", "fakecloud"); store.settle("S-1", 120, false);
+  const m = store.measure("fakecloud", { unit: "tokens", windows: { daily: 1000 } });
+  assert.equal(m.m, null);
+  assert.match(m.why!, /did not report tokens/);
+  const turns = store.measure("fakecloud", { unit: "turns", windows: { daily: 10 } });
+  assert.equal(turns.m!.readings[0].usedPercent, 10);
 });
 
 test("counted: a provider with no source and no budget is held, and says how to set one", async () => {

@@ -10,7 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { SpecInput, type SettingsValue } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
-import { reportedTokens, type CountedStore, type LimitGate, type UsageSource } from "./limits.ts";
+import { reportedTokens, usageComplete, type CountedStore, type LimitGate, type UsageSource } from "./limits.ts";
 import { canonical, type GateRequest } from "./claude.ts";
 import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
@@ -391,7 +391,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   } finally {
     clearInterval(poll);
     // Counted before the Limit is released, so the next check already sees it.
-    if (ran) ctx.counted?.settle(spec.id, reportedTokens(runUsage));
+    if (ran) ctx.counted?.settle(spec.id, reportedTokens(runUsage), usageComplete(runUsage));
     ctx.limits.release(spec.id);
   }
 }

@@ -174,26 +174,28 @@ export const MAX_RUN_TOKENS = 1e12;
  * { threadId, turnId, tokenUsage: { total, last, modelContextWindow } }, where `total` is the
  * thread's running sum and `last` the latest model call). The run's use is the sum over its
  * threads (a subagent has a thread of its own) of each thread's largest total seen, so a repeated
- * or out-of-order update never counts twice. A malformed update is ignored; a run with none
- * reports null usage, which the counted store treats as unknown tokens.
+ * or out-of-order update never counts twice. A run with no update reports null (unknown tokens).
+ * A run that did not end normally, or sent any update that could not be read, reports what it
+ * saw with `complete: false`: a floor, and the counted store holds a token budget on it.
  */
 export function codexTokenTally() {
   const threads = new Map<string, { totalTokens: number; inputTokens: number; outputTokens: number }>();
+  let malformed = false;
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(v, MAX_RUN_TOKENS) : null);
   return {
     add(p: any): void {
       const t = p?.tokenUsage?.total, id = p?.threadId;
-      if (typeof id !== "string" || !t || typeof t !== "object") return;
-      const total = n(t.totalTokens), inp = n(t.inputTokens), out = n(t.outputTokens);
-      if (total === null || inp === null || out === null) return;
+      const total = n(t?.totalTokens), inp = n(t?.inputTokens), out = n(t?.outputTokens);
+      if (typeof id !== "string" || total === null || inp === null || out === null) { malformed = true; return; }
       const seen = threads.get(id);
       if (!seen || total > seen.totalTokens) threads.set(id, { totalTokens: total, inputTokens: inp, outputTokens: out });
     },
-    usage(): { totalTokens: number; inputTokens: number; outputTokens: number } | null {
+    usage(endedNormally: boolean): { totalTokens: number; inputTokens: number; outputTokens: number; complete: boolean } | null {
       if (!threads.size) return null;
       const sum = (k: "totalTokens" | "inputTokens" | "outputTokens") =>
         Math.min([...threads.values()].reduce((a, t) => a + t[k], 0), MAX_RUN_TOKENS);
-      return { totalTokens: sum("totalTokens"), inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens") };
+      return { totalTokens: sum("totalTokens"), inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
+        complete: endedNormally && !malformed };
     },
   };
 }
@@ -214,9 +216,10 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   let finished = false;
   const items = new Map<string, any>();   // itemId -> the item Codex announced (holds a file change's diffs)
   const tokens = codexTokenTally();
-  // Every ending reports the tokens seen so far: a failed or stopped run still counts.
+  // Every ending reports the tokens seen so far: a failed or stopped run still counts them, as a
+  // floor only (it may have used more after its last update).
   const finish = (r: { ok: boolean; summary: string }) => {
-    if (finished) return; finished = true; cleanup(); o.hooks.done({ ...r, usage: tokens.usage() });
+    if (finished) return; finished = true; cleanup(); o.hooks.done({ ...r, usage: tokens.usage(r.ok) });
   };
   rpc.onRequest(async (m) => {
     const p = m.params ?? {};

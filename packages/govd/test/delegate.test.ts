@@ -24,7 +24,7 @@ const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\n
 
 // Fake Codex: reads fake.json from its CODEX_HOME (the tool's environment is an allowlist, so
 // settings cannot ride in env vars): used = usage percent, path = the file it writes,
-// tokens = thread/tokenUsage/updated params it sends before the turn completes.
+// tokens = thread/tokenUsage/updated params it sends before the turn completes, status = how the turn ends.
 process.env.GOVERNCODE_CODEX_BIN = exe("codex", `#!/usr/bin/env node
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const fs = require("node:fs"), path = require("node:path");
@@ -47,7 +47,7 @@ rl.on("line", (l) => {
     if (m.result && m.result.decision === "accept") { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, cfg.content ?? "ok\\n"); }
     out({ method: "item/completed", params: { item: { id: "m1", type: "agentMessage", text: m.result && m.result.decision === "accept" ? "wrote it" : "declined" } } });
     for (const params of cfg.tokens || []) out({ method: "thread/tokenUsage/updated", params });
-    out({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    out({ method: "turn/completed", params: { turn: { status: cfg.status || "completed" } } });
   }
 });
 `);
@@ -303,19 +303,50 @@ test("delegate: only malformed Codex usage reports count as unknown tokens, neve
   assert.deepEqual([daily(t.state).tokens, daily(t.state).unreported], [0, 1]);
 });
 
-test("codex token tally: malformed updates ignored, never negative or NaN, capped, never counted twice", () => {
-  const tally = codexTokenTally();
-  assert.equal(tally.usage(), null);                                   // nothing reported: unknown
+test("delegate: a malformed Codex usage report after valid ones counts the valid tokens as a floor, and a token budget holds", async () => {
+  // A child thread's update cannot be read: the run's 250 tokens are only part of what it used.
+  const t = setup("allow", { tokens: [usage("t1", 250, 200, 50), usage("t2", "90")] }, undefined, undefined, tokenBudget(1000));
+  await new Promise((r) => setTimeout(r, 50));
+  const first = await t.call("controller.delegate", SPEC);
+  assert.equal(first.result.status, "needs-review", JSON.stringify(first));
+  const d = daily(t.state);
+  assert.deepEqual([d.tokens, d.turns, d.unreported], [250, 1, 1]);
+  const second = await t.call("controller.delegate", SPEC);
+  assert.equal(second.result.status, "held");
+  assert.match(second.result.reason, /did not report tokens/);
+});
+
+test("delegate: a Codex run that did not end normally counts its tokens as a floor, and a token budget holds", async () => {
+  const t = setup("allow", { tokens: [usage("t1", 120, 100, 20)], status: "failed" }, undefined, undefined, tokenBudget(1000));
+  await new Promise((r) => setTimeout(r, 50));
+  const first = await t.call("controller.delegate", SPEC);
+  assert.equal(first.result.status, "failed", JSON.stringify(first));
+  const d = daily(t.state);
+  assert.deepEqual([d.tokens, d.turns, d.unreported], [120, 1, 1]);
+  const second = await t.call("controller.delegate", SPEC);
+  assert.equal(second.result.status, "held");
+});
+
+test("codex token tally: malformed updates mark the run incomplete, never negative or NaN, capped, never counted twice", () => {
+  const clean = codexTokenTally();
+  assert.equal(clean.usage(true), null);                               // nothing reported: unknown
+  clean.add(usage("t1", 40, 30, 10));
+  clean.add(usage("t1", 25, 20, 5));                                   // an older total arriving late: ignored
+  clean.add(usage("t1", 40, 30, 10));                                  // a repeat: not counted twice
+  assert.deepEqual(clean.usage(true), { totalTokens: 40, inputTokens: 30, outputTokens: 10, complete: true });
+  assert.equal(clean.usage(false)!.complete, false);                   // ended early: a floor only
   for (const bad of [null, {}, "x", { threadId: "t1" }, { threadId: "t1", tokenUsage: { total: null } },
-    usage("t1", -1), usage("t1", Number.NaN), usage("t1", Infinity), usage("t1", "12"), usage("t1", 5, -1), usage("t1", 5, 1, "2")]) tally.add(bad);
-  assert.equal(tally.usage(), null);
-  tally.add(usage("t1", 40, 30, 10));
-  tally.add(usage("t1", 25, 20, 5));                                   // an older total arriving late: ignored
-  tally.add(usage("t1", 40, 30, 10));                                  // a repeat: not counted twice
-  assert.deepEqual(tally.usage(), { totalTokens: 40, inputTokens: 30, outputTokens: 10 });
-  tally.add(usage("t2", 1e300, 1e300, 1e300));                         // absurd: capped
-  tally.add(usage("t3", MAX_RUN_TOKENS, 0, 0));
-  const u = tally.usage()!;
-  assert.deepEqual(u, { totalTokens: MAX_RUN_TOKENS, inputTokens: MAX_RUN_TOKENS, outputTokens: MAX_RUN_TOKENS });
-  assert.ok(Object.values(u).every((v) => Number.isFinite(v) && v >= 0));
+    usage("t1", -1), usage("t1", Number.NaN), usage("t1", Infinity), usage("t1", "12"), usage("t1", 5, -1), usage("t1", 5, 1, "2"), usage(7 as any, 10)]) {
+    const tally = codexTokenTally();
+    tally.add(bad);
+    assert.equal(tally.usage(true), null, JSON.stringify(bad));        // nothing valid: unknown
+    tally.add(usage("t1", 40, 30, 10));
+    assert.deepEqual(tally.usage(true), { totalTokens: 40, inputTokens: 30, outputTokens: 10, complete: false }, JSON.stringify(bad));
+  }
+  const big = codexTokenTally();
+  big.add(usage("t2", 1e300, 1e300, 1e300));                           // absurd: capped
+  big.add(usage("t3", MAX_RUN_TOKENS, 0, 0));
+  const u = big.usage(true)!;
+  assert.deepEqual(u, { totalTokens: MAX_RUN_TOKENS, inputTokens: MAX_RUN_TOKENS, outputTokens: MAX_RUN_TOKENS, complete: true });
+  assert.ok([u.totalTokens, u.inputTokens, u.outputTokens].every((v) => Number.isFinite(v) && v >= 0));
 });
