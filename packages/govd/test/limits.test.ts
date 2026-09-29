@@ -1,6 +1,7 @@
 // Counted budgets (#185 A) and local caps (#185 C): a fake provider with no usage report of its
 // own, a fake clock, and the real Limit gate. delegate.test.ts runs the whole path with a budget.
 import { test } from "node:test";
+import fs from "node:fs";
 import assert from "node:assert/strict";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -149,6 +150,44 @@ test("counted (review 1): a count that cannot be read or trusted holds its budge
     writeFileSync(locked, "{}", { mode: 0o000 });
     assert.match(new CountedStore(locked).measure("fakecloud", budget).why!, /could not be read \(EACCES\)/);
   }
+});
+
+test("counted (re-review N1): a provider's unreadable entry stays held after another provider saves and govd restarts", () => {
+  const file = join(scratch("gc-counted-"), "counted.json");
+  const budget: BudgetValue = { unit: "turns", windows: { daily: 5 } };
+  writeFileSync(file, JSON.stringify({ version: 1, open: {}, tallies: {
+    fakecloud: { daily: { start: Date.now(), tokens: 0, turns: "9", unreported: 0 } } } }));
+  const first = new CountedStore(file);
+  first.begin("S-1", "other"); first.settle("S-1", null);     // another provider saves
+  first.count("fakecloud", null);                            // and a run of the held one is not mixed in
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).tallies.fakecloud.daily.turns, "9", "kept exactly as read");
+  const restarted = new CountedStore(file);
+  assert.match(restarted.measure("fakecloud", budget).why!, /has an entry for fakecloud it cannot read/);
+  assert.equal(restarted.measure("other", budget).m!.readings[0].counted!.used, 1);
+});
+
+test("counted (re-review N2): a short write is completed before the rename; a write that stalls renames nothing", (t) => {
+  const file = join(scratch("gc-counted-"), "counted.json");
+  const real = fs.writeSync;
+  // At most 12 bytes per call: the loop must finish the file.
+  t.mock.method(fs, "writeSync", (fd: number, buf: Buffer, off: number, len: number) => real(fd, buf, off, Math.min(len, 12)));
+  const store = new CountedStore(file);
+  store.begin("S-1", "fakecloud");
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).open), ["S-1"]);
+  // A write that makes no progress fails the begin, and the good file stays in place.
+  t.mock.method(fs, "writeSync", () => 0);
+  assert.throws(() => store.begin("S-2", "fakecloud"), /could not be written in full/);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).open), ["S-1"]);
+});
+
+test("counted (re-review N3): a broken count stops only Runners with a budget; others run and are counted in memory", () => {
+  const file = join(scratch("gc-counted-"), "counted.json");
+  writeFileSync(file, "{not json");
+  const store = new CountedStore(file);
+  assert.throws(() => store.begin("S-1", "budgeted", true), /not valid JSON/);
+  assert.doesNotThrow(() => store.begin("S-2", "unbudgeted", false));
+  store.settle("S-2", 10);
+  assert.equal(readFileSync(file, "utf8"), "{not json", "still never overwritten");
 });
 
 test("counted (review 2): a run is on disk before it starts; one left open by a crash counts on restart", () => {

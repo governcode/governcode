@@ -3,7 +3,7 @@
 // overshoot a little; in-flight polling (phase 1) interrupts a Spec that crosses the line.
 // Rules: unknown or stale usage holds; in-flight Specs count against the same window
 // (atomic reservation); the Controller's own budget number is a request, never authority.
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import fs, { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, type BudgetValue, type CountedWindow } from "@governcode/protocol";
 
@@ -246,7 +246,9 @@ export class CountedStore {
   private tallies: Record<string, Record<string, Tally>> = {};
   private open: Record<string, { provider: string; at: number }> = {};
   private broken: string | null = null;           // the whole file cannot be trusted: never overwritten
-  private bad = new Set<string>();                 // providers whose tallies cannot be trusted
+  // Providers whose tallies cannot be trusted, kept as they were read: written back unchanged, so
+  // they stay held after any later save and restart, until the user fixes or removes them.
+  private bad: Record<string, unknown> = {};
   private file: string | null;
   private now: () => number;
 
@@ -266,7 +268,7 @@ export class CountedStore {
     for (const [provider, windows] of Object.entries(d.tallies)) {
       const ok = obj(windows) && Object.entries(windows).every(([w, t]) => w in COUNTED_WINDOWS && obj(t)
         && num(t.start) && num(t.tokens) && num(t.turns) && num(t.unreported));
-      if (ok) this.tallies[provider] = windows as Record<string, Tally>; else this.bad.add(provider);
+      if (ok) this.tallies[provider] = windows as Record<string, Tally>; else this.bad[provider] = windows;
     }
     for (const o of Object.values(d.open)) {
       if (!obj(o) || typeof o.provider !== "string" || !num(o.at)) { this.broken = "has a run it cannot read"; return; }
@@ -282,11 +284,13 @@ export class CountedStore {
     return t && this.now() < t.start + COUNTED_WINDOWS[window] ? t : null;
   }
 
-  /** Before a Runner starts: written down first, so a crash cannot lose the run. Throws if it
-   *  cannot be written (the run must not start). */
-  begin(spec: string, provider: string): void {
+  /** Before a Runner starts: written down first, so a crash cannot lose the run. required (the
+   *  provider has a counted budget): throws if it cannot be written, and the run must not start.
+   *  Otherwise a failed write is no reason to stop a Runner no budget depends on: it is counted
+   *  in memory. */
+  begin(spec: string, provider: string, required = true): void {
     this.open[spec] = { provider, at: this.now() };
-    try { this.save(); } catch (e) { delete this.open[spec]; throw e; }
+    try { this.save(); } catch (e) { if (required) { delete this.open[spec]; throw e; } }
   }
 
   /** A Runner run ended (or was found open after a restart): count it, once. */
@@ -299,6 +303,7 @@ export class CountedStore {
 
   /** One Runner run: a turn, and its tokens if the driver reported them. */
   count(provider: string, tokens: number | null): void {
+    if (provider in this.bad) return;   // held until the user fixes it; its entry is kept as read
     const p = (this.tallies[provider] ??= {});
     for (const w of Object.keys(COUNTED_WINDOWS) as CountedWindow[]) {
       const t = this.live(provider, w) ?? (p[w] = { start: this.now(), tokens: 0, turns: 0, unreported: 0 });
@@ -312,7 +317,7 @@ export class CountedStore {
   measure(provider: string, budget: BudgetValue | undefined): Counted {
     const windows = Object.entries(budget?.windows ?? {}) as Array<[CountedWindow, number]>;
     if (!budget || !windows.length) return { m: null, why: `no usage source and no budget (gov budget ${provider} WINDOW N tokens|turns)` };
-    if (this.broken || this.bad.has(provider)) {
+    if (this.broken || provider in this.bad) {
       return { m: null, why: `GovernCode's count of its own use (${this.file}) ${this.broken ?? `has an entry for ${provider} it cannot read`}; fix or remove it, then restart govd` };
     }
     const readings: Reading[] = [];
@@ -336,7 +341,16 @@ export class CountedStore {
     const tmp = `${this.file}.${process.pid}.tmp`, dir = dirname(this.file);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const fd = openSync(tmp, "w", 0o600);
-    try { writeSync(fd, JSON.stringify({ version: 1, tallies: this.tallies, open: this.open })); fsyncSync(fd); } finally { closeSync(fd); }
+    try {
+      // writeSync may write less than asked: loop until every byte is down, or fail (no rename).
+      const buf = Buffer.from(JSON.stringify({ version: 1, tallies: { ...this.tallies, ...this.bad }, open: this.open }));
+      for (let off = 0; off < buf.length;) {
+        const n = fs.writeSync(fd, buf, off, buf.length - off);
+        if (!(n > 0)) throw new Error("the count could not be written in full");
+        off += n;
+      }
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
     renameSync(tmp, this.file);
     const dfd = openSync(dir, "r");
     try { fsyncSync(dfd); } finally { closeSync(dfd); }

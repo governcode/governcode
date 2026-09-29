@@ -349,7 +349,10 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
           base: req.tool, spec: spec.id }),
         done,
       };
-      ctx.counted?.begin(spec.id, input.to);   // written down before it starts (throws: it does not start)
+      // Written down before it starts. With a counted budget, a count that cannot be written stops
+      // it here (throws); without one, the Runner runs and is counted in memory.
+      const budget = ctx.settings?.().budgets?.[input.to];
+      ctx.counted?.begin(spec.id, input.to, !!budget && Object.keys(budget.windows).length > 0);
       ran = true;
       if (input.to === "agy") {
         void runAgyTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, runtimeDir: ctx.runtimeDir,
