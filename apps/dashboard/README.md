@@ -42,7 +42,8 @@ reload and launches Electron against it (restart it after changing main or prelo
 govd and the real one), and the built preload. Build first so the preload test runs.
 
 The Dashboard finds govd's socket the same way `gov` does: `GOVERNCODE_RUNTIME_DIR`, else
-`$XDG_RUNTIME_DIR/governcode`, else the state directory.
+`$XDG_RUNTIME_DIR/governcode`, else the state directory. To use a `govd` on another machine, start it with the
+`GOVERNCODE_RUNTIME_DIR` that `gov tunnel HOST` prints.
 
 ## How it is put together
 

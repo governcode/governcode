@@ -257,6 +257,22 @@ Limits, connect tools (Settings › Tools), set each project's Crew card and edi
 change each project's Controller, Gates across projects and the Trace. The window's page has no direct access to your files or sockets: it can only ask
 the app's main process, which passes a fixed list of requests to `govd`.
 
+### A govd on another machine (SSH)
+
+```sh
+gov tunnel build-box              # keeps running; Ctrl-C closes it
+gov --host build-box status       # from another terminal: any gov command, run against build-box
+gov tunnel                        # the tunnels open now; gov tunnel --stop build-box closes one
+```
+
+`gov tunnel HOST` asks HOST where its `govd` listens (`gov socket-path` there, else the default
+path; `--remote-socket PATH` to say it yourself), then has `ssh` forward that Unix socket to
+`$XDG_RUNTIME_DIR/governcode-tunnels/HOST/govd.sock`, in a folder only you can enter. It checks
+that `govd` answers before it says the tunnel is up, and removes the socket when it closes.
+Login is key-based only (`BatchMode`: it never asks for a password), so check
+`ssh -o BatchMode=yes HOST true` first. Nothing new is trusted: the SSH user is the `govd` user
+there. For the Dashboard, start it with the `GOVERNCODE_RUNTIME_DIR` the tunnel prints.
+
 ## Plan
 
 | Phase | Delivers |
