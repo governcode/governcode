@@ -165,6 +165,39 @@ export function matchMcpApproval(p: any, inflight: Map<string, { tool: string; a
   return one && one.args !== null && typeof one.args === "object" && !Array.isArray(one.args) ? one : null;
 }
 
+/** No single run is believed to use more than this; a larger figure is counted as this (it
+ *  still fills any token budget), never as more. */
+export const MAX_RUN_TOKENS = 1e12;
+
+/**
+ * A run's token use from Codex's `thread/tokenUsage/updated` notifications (app-server v2:
+ * { threadId, turnId, tokenUsage: { total, last, modelContextWindow } }, where `total` is the
+ * thread's running sum and `last` the latest model call). The run's use is the sum over its
+ * threads (a subagent has a thread of its own) of each thread's largest total seen, so a repeated
+ * or out-of-order update never counts twice. A malformed update is ignored; a run with none
+ * reports null usage, which the counted store treats as unknown tokens.
+ */
+export function codexTokenTally() {
+  const threads = new Map<string, { totalTokens: number; inputTokens: number; outputTokens: number }>();
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(v, MAX_RUN_TOKENS) : null);
+  return {
+    add(p: any): void {
+      const t = p?.tokenUsage?.total, id = p?.threadId;
+      if (typeof id !== "string" || !t || typeof t !== "object") return;
+      const total = n(t.totalTokens), inp = n(t.inputTokens), out = n(t.outputTokens);
+      if (total === null || inp === null || out === null) return;
+      const seen = threads.get(id);
+      if (!seen || total > seen.totalTokens) threads.set(id, { totalTokens: total, inputTokens: inp, outputTokens: out });
+    },
+    usage(): { totalTokens: number; inputTokens: number; outputTokens: number } | null {
+      if (!threads.size) return null;
+      const sum = (k: "totalTokens" | "inputTokens" | "outputTokens") =>
+        Math.min([...threads.values()].reduce((a, t) => a + t[k], 0), MAX_RUN_TOKENS);
+      return { totalTokens: sum("totalTokens"), inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens") };
+    },
+  };
+}
+
 /** One Codex turn in a fresh, ephemeral thread. Approvals become Gates; allow runs what was shown. */
 export async function runCodexTurn(o: { supervisor: string; policyDir: string; stateDir: string; worktree: string;
   readOnly?: boolean; writePaths?: string[]; gitDir?: string; model: string; effort: string | null; prompt: string; hooks: TurnHooks;
@@ -180,7 +213,11 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   let text = "";
   let finished = false;
   const items = new Map<string, any>();   // itemId -> the item Codex announced (holds a file change's diffs)
-  const finish = (r: { ok: boolean; summary: string }) => { if (finished) return; finished = true; cleanup(); o.hooks.done(r); };
+  const tokens = codexTokenTally();
+  // Every ending reports the tokens seen so far: a failed or stopped run still counts.
+  const finish = (r: { ok: boolean; summary: string }) => {
+    if (finished) return; finished = true; cleanup(); o.hooks.done({ ...r, usage: tokens.usage() });
+  };
   rpc.onRequest(async (m) => {
     const p = m.params ?? {};
     if (m.method === "mcpServer/elicitation/request") return mcpApproval(p);
@@ -227,6 +264,7 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
       if (m.method === "item/started") inflight.set(String(p.item.id), { tool: String(p.item.tool), args: p.item.arguments });
       if (m.method === "item/completed") inflight.delete(String(p.item.id));
     }
+    if (m.method === "thread/tokenUsage/updated") tokens.add(p);
     if (m.method === "item/agentMessage/delta" && typeof p.delta === "string") text += p.delta;
     if (m.method === "item/completed" && p.item?.type === "agentMessage" && typeof p.item.text === "string") {
       o.hooks.text(p.item.text); text = "";

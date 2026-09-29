@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ledger } from "../src/ledger.ts";
 import { CountedStore, LimitGate, withBudget } from "../src/limits.ts";
-import { codexUsage } from "../src/codex.ts";
+import { codexTokenTally, codexUsage, MAX_RUN_TOKENS } from "../src/codex.ts";
 import { openControllerSocket, accept, specModel } from "../src/delegate.ts";
 import { scratch } from "./scratch.ts";
 
@@ -23,7 +23,8 @@ const exe = (name: string, body: string) => { const p = join(bin, name); writeFi
 const supervisor = exe("govern-sup", `#!/bin/sh\n[ "$1" = selftest ] && exit 0\nshift 4\nexec "$@"\n`);
 
 // Fake Codex: reads fake.json from its CODEX_HOME (the tool's environment is an allowlist, so
-// settings cannot ride in env vars): used = usage percent, path = the file it writes.
+// settings cannot ride in env vars): used = usage percent, path = the file it writes,
+// tokens = thread/tokenUsage/updated params it sends before the turn completes.
 process.env.GOVERNCODE_CODEX_BIN = exe("codex", `#!/usr/bin/env node
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const fs = require("node:fs"), path = require("node:path");
@@ -45,6 +46,7 @@ rl.on("line", (l) => {
   if (m.id === pending) {
     if (m.result && m.result.decision === "accept") { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, cfg.content ?? "ok\\n"); }
     out({ method: "item/completed", params: { item: { id: "m1", type: "agentMessage", text: m.result && m.result.decision === "accept" ? "wrote it" : "declined" } } });
+    for (const params of cfg.tokens || []) out({ method: "thread/tokenUsage/updated", params });
     out({ method: "turn/completed", params: { turn: { status: "completed" } } });
   }
 });
@@ -252,4 +254,68 @@ test("delegate: a counted budget counts each Runner turn, and the stricter readi
   const second = await t.call("controller.delegate", SPEC);
   assert.equal(second.result.status, "held");
   assert.match(second.result.reason, /inside its daily budget \(1 of 1 turns used; counted by GovernCode only\)/);
+});
+
+// thread/tokenUsage/updated params as Codex's app-server sends them (v2 ThreadTokenUsage).
+const usage = (threadId: string, totalTokens: unknown, inputTokens: unknown = 0, outputTokens: unknown = 0) => ({ threadId, turnId: "u1",
+  tokenUsage: { total: { totalTokens, inputTokens, cachedInputTokens: 0, outputTokens, reasoningOutputTokens: 0 },
+                last: { totalTokens: 1, inputTokens: 1, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 }, modelContextWindow: null } });
+
+const tokenBudget = (daily: number) => (codex: any, state: string) => {
+  const counted = new CountedStore(join(state, "counted.json"));
+  return { counted, settings: () => ({ reserves: {}, runners: {}, budgets: { codex: { unit: "tokens", windows: { daily } } } }),
+    usage: { codex: withBudget("codex", codex, counted, () => ({ unit: "tokens", windows: { daily } })) } };
+};
+const daily = (state: string) => JSON.parse(readFileSync(join(state, "counted.json"), "utf8")).tallies.codex.daily;
+
+test("delegate: Codex's reported tokens are counted, the latest total per thread, summed over its threads", async () => {
+  // Thread t1 reports twice (running totals: 100, then 250); a subagent's thread t2 reports 50.
+  const t = setup("allow", { tokens: [usage("t1", 100, 80, 20), usage("t1", 250, 200, 50), usage("t2", 50, 40, 10)] },
+    undefined, undefined, tokenBudget(1000));
+  await new Promise((r) => setTimeout(r, 50));
+  const first = await t.call("controller.delegate", SPEC);
+  assert.equal(first.result.status, "needs-review", JSON.stringify(first));
+  const d = daily(t.state);
+  assert.deepEqual([d.tokens, d.turns, d.unreported], [300, 1, 0]);
+  // 300 of 1000 tokens: the next Spec still runs.
+  const second = await t.call("controller.delegate", SPEC);
+  assert.equal(second.result.status, "needs-review", JSON.stringify(second));
+  assert.equal(daily(t.state).tokens, 600);
+});
+
+test("delegate: a Codex run with no usage report counts as unknown tokens, and a token budget holds", async () => {
+  const t = setup("allow", {}, undefined, undefined, tokenBudget(1000));
+  await new Promise((r) => setTimeout(r, 50));
+  const first = await t.call("controller.delegate", SPEC);
+  assert.equal(first.result.status, "needs-review", JSON.stringify(first));
+  assert.equal(daily(t.state).unreported, 1);
+  const second = await t.call("controller.delegate", SPEC);
+  assert.equal(second.result.status, "held");
+  assert.match(second.result.reason, /did not report tokens/);
+});
+
+test("delegate: only malformed Codex usage reports count as unknown tokens, never as a number", async () => {
+  const t = setup("allow", { tokens: [usage("t1", -5), usage("t1", "300"), usage("t1", null), { threadId: "t1" }, usage(7 as any, 10)] },
+    undefined, undefined, tokenBudget(1000));
+  await new Promise((r) => setTimeout(r, 50));
+  const r = await t.call("controller.delegate", SPEC);
+  assert.equal(r.result.status, "needs-review", JSON.stringify(r));
+  assert.deepEqual([daily(t.state).tokens, daily(t.state).unreported], [0, 1]);
+});
+
+test("codex token tally: malformed updates ignored, never negative or NaN, capped, never counted twice", () => {
+  const tally = codexTokenTally();
+  assert.equal(tally.usage(), null);                                   // nothing reported: unknown
+  for (const bad of [null, {}, "x", { threadId: "t1" }, { threadId: "t1", tokenUsage: { total: null } },
+    usage("t1", -1), usage("t1", Number.NaN), usage("t1", Infinity), usage("t1", "12"), usage("t1", 5, -1), usage("t1", 5, 1, "2")]) tally.add(bad);
+  assert.equal(tally.usage(), null);
+  tally.add(usage("t1", 40, 30, 10));
+  tally.add(usage("t1", 25, 20, 5));                                   // an older total arriving late: ignored
+  tally.add(usage("t1", 40, 30, 10));                                  // a repeat: not counted twice
+  assert.deepEqual(tally.usage(), { totalTokens: 40, inputTokens: 30, outputTokens: 10 });
+  tally.add(usage("t2", 1e300, 1e300, 1e300));                         // absurd: capped
+  tally.add(usage("t3", MAX_RUN_TOKENS, 0, 0));
+  const u = tally.usage()!;
+  assert.deepEqual(u, { totalTokens: MAX_RUN_TOKENS, inputTokens: MAX_RUN_TOKENS, outputTokens: MAX_RUN_TOKENS });
+  assert.ok(Object.values(u).every((v) => Number.isFinite(v) && v >= 0));
 });
