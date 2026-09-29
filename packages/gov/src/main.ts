@@ -4,16 +4,18 @@
 import { connect, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
+import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
 const env = process.env;
-const runtimeDir = env.GOVERNCODE_RUNTIME_DIR ?? join(env.XDG_RUNTIME_DIR ?? join(homedir(), ".local/state/governcode"), "governcode");
-const socketPath = join(runtimeDir, "govd.sock");
+// The local govd's socket, or with `gov --host HOST ...` the one `gov tunnel HOST` forwards.
+let socketPath = localSocket(env);
+let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
@@ -23,7 +25,8 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
     let next = 1;
     const waiting = new Map<number, (r: Reply) => void>();
     let listener: (e: any) => void = () => {};
-    sock.once("error", () => fail(new Error(`govd is not running (no socket at ${socketPath}). Start it with: npm run govd`)));
+    sock.once("error", () => fail(new Error(host ? `no tunnel to ${host} (no socket at ${socketPath}). Open one with: gov tunnel ${host}`
+      : `govd is not running (no socket at ${socketPath}). Start it with: npm run govd`)));
     const lines = createInterface({ input: sock });
     lines.on("error", () => {});   // the socket's own error handler reports it
     lines.on("line", (line) => {
@@ -139,8 +142,24 @@ async function currentProject(api: Awaited<ReturnType<typeof open>>): Promise<st
 }
 
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "--host") {
+    host = checkHost(argv[1]);
+    socketPath = tunnelSocket(host, env);
+    argv = argv.slice(2);
+  }
   const [cmd, ...rest] = argv;
   if (cmd === "daemon") return daemon(rest[0]);
+  if (cmd === "socket-path") { console.log(socketPath); return 0; }
+  if (cmd === "tunnel") {
+    // gov tunnel HOST [--remote-socket PATH] | gov tunnel --stop HOST | gov tunnel (the open ones)
+    const t = await import("./tunnel.ts");
+    if (host) throw new Error("gov tunnel takes the host itself: gov tunnel HOST");
+    if (rest[0] === "--stop") { console.log(t.stopTunnel(rest[1], env)); return 0; }
+    if (!rest.length) { const rows = t.listTunnels(env); console.log(rows.length ? rows.join("\n") : dim("no tunnels (gov tunnel HOST opens one)")); return 0; }
+    const i = rest.indexOf("--remote-socket");
+    if (rest.length !== (i >= 0 ? 3 : 1) || (i >= 0 && i !== 1)) throw new Error("usage: gov tunnel HOST [--remote-socket PATH] | gov tunnel --stop HOST | gov tunnel");
+    return t.runTunnel(rest[0], i >= 0 ? rest[i + 1] : undefined, env);
+  }
   const api = await open();
   try {
     switch (cmd) {
@@ -511,7 +530,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall]");
+        console.error("usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path]");
         return 2;
     }
   } finally {
@@ -527,7 +546,7 @@ async function daemon(verb: string | undefined): Promise<number> {
     case "install": console.log(`installed ${svc.install()} and started governcode.service`); return 0;
     case "uninstall": svc.uninstall(); console.log("stopped and disabled governcode.service"); return 0;
     case "start": {
-      const state = env.GOVERNCODE_STATE_DIR ?? join(env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "governcode");
+      const state = stateDir(env);
       console.log(`govd started (pid ${svc.startOnce(state)}); log: ${join(state, "govd.log")}`);
       return 0;
     }
