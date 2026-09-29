@@ -72,6 +72,9 @@ reports them and turns (one per Spec) otherwise. govd counts what its own Runner
 state (`counted.json`, 0600), and turns the count into the same percent readings a usage report
 gives, so the Limit gate, in-flight holds and the Dashboard treat it like any other window. A
 window starts at the first run counted after the previous one ended and resets that long after.
+Each run is written down (synced to disk) before it starts and settled when it ends; a run left
+open by a crash is counted at the next start as a turn with unknown tokens. A count file that
+cannot be read or trusted holds every budget it covers and is never overwritten.
 The count is always fresh, but it is **counted by GovernCode only**: use outside GovernCode (the
 user's own sessions, other apps) is invisible to it, so the budget should sit below the real plan,
 and it keeps no reserve unless one is set. A token budget holds if a run reported no tokens. When

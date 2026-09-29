@@ -150,7 +150,7 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
                   <label key={w} className="field inline">
                     <span className="dim small">{w}</span>
                     <input type="number" min={1} step={1} value={budget?.windows[w] ?? ""} placeholder="none" aria-label={`${p.provider} ${w} budget`}
-                      onChange={(e) => setBudget(p.provider, budget?.unit ?? "turns", w, e.target.value === "" ? null : Math.round(Number(e.target.value)))} />
+                      onChange={(e) => setBudget(p.provider, budget?.unit ?? "turns", w, e.target.value === "" ? null : Number(e.target.value))} />
                   </label>
                 ))}
               </div>}

@@ -349,6 +349,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
           base: req.tool, spec: spec.id }),
         done,
       };
+      ctx.counted?.begin(spec.id, input.to);   // written down before it starts (throws: it does not start)
       ran = true;
       if (input.to === "agy") {
         void runAgyTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, runtimeDir: ctx.runtimeDir,
@@ -387,7 +388,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   } finally {
     clearInterval(poll);
     // Counted before the Limit is released, so the next check already sees it.
-    if (ran) ctx.counted?.count(input.to, reportedTokens(runUsage));
+    if (ran) ctx.counted?.settle(spec.id, reportedTokens(runUsage));
     ctx.limits.release(spec.id);
   }
 }

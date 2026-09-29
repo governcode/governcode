@@ -122,11 +122,112 @@ test("counted: the count survives a restart (kept in govd's state, private)", ()
   const m = after.measure("fakecloud", { unit: "tokens", windows: { daily: 1000 } }).m!;
   assert.deepEqual(m.readings[0].counted, { unit: "tokens", used: 200, cap: 1000 });
   assert.equal(m.readings[0].usedPercent, 20);
-  // A damaged file starts counting again rather than stopping govd.
-  const damaged = join(scratch("gc-counted-"), "counted.json");
+});
+
+test("counted (review 1): a count that cannot be read or trusted holds its budgets, and is never overwritten", () => {
+  const budget: BudgetValue = { unit: "turns", windows: { daily: 5 } };
+  const dir = scratch("gc-counted-");
+  const damaged = join(dir, "counted.json");
   writeFileSync(damaged, "{not json");
-  new CountedStore(damaged).count("x", 1);
-  assert.equal(JSON.parse(readFileSync(damaged, "utf8")).x.daily.turns, 1);
+  const store = new CountedStore(damaged);
+  assert.match(store.measure("fakecloud", budget).why!, /is not valid JSON; fix or remove it, then restart govd/);
+  store.count("fakecloud", 1);
+  assert.equal(readFileSync(damaged, "utf8"), "{not json", "the evidence is kept, not replaced by a fresh zero");
+  assert.throws(() => store.begin("S-1", "fakecloud"), /not valid JSON/, "a run that cannot be written down does not start");
+  // Readable JSON of another shape, and a tally that is not numbers.
+  writeFileSync(damaged, JSON.stringify({ fakecloud: { daily: { start: 0, tokens: 0, turns: 9, unreported: 0 } } }));
+  assert.match(new CountedStore(damaged).measure("fakecloud", budget).why!, /is not a count GovernCode wrote/);
+  writeFileSync(damaged, JSON.stringify({ version: 1, open: {}, tallies: {
+    fakecloud: { daily: { start: Date.now(), tokens: 0, turns: "9", unreported: 0 } },
+    other: { daily: { start: Date.now(), tokens: 0, turns: 2, unreported: 0 } } } }));
+  const partly = new CountedStore(damaged);
+  assert.match(partly.measure("fakecloud", budget).why!, /has an entry for fakecloud it cannot read/);
+  assert.equal(partly.measure("other", budget).m!.readings[0].counted!.used, 2, "other providers' counts still stand");
+  // A file govd may not read is not "no file yet".
+  if (process.getuid?.() !== 0) {
+    const locked = join(dir, "locked.json");
+    writeFileSync(locked, "{}", { mode: 0o000 });
+    assert.match(new CountedStore(locked).measure("fakecloud", budget).why!, /could not be read \(EACCES\)/);
+  }
+});
+
+test("counted (review 2): a run is on disk before it starts; one left open by a crash counts on restart", () => {
+  const file = join(scratch("gc-counted-"), "counted.json");
+  const budget: BudgetValue = { unit: "turns", windows: { daily: 5 } };
+  const before = new CountedStore(file);
+  before.begin("S-0001", "fakecloud");
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).open), ["S-0001"]);
+  // govd stops here (no settle). The next govd counts the run, as a turn with unknown tokens.
+  const after = new CountedStore(file);
+  assert.equal(after.measure("fakecloud", budget).m!.readings[0].counted!.used, 1);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).open, {});
+  assert.match(after.measure("fakecloud", { unit: "tokens", windows: { daily: 1000 } }).why!, /did not report tokens/);
+  // A settled run counts once, however often it is settled.
+  after.begin("S-0002", "fakecloud");
+  after.settle("S-0002", 40);
+  after.settle("S-0002", 40);
+  assert.equal(new CountedStore(file).measure("fakecloud", budget).m!.readings[0].counted!.used, 2);
+});
+
+test("counted (review 3): a run counted while the provider's report was being read is not missed", async () => {
+  const store = new CountedStore(null);
+  let answer!: (m: Measurement) => void;
+  const slow = { provider: "fakecloud", read: () => new Promise<Measurement>((ok) => { answer = ok; }) };
+  const src = withBudget("fakecloud", slow, store, () => ({ unit: "turns", windows: { daily: 1 } }));
+  const gate = new LimitGate();
+  const reading = src.read();                        // B starts measuring, before A has finished
+  store.begin("S-A", "fakecloud"); store.settle("S-A", null);   // A takes the last turn and ends
+  answer({ provider: "fakecloud", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 0, resetsAt: null }] });
+  gate.record((await reading)!);
+  const b = gate.admit("S-B", "fakecloud", 1);
+  assert.ok(!b.ok && /1 of 1 turns used/.test(b.reason));
+  // And one counted after the reading was recorded, before the decision, is seen too.
+  const gate2 = new LimitGate();
+  gate2.record({ provider: "fakecloud", measuredAt: Date.now(), readings: [], recount: () => store.measure("fakecloud", { unit: "turns", windows: { daily: 2 } }) });
+  assert.ok(gate2.check("fakecloud").ok);
+  store.count("fakecloud", null);
+  assert.ok(!gate2.check("fakecloud").ok, "decided on the count as it is now");
+});
+
+test("counted (review 4): a counted budget rising does not pay off what finished Specs owe the provider's own window", async () => {
+  const store = new CountedStore(null);
+  const src = withBudget("fakecloud", native("fakecloud", () => ({ provider: "fakecloud", measuredAt: Date.now(),
+    readings: [{ window: "weekly", usedPercent: 70, resetsAt: null }] })), store, () => ({ unit: "tokens", windows: { daily: 1000 } }));
+  const gate = new LimitGate();
+  await measured(gate, src);
+  assert.ok(gate.admit("S-A", "fakecloud", 20).ok);
+  gate.release("S-A");                               // the provider's report has not caught up: still 70%
+  store.count("fakecloud", 950);
+  await measured(gate, src);
+  assert.equal(gate.view("fakecloud").owedPercent, 20);
+  const next = gate.check("fakecloud", 1);
+  assert.ok(!next.ok && /10% weekly Limit \(70% used, 20% reserved/.test(next.reason), "70 + 20 owed + 1 is past the 90% line");
+});
+
+test("counted (review 5): finished runs are in the count, so what they owe the provider's window is not added to it", async () => {
+  const store = new CountedStore(null);
+  const src = withBudget("fakecloud", native("fakecloud", () => ({ provider: "fakecloud", measuredAt: Date.now(),
+    readings: [{ window: "weekly", usedPercent: 0, resetsAt: null }] })), store, () => ({ unit: "tokens", windows: { daily: 1000 } }));
+  const gate = new LimitGate({ reservePercent: { fakecloud: { daily: 10 } } });
+  await measured(gate, src);
+  assert.ok(gate.admit("S-A", "fakecloud", 10).ok);
+  gate.release("S-A");
+  store.count("fakecloud", 600);
+  await measured(gate, src);
+  assert.ok(gate.check("fakecloud", 25).ok, "60% counted + 25% fits the 90% budget line; the 10% owed is the weekly window's");
+});
+
+test("counted (review 6): a running Spec is stopped on the raw count, not a rounded percent", async () => {
+  const store = new CountedStore(null);
+  const src = withBudget("fakecloud", undefined, store, () => ({ unit: "tokens", windows: { daily: 10_000 } }));
+  const gate = new LimitGate();
+  await measured(gate, src);
+  assert.ok(gate.admit("S-1", "fakecloud", 1).ok);
+  store.count("fakecloud", 10_004);
+  await measured(gate, src);
+  assert.equal(gate.view("fakecloud").readings[0].usedPercent, 100, "shown rounded");
+  const v = gate.stillWithin("S-1");
+  assert.ok(!v.ok && /10004 of 10000 tokens/.test(v.reason));
 });
 
 test("counted: with the provider's own report too, both are checked and the stricter decides", async () => {
@@ -176,8 +277,8 @@ test("unmetered stays an explicit opt-in, labelled as nothing counted", () => {
   assert.equal(gate.view("fakecloud").unmetered, true);
 });
 
-test("local caps: at most N running whatever budget is set, M minutes each", async () => {
-  const store = new CountedStore(null);
+// The minutes cap stopping a real (fake) model is in local.test.ts.
+test("local caps: at most N running at once, and the rule the Runner is given names both caps", () => {
   const gate = new LimitGate({ local: { providers: ["ollama"], maxRunning: 2, maxMinutes: 7 } });
   gate.record({ provider: "ollama", measuredAt: Date.now(), readings: [] });
   assert.ok(gate.admit("S-1", "ollama", 5).ok);
@@ -185,7 +286,6 @@ test("local caps: at most N running whatever budget is set, M minutes each", asy
   assert.ok(second.ok && second.note === "local: at most 2 at once, 7 min each");
   const third = gate.admit("S-3", "ollama", 5);
   assert.ok(!third.ok && /already running 2 local Specs \(at most 2 at once\)/.test(third.reason));
-  store.count("ollama", 10);
   assert.deepEqual(gate.localRule("ollama"), { maxRunning: 2, maxMinutes: 7 });
 });
 

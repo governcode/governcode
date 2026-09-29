@@ -248,7 +248,7 @@ test("delegate: a counted budget counts each Runner turn, and the stricter readi
   await new Promise((r) => setTimeout(r, 50));
   const first = await t.call("controller.delegate", SPEC);
   assert.equal(first.result.status, "needs-review", JSON.stringify(first));
-  assert.equal(JSON.parse(readFileSync(join(t.state, "counted.json"), "utf8")).codex.daily.turns, 1);
+  assert.equal(JSON.parse(readFileSync(join(t.state, "counted.json"), "utf8")).tallies.codex.daily.turns, 1);
   const second = await t.call("controller.delegate", SPEC);
   assert.equal(second.result.status, "held");
   assert.match(second.result.reason, /inside its daily budget \(1 of 1 turns used; counted by GovernCode only\)/);
