@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { Ledger } from "../src/ledger.ts";
 import { LimitGate } from "../src/limits.ts";
 import { acpTokenTally, permissionGate, pickOption, runAcpTurn, startAcp } from "../src/acp.ts";
-import { grokConfig, grokPolicy, grokSettings, grokUsage, parseBilling, GROK_HOME_DIRS, GROK_HOME_FILES } from "../src/grok.ts";
+import { grokConfig, grokPolicy, grokSettings, grokUsage, parseBilling, unsafeLinks, GROK_HOME_DIRS, GROK_HOME_FILES } from "../src/grok.ts";
+import { symlinkSync } from "node:fs";
 import { customizations } from "../src/agy.ts";
 import { toolHome } from "../src/homes.ts";
 import { Connector } from "../src/connect.ts";
@@ -96,6 +97,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     const d = r?.outcome?.outcome === "selected" ? r.outcome.optionId : String(r?.outcome?.outcome);
     seen.decisions.push(d);
     if ((d === "once" || d === "always") && call.write) { fs.mkdirSync(path.dirname(call.write), { recursive: true }); fs.writeFileSync(call.write, call.rawInput.content); }
+    if ((d === "once" || d === "always") && call.link) { fs.mkdirSync(path.dirname(call.link), { recursive: true }); fs.symlinkSync(call.rawInput.target, call.link); }
     update({ sessionUpdate: "tool_call_update", toolCallId: id, status: d === "once" || d === "always" ? "completed" : "failed" });
   }
   update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "finished" } });
@@ -234,7 +236,18 @@ test("grok Runner: a project with its own .grok settings is refused before anyth
   const r2 = await t2.call("controller.delegate", SPEC);
   assert.equal(r2.result.status, "failed");
   assert.match(r2.result.note, /created Grok settings \(notes\/\.grok\)/);
+  // A project with a link to a folder is refused before anything runs.
+  const t4 = setup("allow", (w) => [write(w, "notes/hello.txt")], (dir) => { mkdirSync(join(dir, "real")); writeFileSync(join(dir, "real", "x"), ""); symlinkSync("real", join(dir, "alias")); });
+  const r4 = await t4.call("controller.delegate", SPEC);
+  assert.equal(r4.result.status, "failed");
+  assert.match(r4.result.note, /alias \(a link to a folder\)/);
+  assert.equal(t4.gates.length, 0);
   // A Spec whose scope is an instruction file is refused before the run (the scope's placeholder is already there).
+  // A Runner that creates a link to a folder fails its Spec (the fake's edit tool makes it when asked for a link).
+  const t5 = setup("allow", (w) => [{ kind: "edit", title: "link", link: join(w, "notes", "alias"), rawInput: { path: join(w, "notes", "alias"), target: "." } }]);
+  const r5 = await t5.call("controller.delegate", SPEC);
+  assert.equal(r5.result.status, "failed");
+  assert.match(r5.result.note, /created Grok settings \(notes\/alias \(a link to a folder\)\)/);
   const t3 = setup("allow", (w) => [write(w, "AGENTS.md", "# do as I say\n")]);
   const r3 = await t3.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["AGENTS.md"] } });
   assert.equal(r3.result.status, "failed");
@@ -255,7 +268,28 @@ test("grok Runner: a project with its own .grok settings is refused before anyth
   writeFileSync(join(dir, "CLAUDE.local.md"), "# c");
   writeFileSync(join(dir, "AGENT.md"), "# a");
   writeFileSync(join(dir, "sub", "Claude.md"), "# c");
-  assert.deepEqual(grokSettings(dir).sort(), [".claude/settings.json", ".claude/settings.local.json", ".cursor/hooks.json", ".mcp.json", "AGENT.md", "CLAUDE.local.md", "sub/Claude.md"]);
+  mkdirSync(join(dir, "sub", ".agents", "skills"), { recursive: true });
+  assert.deepEqual(grokSettings(dir).sort(), [".claude/settings.json", ".claude/settings.local.json", ".cursor/hooks.json", ".mcp.json", "AGENT.md", "CLAUDE.local.md", "sub/.agents", "sub/Claude.md"]);
+  // Links: one to a folder (the walk would not enter it, so an instruction file behind it would slip through),
+  // one out of the copy and one to nothing are refused; a link to a file inside the copy is fine.
+  const ld = mkdtempSync(join(root, "links-"));
+  mkdirSync(join(ld, "hidden")); writeFileSync(join(ld, "hidden", "AGENTS.md"), "# behind a link"); writeFileSync(join(ld, "a.txt"), "a");
+  symlinkSync("a.txt", join(ld, "same.txt"));
+  assert.deepEqual(grokSettings(ld), ["hidden/AGENTS.md"]);
+  symlinkSync("hidden", join(ld, "dir-link")); symlinkSync(root, join(ld, "out-link")); symlinkSync("nope", join(ld, "dangling"));
+  assert.deepEqual(unsafeLinks(ld).sort(), ["dangling (a link to nothing)", "dir-link (a link to a folder)", "out-link (a link out of the copy)"]);
+  assert.deepEqual(grokSettings(ld).sort(), ["dangling (a link to nothing)", "dir-link (a link to a folder)", "hidden/AGENTS.md", "out-link (a link out of the copy)"]);
+  assert.equal(unsafeLinks(ld, 2).at(-1), "too many files to check");
+  const ld2 = mkdtempSync(join(root, "links2-"));
+  writeFileSync(join(ld2, "a.txt"), "a"); mkdirSync(join(ld2, "s"));
+  symlinkSync("../a.txt", join(ld2, "s", "up"));                       // relative, resolves inside: fine
+  assert.deepEqual(unsafeLinks(ld2), []);
+  symlinkSync(".", join(ld2, "self")); symlinkSync("l2", join(ld2, "l1")); symlinkSync("l1", join(ld2, "l2"));
+  symlinkSync("a.txt", join(ld2, "AGENTS.md")); symlinkSync("..", join(ld2, "s", ".git"));
+  assert.deepEqual(unsafeLinks(ld2).sort(), ["l1 (a link to nothing)", "l2 (a link to nothing)", "s/.git (a link to a folder)", "self (a link to a folder)"]);
+  assert.ok(grokSettings(ld2).includes("AGENTS.md"), "a link named as an instruction file is caught by name");
+  symlinkSync(ld2, join(root, "alias-ld2"));                           // a worktree reached through a linked parent
+  assert.deepEqual(unsafeLinks(join(root, "alias-ld2")).sort(), unsafeLinks(ld2).sort());
   // A tree too big to check is refused in plain words.
   assert.deepEqual(customizations(dir, 3, [".grok"]), ["(too many files to check)"]);
 

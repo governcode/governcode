@@ -254,14 +254,18 @@ names, with the reasoning effort it asks for.
 Honest limits, for now:
 - The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
   and the sandbox limits where it can write, not which HTTPS sites it can reach.
-- A project that contains settings Grok would read (`.grok/`, `.claude/settings.json` or
-  `settings.local.json`, `.mcp.json`, `.cursor/hooks.json`, `AGENTS.md`, `CLAUDE.md` and their
-  variants, anywhere in the copy) is refused: they could switch its asking off or add
-  instructions. A Runner that creates one fails its Spec.
+- A project that contains settings Grok would read (`.grok/`, `.agents/` (its skill and command
+  folder, which other tools use too), `.claude/settings.json` or `settings.local.json`,
+  `.mcp.json`, `.cursor/hooks.json`, `AGENTS.md`, `CLAUDE.md` and their variants, anywhere in the
+  copy) is refused: they could switch its asking off or add instructions. A Runner that creates
+  one fails its Spec.
 - Subagents and background workflows are off for every Grok run (a Runner has no use for them),
   so the Crew card's "Runners may start subagents" does not apply to Grok. Skills have no switch,
-  but a fresh home holds none, so Grok has no skill tool. Its task list stays, and asks like
-  every other call.
+  but a fresh home holds none, so Grok has no skill tool. Its task list and its background-task
+  tools stay, and ask like every other call (seen live, though Grok's own guide lists them as
+  never prompting).
+- A project copy with a link to a folder, out of the copy, or to nothing is refused too: the
+  settings check does not follow links, so a link could hide an instruction file from it.
 - Grok keeps remembered approvals under its `sessions/` folder, which a run must be able to
   write. GovernCode never grants one (the "always allow" choices are switched off and never
   chosen), but a command you allowed could write such a file itself for the rest of that run;

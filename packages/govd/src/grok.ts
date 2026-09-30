@@ -8,10 +8,10 @@
 // Grok's own /usage shows: credits used this period, and when the period ends), so Grok is a
 // measured Runner like Codex.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { agyEnv, customizations, hold, safeWrite } from "./agy.ts";
 import { isConnected, runHome } from "./homes.ts";
 import { resolverFiles, toolchainDirs, RUNNER_CONTEXT, type Policy, type TurnHooks } from "./claude.ts";
@@ -41,8 +41,12 @@ export function grokBinary(): string {
  *  What a Runner has no use for is off outright, whatever the Crew card says: subagents (Grok's
  *  task tool) and background workflows (a scripting tool that can start agents of its own). Skills
  *  have no switch, but a fresh home holds none and a project's `.grok/` is refused, so Grok has
- *  no skill tool at all (seen live: "the skill invocation tool is missing"). The task list
- *  (todo_write) stays: it changes nothing outside the session, and it asks like every other call. */
+ *  no skill tool at all (seen live: "the skill invocation tool is missing"). Grok's guide lists the
+ *  task list (todo_write) and the background-task tools (get_command_or_subagent_output,
+ *  kill_command_or_subagent) as never prompting, and no rule can name them (the rule names are
+ *  Bash, Read, Edit, Grep, MCPTool, WebFetch, WebSearch and "*"). Seen live under this config
+ *  (Grok 1.0.44, the "*" ask rule): each of the three produced a session/request_permission
+ *  before running, so each is a Gate. They stay: they change nothing outside the session. */
 export function grokConfig(): string {
   return [
     "# Written by GovernCode for this run. The user's own Grok settings are not used.",
@@ -103,13 +107,16 @@ export function grokWritable(home: string): string[] {
 export const GROK_ENV = (tmp: string, home: string) => agyEnv(tmp, home, { GROK_HOME: home, GROK_DISABLE_AUTOUPDATER: "1" });
 
 // Grok reads a project's own settings: `.grok/` (permission rules that can pre-approve tools,
-// hooks, plugins, workflows), Claude Code's `.claude/settings*.json` (a permission mode, rules)
-// and `.mcp.json`, Cursor's `.cursor/hooks.json`, and instruction files (AGENTS.md and its
-// variants, which Grok loads from every directory between the repo root and where it works). A
-// project that has any of them, anywhere in the copy, is refused, as for Antigravity's
-// customizations, and a Runner that creates one fails its Spec.
+// hooks, plugins, workflows), `.agents/` (its skill and command scan), Claude Code's
+// `.claude/settings*.json` (a permission mode, rules) and `.mcp.json`, Cursor's
+// `.cursor/hooks.json`, and instruction files (AGENTS.md and its variants, which Grok loads from
+// every directory between the repo root and where it works). A project that has any of them,
+// anywhere in the copy, is refused, as for Antigravity's customizations, and a Runner that
+// creates one fails its Spec. The walk does not follow links, and a committed link survives
+// `git archive`, so a link to a folder (a way past the walk) or to anywhere outside the copy
+// is refused as well; a link to a file inside the copy is fine.
 export const GROK_INSTRUCTIONS = ["AGENTS.md", "Agents.md", "AGENT.md", "CLAUDE.md", "Claude.md", "CLAUDE.local.md"];
-export const GROK_ROOTS = [".grok", ".claude", ".cursor", ".mcp.json", ...GROK_INSTRUCTIONS];
+export const GROK_ROOTS = [".grok", ".agents", ".claude", ".cursor", ".mcp.json", ...GROK_INSTRUCTIONS];
 const GROK_NESTED: Record<string, string[]> = { ".claude": ["settings.json", "settings.local.json"], ".cursor": ["hooks.json"] };
 export function grokSettings(worktree: string): string[] {
   const found: string[] = [];
@@ -119,6 +126,37 @@ export function grokSettings(worktree: string): string[] {
     if (!inside) { found.push(hit); continue; }
     for (const name of inside) if (existsSync(join(worktree, hit, name))) found.push(join(hit, name));
   }
+  if (found.includes("too many files to check")) return found;   // no second walk of a tree too big for the first
+  return [...found, ...unsafeLinks(worktree)];
+}
+
+/** Links in a copy that lead to a folder, out of the copy, or nowhere (which cannot be checked). */
+export function unsafeLinks(worktree: string, max = 20_000): string[] {
+  const found: string[] = [];
+  let real: string;
+  try { real = realpathSync(worktree); } catch { return found; }
+  let seen = 0;
+  const walk = (dir: string): boolean => {
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return true; }
+    for (const name of names) {
+      if (++seen > max) { found.push("too many files to check"); return false; }
+      const p = join(dir, name);
+      let st;
+      try { st = lstatSync(p); } catch { continue; }
+      if (name === ".git" && !st.isSymbolicLink()) continue;   // (a copy has no .git; a link by that name is a link like any other)
+      if (st.isSymbolicLink()) {
+        let target: string | null = null;
+        try { target = realpathSync(p); } catch { /* dangling */ }
+        const inside = target !== null && (target === real || target.startsWith(real + sep));
+        let toDir = false;
+        try { toDir = target !== null && lstatSync(target).isDirectory(); } catch { /* gone */ }
+        if (target === null || !inside || toDir) found.push(`${relative(worktree, p)} (a link${target === null ? " to nothing" : !inside ? " out of the copy" : " to a folder"})`);
+      } else if (st.isDirectory() && !walk(p)) return false;
+    }
+    return true;
+  };
+  walk(worktree);
   return found;
 }
 
