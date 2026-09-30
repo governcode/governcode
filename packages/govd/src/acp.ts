@@ -7,7 +7,6 @@
 // agent reports none). A stop from outside sends `session/cancel` and then ends the process; an
 // agent that dies ends the turn with its last words on stderr.
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { canonical, type GateRequest, type TurnHooks } from "./claude.ts";
 import { MAX_RUN_TOKENS } from "./codex.ts";
 
@@ -26,7 +25,9 @@ export type AcpRpc = {
 };
 
 const isId = (v: unknown) => typeof v === "number" || typeof v === "string";
-const MAX_LINE = 8 * 1024 * 1024;   // ponytail: larger than any real message; a file an agent embeds stays under it
+const MAX_LINE = 8 * 1024 * 1024;   // larger than any real message; a longer line is dropped, never held whole
+/** An agent may echo a numeric id back as its decimal string: the same id. */
+const sameId = (v: unknown): number | null => typeof v === "number" ? v : typeof v === "string" && /^(0|[1-9][0-9]{0,14})$/.test(v) ? Number(v) : null;
 
 /** Starts `bin args...` under govern-sup and speaks JSON-RPC 2.0 over its stdio. */
 export function startAcp(o: { supervisor: string; policyFile: string; bin: string; args: string[]; env: Record<string, string>; cwd: string }): AcpRpc {
@@ -42,11 +43,10 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
   let onNote: (method: string, params: any) => void = () => {};
   const send = (obj: unknown) => { if (!gone && child.stdin?.writable) child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...(obj as object) }) + "\n"); };
   // One message per line, JSON-RPC 2.0 only; anything else (a stray print, a malformed envelope,
-  // a line too long to be a message) is ignored, never acted on.
-  // ponytail: readline holds a line until its end, so a runaway agent can still make govd hold
-  // one long line (not parse it); upgrade to a bounded reader if a Runner is ever seen doing it.
-  createInterface({ input: child.stdout! }).on("line", (line: string) => {
-    if (line.length > MAX_LINE) return;
+  // a line too long to be a message) is ignored, never acted on. A line over the cap is dropped
+  // as it streams in, so a runaway agent cannot make govd hold it.
+  let buf = "", dropping = false;
+  const onLine = (line: string) => {
     let m: any;
     try { m = JSON.parse(line); } catch { return; }              // not a message (a stray print): ignored
     if (!m || typeof m !== "object" || Array.isArray(m) || m.jsonrpc !== "2.0") return;
@@ -55,8 +55,8 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
     if (isId(m.id) && typeof m.method === "string") {           // a request from the agent to us
       onReq(m.method, m.params ?? {}).then((result) => send({ id: m.id, result: result ?? null }),
         (e) => send({ id: m.id, error: { code: -32601, message: String(e instanceof Error ? e.message : e).slice(0, 300) } }));
-    } else if (typeof m.id === "number" && !("method" in m)) {   // a response to us
-      const w = waiting.get(m.id); waiting.delete(m.id);
+    } else if (sameId(m.id) !== null && !("method" in m)) {      // a response to us
+      const w = waiting.get(sameId(m.id)!); waiting.delete(sameId(m.id)!);
       if (!w) return;
       clearTimeout(w.timer);
       const hasResult = "result" in m, hasError = "error" in m;
@@ -64,6 +64,21 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
       else if (hasError) w.fail(new Error(String(m.error?.message ?? "agent error").slice(0, 300)));
       else w.ok(m.result);
     } else if (m.id === undefined && typeof m.method === "string") onNote(m.method, m.params ?? {});
+  };
+  child.stdout!.setEncoding("utf8");
+  child.stdout!.on("data", (chunk: string) => {
+    let rest = chunk;
+    while (rest.length) {
+      const nl = rest.indexOf("\n");
+      if (nl < 0) {
+        if (!dropping) { buf += rest; if (buf.length > MAX_LINE) { buf = ""; dropping = true; } }
+        return;
+      }
+      const head = rest.slice(0, nl); rest = rest.slice(nl + 1);
+      if (dropping) { dropping = false; continue; }
+      const line = buf + head; buf = "";
+      if (line.length <= MAX_LINE) onLine(line);
+    }
   });
   const tail = () => stderr.trim().split("\n").slice(-2).join(" | ").slice(0, 300);
   const failAll = (why: string) => {
@@ -187,7 +202,7 @@ export const CLIENT_INFO = { name: "governcode", title: "GovernCode", version: "
  * (the caller reports it, after its own cleanup).
  */
 export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; prompt: string; hooks: TurnHooks; signal?: AbortSignal;
-  gateTimeoutMs?: number; maxGates?: number }): Promise<{ ok: boolean; summary: string; usage: unknown }> {
+  gateTimeoutMs?: number; maxGates?: number; promptTimeoutMs?: number }): Promise<{ ok: boolean; summary: string; usage: unknown }> {
   const { rpc } = o;
   const tokens = acpTokenTally();
   let asked = 0;
@@ -216,14 +231,18 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
     });
     return pickOption(params?.options, answer === "allow" && prompting && stopped === null ? "allow" : "deny");
   });
-  let said = 0;   // a Runner's words reach the record up to a size; a flood does not fill govd
+  let said = 0;   // a Runner's words and steps reach the hooks up to a budget of bytes; a flood does not fill govd
+  const within = (s: string) => (said += Buffer.byteLength(s)) <= 1_000_000;
   rpc.onNotify((method, params) => {
     if (method !== "session/update" && method !== "_x.ai/session/update") return;
     if (!sessionId || params?.sessionId !== sessionId || ended) return;   // another session's, or after the turn: not this run's
     const u = params?.update;
     if (!u || typeof u !== "object") return;
-    if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && typeof u.content.text === "string" && (said += Buffer.byteLength(u.content.text)) <= 1_000_000) o.hooks.text(u.content.text);
-    if (u.sessionUpdate === "tool_call") o.hooks.tool(`${o.agent} ${typeof u.kind === "string" ? u.kind : "tool"}${typeof u.title === "string" ? `: ${u.title.slice(0, 60)}` : ""}`, {});
+    if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && typeof u.content.text === "string" && within(u.content.text)) o.hooks.text(u.content.text);
+    if (u.sessionUpdate === "tool_call") {
+      const step = `${o.agent} ${typeof u.kind === "string" ? u.kind : "tool"}${typeof u.title === "string" ? `: ${u.title.slice(0, 60)}` : ""}`;
+      if (within(step)) o.hooks.tool(step, {});
+    }
     if (u.sessionUpdate === "turn_completed") tokens.add(u);
   });
   let closer: NodeJS.Timeout | undefined;
@@ -244,7 +263,8 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
     sessionId = s.sessionId;
     if (stopped !== null) { rpc.notify("session/cancel", { sessionId }); return stoppedResult(); }
     prompting = true;
-    const r = await rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text: o.prompt }] });
+    // The prompt has a deadline (a Runner is one job, not a service); past it the agent is ended.
+    const r = await rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text: o.prompt }] }, o.promptTimeoutMs ?? 2 * 60 * 60_000);
     prompting = false;
     drain();
     const reason = typeof r?.stopReason === "string" ? r.stopReason : "unknown";
@@ -253,6 +273,7 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
       : { ok: false, summary: `${o.agent} stopped: ${reason}`, usage: tokens.usage(false) };
   } catch (e) {
     if (stopped !== null) return stoppedResult();
+    if (prompting) { rpc.notify("session/cancel", { sessionId }); rpc.close(); }   // no answer in time: the process is ended (the caller waits for it to be gone)
     return { ok: false, summary: `${o.agent}: ${e instanceof Error ? e.message : e}`, usage: tokens.usage(false) };
   } finally {
     prompting = false;

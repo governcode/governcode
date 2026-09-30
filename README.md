@@ -236,10 +236,12 @@ never used, and GovernCode never reads the login Grok keeps in its home. Only a 
 sign-in counts, never an API key. `gov disconnect grok` removes it.
 
 Then `grok` is a Runner like `codex`, driven over the Agent Client Protocol (ACP). Every run gets
-a fresh home with a config GovernCode writes: every command, file change, web fetch or search and
-MCP call asks (Grok's `ask` mode, with `ask` rules for those tools, which outrank any `allow` rule a
-project could carry), plain reads and searches of the sandboxed copy run quietly (as for every
-Runner), and no hooks, no plugins, no memory, no Claude, Cursor or Codex compatibility, no updater.
+a fresh home with a config GovernCode writes: every call asks, reads, searches and directory
+listings included (Grok's `ask` mode with an `ask` rule for every tool, which outranks any `allow`
+rule a project could carry), and no hooks, no plugins, no memory, no Claude, Cursor or Codex
+compatibility, no updater, no `.envrc`, folder trust on. In that home the run may write only where
+Grok keeps its sessions, logs and locks: its config and its login are read-only to it. A run has
+two hours; then it is ended.
 Each permission request Grok makes is a Gate: commands get the same checks as any other command,
 file changes show the request as Grok sent it, and any other kind of call is a step of its own
 kind. GovernCode answers
@@ -252,16 +254,23 @@ names, with the reasoning effort it asks for.
 Honest limits, for now:
 - The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
   and the sandbox limits where it can write, not which HTTPS sites it can reach.
-- A project that contains a `.grok/` folder, or Claude Code settings (`.claude/settings.json`,
-  `settings.local.json`) that set a permission mode, is refused: Grok reads both, and they could
-  switch its asking off. A Runner that creates either fails its Spec.
+- A project that contains settings Grok would read (`.grok/`, `.claude/settings.json` or
+  `settings.local.json`, `.mcp.json`, `.cursor/hooks.json` anywhere; `AGENTS.md`, `CLAUDE.md`
+  and their variants at the root) is refused: they could switch its asking off or add
+  instructions. A Runner that creates one fails its Spec.
+- Grok keeps remembered approvals under its `sessions/` folder, which a run must be able to
+  write. GovernCode never grants one (the "always allow" choices are switched off and never
+  chosen), but a command you allowed could write such a file itself; the sandbox still bounds
+  what any call can do to the Spec's scope.
+- Because the login is read-only inside a run, Grok cannot refresh its token there; when it
+  expires, Grok shows as needing attention and `gov connect grok` signs it in again.
 - Its Limit is Grok's own figure: an account that has used nothing this period reports none
   yet, and GovernCode holds Grok until it does (use Grok once outside GovernCode).
 - Grok's own questions to the user, and its requests to read or write files through the client,
   are refused (GovernCode offers neither), so a job that needs them stops there.
-- The asking itself is Grok's: its `ask` mode decides which calls it asks about, and the run's
-  home (its config included) is writable to it. The sandbox holds whatever it does to the Spec's
-  scope; the Gate is your review of each call Grok brings, not a second sandbox.
+- The asking itself is Grok's: it brings each call to GovernCode as its permission request. The
+  sandbox holds whatever it does to the Spec's scope; the Gate is your review of each call Grok
+  brings, not a second sandbox.
 
 Gemini CLI (for Gemini API keys) comes later, once GovernCode can hold a key safely.
 

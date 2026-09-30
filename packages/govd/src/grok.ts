@@ -32,16 +32,21 @@ export function grokBinary(): string {
   throw new Error("grok not found (install the Grok CLI, or set GOVERNCODE_GROK_BIN)");
 }
 
-/** GovernCode's config.toml for a run of Grok. Every command, file change, web fetch or search
- *  and MCP call asks (the request becomes a Gate; an `ask` rule outranks any `allow` a project
- *  could carry), plain reads and searches of the sandboxed copy run quietly as for every Runner;
+/** GovernCode's config.toml for a run of Grok. Every call asks, reads and searches included
+ *  (Grok's `ask` mode alone runs those quietly; an `ask` rule per tool makes each one a
+ *  `session/request_permission`, and so a Gate, and outranks any `allow` a project could carry);
  *  nothing else is read from anywhere: no hooks, no plugins, no other tools' settings, no memory,
- *  no updater, no leader process, no dashboard. */
+ *  no updater, no leader process, no dashboard, and folder trust stays on (a project's own hooks,
+ *  MCP servers and instructions are never trusted in a fresh home). */
 export function grokConfig(o: { noSubagents?: boolean } = {}): string {
   return [
     "# Written by GovernCode for this run. The user's own Grok settings are not used.",
     "[ui]", 'permission_mode = "ask"', "remember_tool_approvals = false",
-    "[permission]", 'ask = ["Bash", "Edit", "WebFetch", "WebSearch", "MCPTool"]',
+    // "*" covers the tools no rule can name (directory listings, task lists, skill lookups, subagent
+    // control); the named ones are listed as well, in case a bare rule is ever read more narrowly.
+    "[permission]", 'ask = ["*", "Read", "Grep", "Bash", "Edit", "WebFetch", "WebSearch", "MCPTool"]',
+    "[folder_trust]", "enabled = true",
+    "[session]", "load_envrc = false",   // a project's .envrc would give an allowed command an environment the Gate never showed
     "[cli]", "auto_update = false", "use_leader = false",
     "[compat.claude]", "agents = false", "hooks = false", "mcps = false", "rules = false", "skills = false",
     "[compat.cursor]", "agents = false", "hooks = false", "mcps = false", "rules = false", "skills = false",
@@ -57,46 +62,58 @@ export function grokConfig(o: { noSubagents?: boolean } = {}): string {
   ].join("\n");
 }
 
-/** A fresh home for one run (homes.ts): the GovernCode login linked in, GovernCode's config. */
+/** What Grok writes in its home while it runs (found by running it in an empty home): these
+ *  folders and files exist in every run home before Grok starts, and the sandbox lets the run
+ *  write them and nothing else there. The home itself is not writable, so config.toml can be
+ *  neither changed nor replaced; the login link is read-only too (a run cannot swap GovernCode's
+ *  login; Grok's own token refresh then waits for the next Connect). */
+export const GROK_HOME_DIRS = ["sessions", "logs", "docs", "client-state", "downloads", "memtrace", "long-running-background-tasks"];
+export const GROK_HOME_FILES = ["agent_id", ".config-init.lock", "managed_config.lock", ".metadata_version", "README.md",
+  "active_sessions.json", "active_sessions.lock", "models_cache.json", "campaigns_state.json", "campaigns_state.json.lock"];
+
+/** A fresh home for one run (homes.ts): the GovernCode login linked in, GovernCode's config,
+ *  and the places Grok may write, made in advance. */
 export function grokRunHome(stateDir: string, o: { noSubagents?: boolean } = {}): ReturnType<typeof runHome> {
   const rh = runHome(stateDir, "grok", "auth.json");
-  try { safeWrite(join(rh.home, "config.toml"), grokConfig(o)); } catch (e) { rh.finish(); throw e; }
+  try {
+    safeWrite(join(rh.home, "config.toml"), grokConfig(o));
+    for (const d of GROK_HOME_DIRS) mkdirSync(join(rh.home, d), { recursive: true, mode: 0o700 });
+    for (const f of GROK_HOME_FILES) writeFileSync(join(rh.home, f), "", { flag: "a", mode: 0o600 });
+  } catch (e) { rh.finish(); throw e; }
   return rh;
+}
+/** The run's writable places in its home: the folders and files above, as they exist. */
+export function grokWritable(home: string): string[] {
+  return [...GROK_HOME_DIRS, ...GROK_HOME_FILES].map((p) => join(home, p)).filter(existsSync);
 }
 
 export const GROK_ENV = (tmp: string, home: string) => agyEnv(tmp, home, { GROK_HOME: home, GROK_DISABLE_AUTOUPDATER: "1" });
 
-// Grok reads a project's own `.grok/` (permission rules that can pre-approve tools, hooks,
-// plugins), so a project that has one is refused, as for Antigravity's customizations. It also
-// reads a project's Claude Code settings for a permission mode: one that switches asking off
-// (`defaultMode`) would pass file changes and web calls without a Gate, so a project whose
-// Claude settings set any mode is refused too (ponytail: a mode of "default" would be harmless,
-// but the file is read as a whole and a mode is a mode; upgrade when a real project needs it).
-export const GROK_ROOTS = [".grok"];
+// Grok reads a project's own settings: `.grok/` (permission rules that can pre-approve tools,
+// hooks, plugins), Claude Code's `.claude/settings*.json` (a permission mode, rules) and
+// `.mcp.json`, Cursor's `.cursor/hooks.json`, anywhere in the tree; and instruction files
+// (AGENTS.md and its variants) at the root, which is the Runner's working folder (one deeper
+// down is read only through the Read tool, which asks). A project that has any of them is
+// refused, as for Antigravity's customizations, and a Runner that creates one fails its Spec.
+export const GROK_ROOTS = [".grok", ".claude", ".cursor", ".mcp.json"];
+export const GROK_INSTRUCTIONS = ["AGENTS.md", "Agents.md", "AGENT.md", "CLAUDE.md", "Claude.md", "CLAUDE.local.md"];
+const GROK_NESTED: Record<string, string[]> = { ".claude": ["settings.json", "settings.local.json"], ".cursor": ["hooks.json"] };
 export function grokSettings(worktree: string): string[] {
-  const found = customizations(worktree, 20_000, GROK_ROOTS);
-  for (const dir of customizations(worktree, 20_000, [".claude"])) {
-    if (dir.startsWith("(")) { found.push(dir); continue; }
-    for (const name of ["settings.json", "settings.local.json"]) {
-      const p = join(worktree, dir, name);
-      if (!existsSync(p)) continue;
-      try {
-        const j = JSON.parse(readFileSync(p, "utf8"));
-        if (j?.permissions?.defaultMode !== undefined || j?.defaultMode !== undefined) found.push(join(dir, name));
-      } catch { found.push(join(dir, name)); }   // unreadable: not shown to be safe
-    }
+  const found: string[] = [];
+  for (const hit of customizations(worktree, 20_000, GROK_ROOTS)) {
+    if (hit.startsWith("(")) { found.push("too many files to check"); continue; }
+    const inside = GROK_NESTED[hit.split("/").pop() ?? ""];
+    if (!inside) { found.push(hit); continue; }
+    for (const name of inside) if (existsSync(join(worktree, hit, name))) found.push(join(hit, name));
   }
+  for (const name of GROK_INSTRUCTIONS) if (existsSync(join(worktree, name))) found.push(name);
   return found;
 }
 
 const policyName = (kind: string) => `grok-${kind}-${process.pid}-${randomBytes(6).toString("hex")}.json`;
 
-// ponytail: the run's home is writable as a whole (Grok writes its sessions, logs and locks at
-// its top level), config.toml included, so a command the user allowed could rewrite the config
-// there. Grok reads its permission rules once, when the session starts, so the running session
-// keeps GovernCode's; the home is deleted afterwards, and the sandbox bounds every write to the
-// Spec's scope either way. Upgrade: a read-only config once Grok reads it from a path of
-// its own (a managed config outside the home), as Antigravity's config folder is.
+/** The run's sandbox: its home readable, and writable only where Grok keeps its sessions, logs
+ *  and locks (grokWritable), never its config or its login. */
 export function grokPolicy(o: { work: string; tmp: string; home: string; bin: string; writePaths?: string[]; readOnly?: boolean; gitDir?: string; login?: string }): Policy {
   return {
     version: 1,
@@ -104,7 +121,7 @@ export function grokPolicy(o: { work: string; tmp: string; home: string; bin: st
       dirname(o.bin), o.home, ...(o.login ? [o.login] : []), ...resolverFiles(),
       // A Spec's Runner reads its whole worktree (and the repo's git data) but writes only its scope.
       o.work, ...(o.gitDir ? [o.gitDir] : [])].filter((p) => p === o.work || existsSync(p)),
-    write: [...(o.readOnly ? [] : o.writePaths ?? [o.work]), o.tmp, o.home, ...(o.login && existsSync(o.login) ? [o.login] : []), "/dev/null"],
+    write: [...(o.readOnly ? [] : o.writePaths ?? [o.work]), o.tmp, ...grokWritable(o.home), "/dev/null"],
     exec: ["/usr/bin", "/bin", "/usr/lib", dirname(o.bin), ...toolchainDirs()],
     tcp_connect: [443],
     unix_connect: ["/run/systemd/resolve/io.systemd.Resolve"].filter(existsSync),
@@ -197,7 +214,7 @@ export async function runGrokTurn(o: Opts & { worktree: string; writePaths: stri
     try { bin = grokBinary(); } catch (e) { return finish({ ok: false, summary: String(e instanceof Error ? e.message : e) }); }
     if (!isConnected(o.stateDir, "grok")) return finish({ ok: false, summary: "Grok is not connected: run gov connect grok" });
     const found = grokSettings(o.worktree);
-    if (found.length) return finish({ ok: false, summary: `the project has Grok settings (${found.slice(0, 3).join(", ")}); GovernCode does not run a Grok Runner with a project's own permission rules, modes, hooks or plugins` });
+    if (found.length) return finish({ ok: false, summary: `the project has settings Grok would read (${found.slice(0, 3).join(", ")}); GovernCode does not run a Grok Runner with a project's own permission rules, hooks, MCP servers or instructions` });
     cleanups.push(hold(o.stateDir, "grok"));
     mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
     const tmp = mkdtempSync(join(tmpdir(), "governcode-grok-"));

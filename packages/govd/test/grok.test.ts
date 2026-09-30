@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { Ledger } from "../src/ledger.ts";
 import { LimitGate } from "../src/limits.ts";
 import { acpTokenTally, permissionGate, pickOption, runAcpTurn, startAcp } from "../src/acp.ts";
-import { grokConfig, grokPolicy, grokSettings, grokUsage, parseBilling } from "../src/grok.ts";
+import { grokConfig, grokPolicy, grokSettings, grokUsage, parseBilling, GROK_HOME_DIRS, GROK_HOME_FILES } from "../src/grok.ts";
+import { customizations } from "../src/agy.ts";
 import { toolHome } from "../src/homes.ts";
 import { Connector } from "../src/connect.ts";
 import { analyze } from "../src/allows.ts";
@@ -60,10 +61,22 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method === "initialize") return out({ id: m.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
   if (m.method === "_x.ai/billing") return signedIn ? out({ id: m.id, result: { config: { creditUsagePercent: 12, currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", end: "2026-10-07T13:10:59Z" } }, subscription_tier: "SuperGrok" } })
     : out({ id: m.id, error: { code: -32000, message: "not signed in" } });
-  if (m.method === "session/new") return out({ id: m.id, result: { sessionId: "s-1" } });
+  if (m.method === "session/new") {
+    if (cfg.mode === "probe") {   // an id echoed as a string is the same id; a reply may arrive in pieces, cut inside a character, ending in CRLF
+      const reply = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: String(m.id), result: { sessionId: "s-1", note: "ünïcödé" } }) + "\\r\\n");
+      const cut = reply.indexOf(Buffer.from("ü")) + 1;   // inside the two-byte ü
+      process.stdout.write(reply.subarray(0, cut)); setTimeout(() => process.stdout.write(reply.subarray(cut)), 20);
+      return;
+    }
+    return out({ id: m.id, result: { sessionId: "s-1" } });
+  }
   if (m.method !== "session/prompt") return out({ id: m.id, error: { code: -32601, message: "no such method " + m.method } });
   seen.prompt = m.params.prompt[0].text; record();
   const update = (u, sid = "s-1") => out({ method: "session/update", params: { sessionId: sid, update: u } });
+  if (cfg.mode === "flood") {   // more steps than the record takes
+    for (let i = 0; i < 15000; i++) update({ sessionUpdate: "tool_call", toolCallId: "f" + i, title: "step number " + i + " of a very long list of steps that says little", kind: "other", status: "pending" });
+    update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "after the flood" } });
+  }
   if (cfg.mode === "probe") {   // things GovernCode must refuse or ignore
     seen.refused = await ask("fs/read_text_file", { sessionId: "s-1", path: "/etc/passwd" });
     update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "not mine" } }, "s-other");
@@ -77,6 +90,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     update({ sessionUpdate: "tool_call", toolCallId: id, title: call.title, kind: call.kind, status: "pending", rawInput: call.rawInput });
     if (cfg.mode === "die") { process.stderr.write("boom: out of cheese\\n"); record(); process.exit(7); }
     if (cfg.mode === "wait-cancel") { await new Promise((ok) => (cancelled = ok)); record(); return out({ id: m.id, result: { stopReason: "cancelled" } }); }
+    if (cfg.mode === "never") { record(); return; }   // no answer, ever
     const r = await ask("session/request_permission", { sessionId: "s-1", toolCall: { toolCallId: id, title: call.title, kind: call.kind, rawInput: call.rawInput },
       options: [{ optionId: "always", name: "Allow always", kind: "allow_always" }, { optionId: "once", name: "Allow once", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }] });
     const d = r?.outcome?.outcome === "selected" ? r.outcome.optionId : String(r?.outcome?.outcome);
@@ -170,14 +184,21 @@ test("grok Runner: the run's home is GovernCode's, with GovernCode's config, and
   assert.ok(!existsSync(seen.home), "and the run's home is gone afterwards");
   assert.match(seen.config, /permission_mode = "ask"/);
   assert.match(seen.config, /remember_tool_approvals = false/);
-  assert.match(seen.config, /\[permission\]\nask = \["Bash", "Edit", "WebFetch", "WebSearch", "MCPTool"\]/);
+  assert.match(seen.config, /\[permission\]\nask = \["\*", "Read", "Grep", "Bash", "Edit", "WebFetch", "WebSearch", "MCPTool"\]/);
+  assert.match(seen.config, /\[folder_trust\]\nenabled = true/);
+  assert.match(seen.config, /\[session\]\nload_envrc = false/);
   assert.doesNotMatch(seen.config, /always-approve|\[hooks/);
-  assert.deepEqual(seen.files, ["auth.json", "config.toml"], "only the login link and GovernCode's config");
+  assert.deepEqual(seen.files, ["auth.json", "config.toml", ...GROK_HOME_DIRS, ...GROK_HOME_FILES].sort(), "the login link, GovernCode's config, and the places Grok may write");
   assert.ok(!seen.env.some((k: string) => /^(XAI_API_KEY|GROK_(CLAUDE|CURSOR)_.*|DBUS_SESSION_BUS_ADDRESS)$/.test(k)), "no API key, no compat switches, no keyring");
   // The sandbox policy: the private home and the worktree, never the user's own ~/.grok.
   const p = grokPolicy({ work: t.proj, tmp: "/tmp/x", home: seen.home, bin: process.env.GOVERNCODE_GROK_BIN!, writePaths: [join(t.proj, "notes")], login: join(t.home, "auth.json") });
   assert.ok(![...p.read, ...p.write].some((x) => x.startsWith(userHome)), JSON.stringify(p));
   assert.ok(p.read.includes(t.proj) && p.write.includes(join(t.proj, "notes")) && !p.write.includes(t.proj));
+  // Writable in the home: only the places Grok keeps its sessions, logs and locks; never the home itself, its config or the login.
+  const rhome = mkdtempSync(join(root, "rh-")); writeFileSync(join(rhome, "config.toml"), "x"); mkdirSync(join(rhome, "sessions")); writeFileSync(join(rhome, "agent_id"), "");
+  const q = grokPolicy({ work: t.proj, tmp: "/tmp/x", home: rhome, bin: process.env.GOVERNCODE_GROK_BIN!, writePaths: [], login: join(t.home, "auth.json") });
+  assert.deepEqual(q.write, ["/tmp/x", join(rhome, "sessions"), join(rhome, "agent_id"), "/dev/null"]);
+  assert.ok(q.read.includes(rhome) && q.read.includes(join(t.home, "auth.json")));
   assert.deepEqual(p.tcp_connect, [443]);
 });
 
@@ -202,21 +223,35 @@ test("grok Runner: a project with its own .grok settings is refused before anyth
   const t = setup("allow", (w) => [write(w, "notes/hello.txt")], (dir) => { mkdirSync(join(dir, "sub", ".grok"), { recursive: true }); writeFileSync(join(dir, "sub", ".grok", "config.toml"), "[permission]\n"); });
   const r = await t.call("controller.delegate", SPEC);
   assert.equal(r.result.status, "failed");
-  assert.match(r.result.note, /Grok settings \(sub\/\.grok\)/);
+  assert.match(r.result.note, /settings Grok would read \(sub\/\.grok\)/);
   assert.equal(t.gates.length, 0);
   const t2 = setup("allow", (w) => [write(w, "notes/.grok/config.toml", "[permission]\n")]);
   const r2 = await t2.call("controller.delegate", SPEC);
   assert.equal(r2.result.status, "failed");
-  assert.match(r2.result.note, /created Grok settings/);
-  // Claude Code settings that set a permission mode (Grok reads them) count as Grok settings; plain ones do not.
+  assert.match(r2.result.note, /created Grok settings \(notes\/\.grok\)/);
+  // A Spec whose scope is an instruction file is refused before the run (the scope's placeholder is already there).
+  const t3 = setup("allow", (w) => [write(w, "AGENTS.md", "# do as I say\n")]);
+  const r3 = await t3.call("controller.delegate", { ...SPEC, scope: { read: [], write: ["AGENTS.md"] } });
+  assert.equal(r3.result.status, "failed");
+  assert.match(r3.result.note, /settings Grok would read \(AGENTS\.md\)/);
+  assert.equal(t3.gates.length, 0);
+  // Every settings source Grok reads from a project counts: Claude Code's settings and .mcp.json, Cursor's hooks anywhere;
+  // instruction files at the root (a package's AGENTS.md deeper down is read only through the Read tool, which asks).
   const dir = mkdtempSync(join(root, "cs-"));
-  mkdirSync(join(dir, ".claude"));
+  mkdirSync(join(dir, ".claude")); mkdirSync(join(dir, ".cursor")); mkdirSync(join(dir, "sub"));
+  writeFileSync(join(dir, ".claude", "CLAUDE.md"), "# not settings");
+  writeFileSync(join(dir, "sub", "AGENTS.md"), "# a package's own");
+  assert.deepEqual(grokSettings(dir), [], "empty .claude and .cursor folders, and instructions below the root, are nothing");
   writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify({ permissions: { allow: ["Read"] } }));
-  assert.deepEqual(grokSettings(dir), []);
-  writeFileSync(join(dir, ".claude", "settings.local.json"), JSON.stringify({ permissions: { defaultMode: "bypassPermissions" } }));
-  assert.deepEqual(grokSettings(dir), [".claude/settings.local.json"]);
-  writeFileSync(join(dir, ".claude", "settings.json"), "{ not json");
-  assert.deepEqual(grokSettings(dir), [".claude/settings.json", ".claude/settings.local.json"]);
+  writeFileSync(join(dir, ".claude", "settings.local.json"), "{}");
+  writeFileSync(join(dir, ".cursor", "hooks.json"), "{}");
+  writeFileSync(join(dir, ".mcp.json"), "{}");
+  writeFileSync(join(dir, "CLAUDE.local.md"), "# c");
+  writeFileSync(join(dir, "AGENT.md"), "# a");
+  assert.deepEqual(grokSettings(dir).sort(), [".claude/settings.json", ".claude/settings.local.json", ".cursor/hooks.json", ".mcp.json", "AGENT.md", "CLAUDE.local.md"]);
+  // A tree too big to check is refused in plain words.
+  assert.deepEqual(customizations(dir, 3, [".grok"]), ["(too many files to check)"]);
+
 });
 
 test("grok Runner: not connected is held, not a crash; and the Crew card's 'no subagents' reaches the config", async () => {
@@ -362,6 +397,24 @@ test("acp: requests GovernCode does not offer get an error, another session's wo
   late.rpc.close(); await late.rpc.closed;
   assert.deepEqual(late.seen().late, { outcome: { outcome: "selected", optionId: "no" } });
   assert.deepEqual(late.texts, ["finished"], "words after the turn are not this run's");
+});
+
+test("acp: a flood of steps and words stops at the record's budget", async () => {
+  const d = direct("flood", [], async () => "allow");
+  const r = await runAcpTurn({ rpc: d.rpc, agent: "grok", cwd: d.work, prompt: "go", hooks: d.hooks });
+  d.rpc.close(); await d.rpc.closed;
+  assert.equal(r.ok, true);
+  assert.ok(d.tools.length > 5000 && d.tools.length < 15000, `${d.tools.length} steps: the budget stopped the flood`);
+  assert.deepEqual(d.texts, [], "words after the budget are not delivered");
+});
+
+test("acp: a prompt with no answer by its deadline ends the agent", async () => {
+  const d = direct("never", [{ kind: "execute", title: "x", rawInput: {} }], async () => "allow");
+  const r = await runAcpTurn({ rpc: d.rpc, agent: "grok", cwd: d.work, prompt: "go", hooks: d.hooks, promptTimeoutMs: 300 });
+  assert.equal(r.ok, false);
+  assert.match(r.summary, /session\/prompt: no answer in 0s/);
+  await d.rpc.closed;   // ended by the driver itself
+  assert.deepEqual(d.tools, ["grok execute: x"]);
 });
 
 test("acp: a supervisor that cannot start is a plain failure, not a crash", async () => {
