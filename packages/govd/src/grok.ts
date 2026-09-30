@@ -130,15 +130,22 @@ export function grokSettings(worktree: string): string[] {
   return [...found, ...unsafeLinks(worktree)];
 }
 
-/** Links in a copy that lead to a folder, out of the copy, or nowhere (which cannot be checked). */
+/** Links in a copy that lead to a folder, out of the copy, or nowhere (which cannot be checked).
+ *  A folder that cannot be listed cannot be checked either, so it counts as unsafe (fail closed;
+ *  today the snapshot's own listing fails first, so this is a second line).
+ *  Two limits, accepted: the check runs before the run starts, and the copy belongs to the same
+ *  user, so something else running as that user could change it between the check and the
+ *  start; and a link made and removed again during the run is not seen by the check after it
+ *  (Grok's folder trust keeps a project's own hooks, MCP servers and instructions unloaded in a
+ *  fresh home either way). */
 export function unsafeLinks(worktree: string, max = 20_000): string[] {
   const found: string[] = [];
   let real: string;
-  try { real = realpathSync(worktree); } catch { return found; }
+  try { real = realpathSync(worktree); } catch { return [`${worktree} (cannot be checked)`]; }
   let seen = 0;
   const walk = (dir: string): boolean => {
     let names: string[];
-    try { names = readdirSync(dir); } catch { return true; }
+    try { names = readdirSync(dir); } catch { found.push(`${relative(worktree, dir) || "."} (a folder that cannot be listed)`); return false; }
     for (const name of names) {
       if (++seen > max) { found.push("too many files to check"); return false; }
       const p = join(dir, name);

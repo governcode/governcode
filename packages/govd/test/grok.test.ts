@@ -288,6 +288,10 @@ test("grok Runner: a project with its own .grok settings is refused before anyth
   symlinkSync("a.txt", join(ld2, "AGENTS.md")); symlinkSync("..", join(ld2, "s", ".git"));
   assert.deepEqual(unsafeLinks(ld2).sort(), ["l1 (a link to nothing)", "l2 (a link to nothing)", "s/.git (a link to a folder)", "self (a link to a folder)"]);
   assert.ok(grokSettings(ld2).includes("AGENTS.md"), "a link named as an instruction file is caught by name");
+  // A folder that cannot be listed cannot be checked: refused, never passed as clean.
+  const ld3 = mkdtempSync(join(root, "links3-")); mkdirSync(join(ld3, "closed")); chmodSync(join(ld3, "closed"), 0o000);
+  try { assert.deepEqual(unsafeLinks(ld3), ["closed (a folder that cannot be listed)"]); assert.deepEqual(grokSettings(ld3), ["closed (a folder that cannot be listed)"]); }
+  finally { chmodSync(join(ld3, "closed"), 0o700); }
   symlinkSync(ld2, join(root, "alias-ld2"));                           // a worktree reached through a linked parent
   assert.deepEqual(unsafeLinks(join(root, "alias-ld2")).sort(), unsafeLinks(ld2).sort());
   // A tree too big to check is refused in plain words.
