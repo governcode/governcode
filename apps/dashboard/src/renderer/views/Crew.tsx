@@ -128,7 +128,7 @@ export function CrewView({ project }: { project: string | null }) {
         <label className="policy-option"><input type="checkbox" checked={draft.subagents.controller} onChange={(e) => setDraft({ ...draft, subagents: { ...draft.subagents, controller: e.target.checked } })} />
           <span><b>The Controller may start subagents</b><span className="dim small"> · off: Claude Code's subagent tool is removed, and Codex's multi-agent features are switched off. Starting another AI program from a command always asks, either way.</span></span></label>
         <label className="policy-option"><input type="checkbox" checked={draft.subagents.runners} onChange={(e) => setDraft({ ...draft, subagents: { ...draft.subagents, runners: e.target.checked } })} />
-          <span><b>Runners may start subagents</b><span className="dim small"> · off: Antigravity's subagent tools are refused and Codex's multi-agent features are switched off. Local models have none.</span></span></label>
+          <span><b>Runners may start subagents</b><span className="dim small"> · off: Antigravity's subagent tools are refused, Codex's multi-agent features and Grok's subagents are switched off. Local models have none.</span></span></label>
 
         <div className="row">
           <button className="btn btn-accent" disabled={!dirty} onClick={save}>Save the Crew card</button>

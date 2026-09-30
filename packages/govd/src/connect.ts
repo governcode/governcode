@@ -11,14 +11,17 @@ import { agyBinary, agyEnv, hold, inUse, isConnected, quotaIn, run, toolHome, us
 import { setConnected } from "./homes.ts";
 import { resolverFiles, toolchainDirs, which, type Policy } from "./claude.ts";
 import { codexBinary, readCodexUsage } from "./codex.ts";
+import { grokBinary, GROK_ENV, readGrokUsage } from "./grok.ts";
 
-export type Tool = "agy" | "claude" | "codex";
+export type Tool = "agy" | "claude" | "codex" | "grok";
 type Opts = { supervisor: string; policyDir: string; stateDir: string };
 
 /** How each tool signs in, in its GovernCode home. flow: "paste" = the user pastes a code back;
- *  "browser" = the browser hands the login back to the tool on this machine, nothing to paste.
+ *  "browser" = the browser hands the login back to the tool on this machine, nothing to paste;
+ *  "code" = the tool shows a code the user enters on the sign-in page, then finishes by itself.
  *  bind: the local ports its sign-in listens on for that (0: one the kernel picks). */
-type Spec = { name: string; revoke: string; flow: "paste" | "browser"; binary(): string; signIn: string[];
+export type Flow = "paste" | "browser" | "code";
+type Spec = { name: string; revoke: string; flow: Flow; binary(): string; signIn: string[];
   env(tmp: string, home: string): Record<string, string>; bind?: number[]; writable(home: string): string[];
   check(o: Opts, home: string): Promise<boolean> };
 
@@ -57,6 +60,14 @@ export const TOOLS: Record<Tool, Spec> = {
     // windows), so a login OpenAI no longer accepts is not "connected".
     check: async (o, home) => await status(o, "codex", home, ["login", "status"], (r) => r.code === 0 && /logged in using chatgpt/i.test(r.stdout + r.stderr))
       && (await readCodexUsage({ ...o, scratch: join(o.stateDir, "usage-scratch") })) !== null },
+  // Grok's device-code sign-in (documented for headless use): it shows a link and a code to enter
+  // there, then finishes by itself; no local port. Its home is GovernCode's (GROK_HOME), so the
+  // user's own ~/.grok (settings, hooks, login) is never read. Connected only when one
+  // authenticated request (its usage this period) works with that login; an API key cannot be
+  // used (the environment carries none).
+  grok: { name: "Grok", revoke: "https://accounts.x.ai", flow: "code", binary: grokBinary,
+    signIn: ["login", "--device-auth"], env: (tmp, home) => GROK_ENV(tmp, home), writable: (home) => [home],
+    check: async (o, home) => (await readGrokUsage({ ...o, scratch: join(o.stateDir, "usage-scratch") })) !== null },
 };
 
 /** What a sign-in (or its status check) may touch: its own home, the network on 443, no keyring,

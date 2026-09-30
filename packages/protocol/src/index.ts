@@ -158,10 +158,10 @@ export const Params = {
   // measure: ask each connected tool for its usage now (no quota spent); a login that no longer
   // works then shows as needing sign-in again instead of "connected".
   "tools.list": z.object({ measure: z.boolean().default(false) }),
-  "connect.start": z.object({ tool: z.enum(["agy", "claude", "codex"]) }),
+  "connect.start": z.object({ tool: z.enum(["agy", "claude", "codex", "grok"]) }),
   "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),
   "connect.cancel": z.object({ id: z.string().regex(/^C-\d+$/) }),
-  "tools.disconnect": z.object({ tool: z.enum(["agy", "claude", "codex"]) }),
+  "tools.disconnect": z.object({ tool: z.enum(["agy", "claude", "codex", "grok"]) }),
   // Project memory: the notes (read, set by the user, with every version), and whether a
   // Controller from another provider may see the project's conversation, record and notes.
   "notes.get": z.object({ project: ProjectName, limit: z.number().int().min(1).max(1000).default(50) }),

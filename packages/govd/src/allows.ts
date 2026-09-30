@@ -198,7 +198,7 @@ function quietArgs(words: string[]): boolean {
 
 /** The tool of a Gate request, without the Runner suffix govd adds for display. */
 // Tools whose input is a shell command, judged by the same command analysis.
-const COMMAND_TOOLS = new Set(["Bash", "codex command", "agy command"]);
+const COMMAND_TOOLS = new Set(["Bash", "codex command", "agy command", "grok command"]);
 
 function baseTool(req: { tool: string; base?: string }): string {
   return req.base ?? req.tool;
@@ -274,7 +274,7 @@ function controllerKind(req: { tool: string; base?: string; input: Record<string
     const words = plainWords(req.input.command);
     return words ? commandKind(words) : null;
   }
-  if (["Edit", "Write", "MultiEdit", "NotebookEdit", "codex fileChange", "agy fileChange"].includes(tool)) {
+  if (["Edit", "Write", "MultiEdit", "NotebookEdit", "codex fileChange", "agy fileChange", "grok fileChange"].includes(tool)) {
     return { key: "edit", label: "file edits (only where the sandbox already lets it write)" };
   }
   if (tool.startsWith("mcp__") || tool.startsWith("governcode ")) return null;   // delegation and GovernCode's tools always ask
