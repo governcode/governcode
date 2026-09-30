@@ -238,10 +238,10 @@ sign-in counts, never an API key. `gov disconnect grok` removes it.
 Then `grok` is a Runner like `codex`, driven over the Agent Client Protocol (ACP). Every run gets
 a fresh home with a config GovernCode writes: every call asks, reads, searches and directory
 listings included (Grok's `ask` mode with an `ask` rule for every tool, which outranks any `allow`
-rule a project could carry), and no hooks, no plugins, no memory, no Claude, Cursor or Codex
-compatibility, no updater, no `.envrc`, folder trust on. In that home the run may write only where
-Grok keeps its sessions, logs and locks: its config and its login are read-only to it. A run has
-two hours; then it is ended.
+rule a project could carry), and no hooks, no plugins, no subagents, no background workflows, no
+memory, no Claude, Cursor or Codex compatibility, no updater, no `.envrc`, folder trust on. In
+that home the run may write only where Grok keeps its sessions, logs and a few startup files: its config
+and its login are read-only to it. A run has two hours; then it is ended.
 Each permission request Grok makes is a Gate: commands get the same checks as any other command,
 file changes show the request as Grok sent it, and any other kind of call is a step of its own
 kind. GovernCode answers
@@ -255,13 +255,18 @@ Honest limits, for now:
 - The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
   and the sandbox limits where it can write, not which HTTPS sites it can reach.
 - A project that contains settings Grok would read (`.grok/`, `.claude/settings.json` or
-  `settings.local.json`, `.mcp.json`, `.cursor/hooks.json` anywhere; `AGENTS.md`, `CLAUDE.md`
-  and their variants at the root) is refused: they could switch its asking off or add
+  `settings.local.json`, `.mcp.json`, `.cursor/hooks.json`, `AGENTS.md`, `CLAUDE.md` and their
+  variants, anywhere in the copy) is refused: they could switch its asking off or add
   instructions. A Runner that creates one fails its Spec.
+- Subagents and background workflows are off for every Grok run (a Runner has no use for them),
+  so the Crew card's "Runners may start subagents" does not apply to Grok. Skills have no switch,
+  but a fresh home holds none, so Grok has no skill tool. Its task list stays, and asks like
+  every other call.
 - Grok keeps remembered approvals under its `sessions/` folder, which a run must be able to
   write. GovernCode never grants one (the "always allow" choices are switched off and never
-  chosen), but a command you allowed could write such a file itself; the sandbox still bounds
-  what any call can do to the Spec's scope.
+  chosen), but a command you allowed could write such a file itself for the rest of that run;
+  the run's home is fresh and deleted afterwards, and the sandbox still bounds what any call
+  can do to the Spec's scope.
 - Because the login is read-only inside a run, Grok cannot refresh its token there; when it
   expires, Grok shows as needing attention and `gov connect grok` signs it in again.
 - Its Limit is Grok's own figure: an account that has used nothing this period reports none
@@ -284,8 +289,8 @@ enforces it, and the Controller is told it each turn:
   *follow the approved plan*, or *off* (the Controller works alone).
 - **Runners**: which ones this project may use, and the most one job may reserve of each.
 - **Subagents**, for the Controller and for Runners: off removes Claude Code's subagent tool,
-  switches Codex's multi-agent features and Grok's subagents off, and refuses Antigravity's
-  subagent tools. That covers
+  switches Codex's multi-agent features off (Grok's are off in every run, whatever the card
+  says), and refuses Antigravity's subagent tools. That covers
   each tool's own subagent features; starting another AI program from a command is a step that
   always asks, whatever the card says.
 

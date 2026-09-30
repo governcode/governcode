@@ -187,6 +187,11 @@ test("grok Runner: the run's home is GovernCode's, with GovernCode's config, and
   assert.match(seen.config, /\[permission\]\nask = \["\*", "Read", "Grep", "Bash", "Edit", "WebFetch", "WebSearch", "MCPTool"\]/);
   assert.match(seen.config, /\[folder_trust\]\nenabled = true/);
   assert.match(seen.config, /\[session\]\nload_envrc = false/);
+  assert.match(seen.config, /\[subagents\]\nenabled = false/);
+  assert.match(seen.config, /\[workflows\]\nenabled = false/);
+  // The writable set is exactly what Grok needs to run (found live); nothing creeps back in.
+  assert.deepEqual(GROK_HOME_DIRS, ["sessions", "logs"]);
+  assert.deepEqual(GROK_HOME_FILES, ["agent_id", ".metadata_version", ".config-init.lock", "managed_config.lock"]);
   assert.doesNotMatch(seen.config, /always-approve|\[hooks/);
   assert.deepEqual(seen.files, ["auth.json", "config.toml", ...GROK_HOME_DIRS, ...GROK_HOME_FILES].sort(), "the login link, GovernCode's config, and the places Grok may write");
   assert.ok(!seen.env.some((k: string) => /^(XAI_API_KEY|GROK_(CLAUDE|CURSOR)_.*|DBUS_SESSION_BUS_ADDRESS)$/.test(k)), "no API key, no compat switches, no keyring");
@@ -235,33 +240,35 @@ test("grok Runner: a project with its own .grok settings is refused before anyth
   assert.equal(r3.result.status, "failed");
   assert.match(r3.result.note, /settings Grok would read \(AGENTS\.md\)/);
   assert.equal(t3.gates.length, 0);
-  // Every settings source Grok reads from a project counts: Claude Code's settings and .mcp.json, Cursor's hooks anywhere;
-  // instruction files at the root (a package's AGENTS.md deeper down is read only through the Read tool, which asks).
+  // Every settings source Grok reads from a project counts: Claude Code's settings and .mcp.json, Cursor's hooks,
+  // and instruction files (Grok loads them from every directory on the way to where it works), anywhere in the copy.
   const dir = mkdtempSync(join(root, "cs-"));
   mkdirSync(join(dir, ".claude")); mkdirSync(join(dir, ".cursor")); mkdirSync(join(dir, "sub"));
-  writeFileSync(join(dir, ".claude", "CLAUDE.md"), "# not settings");
-  writeFileSync(join(dir, "sub", "AGENTS.md"), "# a package's own");
-  assert.deepEqual(grokSettings(dir), [], "empty .claude and .cursor folders, and instructions below the root, are nothing");
+  assert.deepEqual(grokSettings(dir), [], "empty .claude and .cursor folders are nothing");
+  writeFileSync(join(dir, "sub", "AGENTS.md"), "# below the root");
+  assert.deepEqual(grokSettings(dir), ["sub/AGENTS.md"]);
+  execFileSync("rm", [join(dir, "sub", "AGENTS.md")]);
   writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify({ permissions: { allow: ["Read"] } }));
   writeFileSync(join(dir, ".claude", "settings.local.json"), "{}");
   writeFileSync(join(dir, ".cursor", "hooks.json"), "{}");
   writeFileSync(join(dir, ".mcp.json"), "{}");
   writeFileSync(join(dir, "CLAUDE.local.md"), "# c");
   writeFileSync(join(dir, "AGENT.md"), "# a");
-  assert.deepEqual(grokSettings(dir).sort(), [".claude/settings.json", ".claude/settings.local.json", ".cursor/hooks.json", ".mcp.json", "AGENT.md", "CLAUDE.local.md"]);
+  writeFileSync(join(dir, "sub", "Claude.md"), "# c");
+  assert.deepEqual(grokSettings(dir).sort(), [".claude/settings.json", ".claude/settings.local.json", ".cursor/hooks.json", ".mcp.json", "AGENT.md", "CLAUDE.local.md", "sub/Claude.md"]);
   // A tree too big to check is refused in plain words.
   assert.deepEqual(customizations(dir, 3, [".grok"]), ["(too many files to check)"]);
 
 });
 
-test("grok Runner: not connected is held, not a crash; and the Crew card's 'no subagents' reaches the config", async () => {
+test("grok Runner: not connected is held, not a crash; subagents and workflows are off in every run's config", async () => {
   const t = setup("allow", () => []);
   execFileSync("rm", [join(t.home, "..", "connected")]);
   const r = await t.call("controller.delegate", SPEC);
   assert.equal(r.result.status, "held");
   assert.match(r.result.reason, /not connected \(gov connect grok\)/);
-  assert.match(grokConfig({ noSubagents: true }), /\[subagents\]\nenabled = false/);
-  assert.doesNotMatch(grokConfig(), /subagents/);
+  assert.match(grokConfig(), /\[subagents\]\nenabled = false/);
+  assert.match(grokConfig(), /\[workflows\]\nenabled = false/);
 });
 
 test("grok usage: _x.ai/billing becomes the period's reading; anything but a figure from 0 to 100 is unreadable", async () => {

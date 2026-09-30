@@ -365,7 +365,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
       }
       if (input.to === "grok") {
         void runGrokTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work, writePaths,
-          model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks, noSubagents: ctx.crew?.()?.subagents.runners === false })
+          model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks })   // (subagents are off for every Grok run)
           .catch((e) => done({ ok: false, summary: `the Grok Runner failed: ${e instanceof Error ? e.message : e}` }));
         return;
       }

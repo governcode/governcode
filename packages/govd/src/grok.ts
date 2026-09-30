@@ -37,8 +37,13 @@ export function grokBinary(): string {
  *  `session/request_permission`, and so a Gate, and outranks any `allow` a project could carry);
  *  nothing else is read from anywhere: no hooks, no plugins, no other tools' settings, no memory,
  *  no updater, no leader process, no dashboard, and folder trust stays on (a project's own hooks,
- *  MCP servers and instructions are never trusted in a fresh home). */
-export function grokConfig(o: { noSubagents?: boolean } = {}): string {
+ *  MCP servers and instructions are never trusted in a fresh home).
+ *  What a Runner has no use for is off outright, whatever the Crew card says: subagents (Grok's
+ *  task tool) and background workflows (a scripting tool that can start agents of its own). Skills
+ *  have no switch, but a fresh home holds none and a project's `.grok/` is refused, so Grok has
+ *  no skill tool at all (seen live: "the skill invocation tool is missing"). The task list
+ *  (todo_write) stays: it changes nothing outside the session, and it asks like every other call. */
+export function grokConfig(): string {
   return [
     "# Written by GovernCode for this run. The user's own Grok settings are not used.",
     "[ui]", 'permission_mode = "ask"', "remember_tool_approvals = false",
@@ -57,26 +62,34 @@ export function grokConfig(o: { noSubagents?: boolean } = {}): string {
     "[dashboard]", "enabled = false",
     "[features]", "telemetry = false",
     "[sandbox]", "auto_allow_bash = false",
-    ...(o.noSubagents ? ["[subagents]", "enabled = false"] : []),
+    "[subagents]", "enabled = false",
+    "[workflows]", "enabled = false",
     "",
   ].join("\n");
 }
 
-/** What Grok writes in its home while it runs (found by running it in an empty home): these
- *  folders and files exist in every run home before Grok starts, and the sandbox lets the run
- *  write them and nothing else there. The home itself is not writable, so config.toml can be
- *  neither changed nor replaced; the login link is read-only too (a run cannot swap GovernCode's
- *  login; Grok's own token refresh then waits for the next Connect). */
-export const GROK_HOME_DIRS = ["sessions", "logs", "docs", "client-state", "downloads", "memtrace", "long-running-background-tasks"];
-export const GROK_HOME_FILES = ["agent_id", ".config-init.lock", "managed_config.lock", ".metadata_version", "README.md",
-  "active_sessions.json", "active_sessions.lock", "models_cache.json", "campaigns_state.json", "campaigns_state.json.lock"];
+/** What Grok must be able to write in its home to run at all, found by running it under the
+ *  sandbox with less and less writable (Grok 1.0.44): these exist in every run home before Grok
+ *  starts, and the sandbox lets the run write them and nothing else there.
+ *  - sessions/: the session's transcript, state and locks; without it session/new fails
+ *    ("Permission denied"). Grok also keeps remembered approvals here (see grokPolicy).
+ *  - logs/: its own log; the session search index bootstrap warns without it.
+ *  - agent_id, .metadata_version, .config-init.lock, managed_config.lock: written at startup.
+ *  Everything else it would like to write (its docs and README copies, caches, plugin registry)
+ *  is refused, and it runs without them with no warning in its log. The home itself is not
+ *  writable, so config.toml can be neither changed nor replaced; the login link is read-only too
+ *  (a run cannot swap GovernCode's login; Grok's own token refresh then waits for the next Connect). */
+export const GROK_HOME_DIRS = ["sessions", "logs"];
+export const GROK_HOME_FILES = ["agent_id", ".metadata_version", ".config-init.lock", "managed_config.lock"];
 
-/** A fresh home for one run (homes.ts): the GovernCode login linked in, GovernCode's config,
- *  and the places Grok may write, made in advance. */
-export function grokRunHome(stateDir: string, o: { noSubagents?: boolean } = {}): ReturnType<typeof runHome> {
+/** A fresh, empty home for one run (homes.ts: made by mkdtemp, deleted when the run's processes
+ *  are gone), with the GovernCode login linked in, GovernCode's config, and the places Grok may
+ *  write, made in advance. Nothing a run leaves in it, a remembered approval included, is there
+ *  for the next run. */
+export function grokRunHome(stateDir: string): ReturnType<typeof runHome> {
   const rh = runHome(stateDir, "grok", "auth.json");
   try {
-    safeWrite(join(rh.home, "config.toml"), grokConfig(o));
+    safeWrite(join(rh.home, "config.toml"), grokConfig());
     for (const d of GROK_HOME_DIRS) mkdirSync(join(rh.home, d), { recursive: true, mode: 0o700 });
     for (const f of GROK_HOME_FILES) writeFileSync(join(rh.home, f), "", { flag: "a", mode: 0o600 });
   } catch (e) { rh.finish(); throw e; }
@@ -90,13 +103,13 @@ export function grokWritable(home: string): string[] {
 export const GROK_ENV = (tmp: string, home: string) => agyEnv(tmp, home, { GROK_HOME: home, GROK_DISABLE_AUTOUPDATER: "1" });
 
 // Grok reads a project's own settings: `.grok/` (permission rules that can pre-approve tools,
-// hooks, plugins), Claude Code's `.claude/settings*.json` (a permission mode, rules) and
-// `.mcp.json`, Cursor's `.cursor/hooks.json`, anywhere in the tree; and instruction files
-// (AGENTS.md and its variants) at the root, which is the Runner's working folder (one deeper
-// down is read only through the Read tool, which asks). A project that has any of them is
-// refused, as for Antigravity's customizations, and a Runner that creates one fails its Spec.
-export const GROK_ROOTS = [".grok", ".claude", ".cursor", ".mcp.json"];
+// hooks, plugins, workflows), Claude Code's `.claude/settings*.json` (a permission mode, rules)
+// and `.mcp.json`, Cursor's `.cursor/hooks.json`, and instruction files (AGENTS.md and its
+// variants, which Grok loads from every directory between the repo root and where it works). A
+// project that has any of them, anywhere in the copy, is refused, as for Antigravity's
+// customizations, and a Runner that creates one fails its Spec.
 export const GROK_INSTRUCTIONS = ["AGENTS.md", "Agents.md", "AGENT.md", "CLAUDE.md", "Claude.md", "CLAUDE.local.md"];
+export const GROK_ROOTS = [".grok", ".claude", ".cursor", ".mcp.json", ...GROK_INSTRUCTIONS];
 const GROK_NESTED: Record<string, string[]> = { ".claude": ["settings.json", "settings.local.json"], ".cursor": ["hooks.json"] };
 export function grokSettings(worktree: string): string[] {
   const found: string[] = [];
@@ -106,14 +119,18 @@ export function grokSettings(worktree: string): string[] {
     if (!inside) { found.push(hit); continue; }
     for (const name of inside) if (existsSync(join(worktree, hit, name))) found.push(join(hit, name));
   }
-  for (const name of GROK_INSTRUCTIONS) if (existsSync(join(worktree, name))) found.push(name);
   return found;
 }
 
 const policyName = (kind: string) => `grok-${kind}-${process.pid}-${randomBytes(6).toString("hex")}.json`;
 
 /** The run's sandbox: its home readable, and writable only where Grok keeps its sessions, logs
- *  and locks (grokWritable), never its config or its login. */
+ *  and locks (grokWritable), never its config or its login.
+ *  ponytail: Grok keeps remembered approvals under sessions/ (a folder it must be able to
+ *  write), so a command the user allowed could plant one for the rest of that run. GovernCode
+ *  never grants one (the "always allow" choices are off and never chosen), the run's home is
+ *  fresh and deleted afterwards, and the sandbox bounds every call to the Spec's scope either
+ *  way. Upgrade: a per-file rule if Grok ever lets the approvals file live outside sessions/. */
 export function grokPolicy(o: { work: string; tmp: string; home: string; bin: string; writePaths?: string[]; readOnly?: boolean; gitDir?: string; login?: string }): Policy {
   return {
     version: 1,
@@ -201,7 +218,7 @@ export function grokUsage(o: Opts & { scratch: string }): UsageSource {
 /** One Grok Runner turn. Permission requests reach `hooks.gate`; text and steps stream to
  *  `hooks.text` / `hooks.tool`; done reports the result and token usage. */
 export async function runGrokTurn(o: Opts & { worktree: string; writePaths: string[]; gitDir?: string; model: string; effort: string | null;
-  prompt: string; hooks: TurnHooks; signal?: AbortSignal; noSubagents?: boolean }): Promise<void> {
+  prompt: string; hooks: TurnHooks; signal?: AbortSignal }): Promise<void> {
   let finished = false;
   const cleanups: Array<() => void> = [];
   const finish = (r: { ok: boolean; summary: string; usage?: unknown }) => {
@@ -219,7 +236,7 @@ export async function runGrokTurn(o: Opts & { worktree: string; writePaths: stri
     mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
     const tmp = mkdtempSync(join(tmpdir(), "governcode-grok-"));
     cleanups.push(() => rmSync(tmp, { recursive: true, force: true }));
-    const rh = grokRunHome(o.stateDir, { noSubagents: o.noSubagents });
+    const rh = grokRunHome(o.stateDir);   // (subagents are off for every Grok run, whatever the Crew card says)
     cleanups.push(() => rh.finish());   // (normally after the process has exited; see below)
     const policyFile = join(o.policyDir, policyName("run"));
     cleanups.push(() => rmSync(policyFile, { force: true }));
