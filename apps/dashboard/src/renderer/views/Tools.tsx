@@ -8,9 +8,10 @@ import type { AskEvent } from "../../shared/contract.ts";
 import { Pill } from "../ui.tsx";
 
 type Reading = { window: string; usedPercent: number };
-type Tool = { tool: string; name: string; flow: "paste" | "browser"; installed: boolean; connected: boolean; problem: string | null;
+type Flow = "paste" | "browser" | "code";
+type Tool = { tool: string; name: string; flow: Flow; installed: boolean; connected: boolean; problem: string | null;
   usage: { readings: Reading[] } | null };
-type SignIn = { streamId: string; flow: "paste" | "browser"; name: string; id: string | null; url: string | null; lines: string[]; code: string; sent: boolean };
+type SignIn = { streamId: string; flow: Flow; name: string; id: string | null; url: string | null; lines: string[]; code: string; sent: boolean };
 
 export function Tools() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -92,6 +93,14 @@ export function Tools() {
               <button className="btn" onClick={() => void navigator.clipboard.writeText(signIn.url!)}>Copy link</button>
             </div>
             <p className="small">2. That's all: when you finish, your browser hands the sign-in back to {signIn.name} on this computer, and this screen finishes by itself.</p>
+          </>}
+          {signIn.url && signIn.flow === "code" && <>
+            <p className="small">1. Open the sign-in page, enter the code {signIn.name} shows below, and sign in with the account it should use.</p>
+            <div className="row">
+              <button className="btn btn-accent" onClick={() => void api().openSignIn(signIn.url!)}>Open sign-in page</button>
+              <button className="btn" onClick={() => void navigator.clipboard.writeText(signIn.url!)}>Copy link</button>
+            </div>
+            <p className="small">2. That's all: {signIn.name} notices when you have signed in, and this screen finishes by itself.</p>
           </>}
           {signIn.url && signIn.flow === "paste" && !signIn.sent && <>
             <p className="small">1. Open the sign-in page and sign in with the account {signIn.name} should use. Go straight through: some tools wait only about a minute; if it runs out, choose Connect again.</p>

@@ -49,17 +49,18 @@ import { isConnected, runHome, toolHome } from "./homes.ts";
 // Antigravity's customization roots; a project copy holding one is refused (see above).
 const CUSTOM_ROOTS = [".agents", ".agent", "_agents", "_agent"];
 
-/** Customization roots anywhere in a folder (not following links), relative to it. */
-export function customizations(root: string, max = 20_000): string[] {
+/** Customization roots (Antigravity's, or the ones given) anywhere in a folder (not following links), relative to it. */
+export function customizations(root: string, max = 20_000, roots: string[] = CUSTOM_ROOTS): string[] {
   const found: string[] = [];
-  let seen = 0;
+  let seen = 0, over = false;
   const walk = (dir: string) => {
     let names: string[];
     try { names = readdirSync(dir); } catch { return; }
     for (const name of names) {
-      if (++seen > max) { found.push("(too many files to check)"); return; }
+      if (over) return;
+      if (++seen > max) { over = true; found.push("(too many files to check)"); return; }
       const p = join(dir, name);
-      if (CUSTOM_ROOTS.includes(name)) { found.push(relative(root, p)); continue; }
+      if (roots.includes(name)) { found.push(relative(root, p)); continue; }
       if (name === ".git") continue;
       try { if (lstatSync(p).isDirectory()) walk(p); } catch { /* gone */ }
     }

@@ -416,15 +416,17 @@ async function main(argv: string[]): Promise<number> {
           }
           return 0;
         }
-        if (!["agy", "claude", "codex"].includes(tool)) throw new Error("usage: gov connect [agy|claude|codex]");
-        const device = tool === "codex";   // Codex: the browser hands the login back by itself; nothing to paste here
+        if (!["agy", "claude", "codex", "grok"].includes(tool)) throw new Error("usage: gov connect [agy|claude|codex|grok]");
+        // Codex: the browser hands the login back by itself; Grok: the code shown below is entered on the page. Nothing to paste here.
+        const device = tool === "codex" || tool === "grok";
         const tty = answers();
         let id = "";
         api.onEvent(async (ev) => {
           if (ev.kind !== "connect") return;
           id = ev.id;
           if (ev.url && device) {
-            console.log(warn("\nOpen this link and sign in; this finishes by itself when you are done:"));
+            console.log(warn(tool === "grok" ? "\nOpen this link, enter the code shown here and sign in; this finishes by itself when you are done:"
+              : "\nOpen this link and sign in; this finishes by itself when you are done:"));
             console.log(ev.url);
           } else if (ev.url) {
             console.log(warn("\nOpen this link and sign in:"));

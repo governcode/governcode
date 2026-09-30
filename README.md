@@ -29,7 +29,7 @@ releases, tagged `vX.Y.Z`). The first Motion is
 
 > **Status: pre-alpha, release candidate.** Developers can try it on Linux, from the
 > CLI or the early Dashboard: the sandbox, Gates, Checkpoints, Limits, and delegation from a
-> Claude Code or Codex Controller to a Codex, Antigravity or local-model Runner work end to end.
+> Claude Code or Codex Controller to a Codex, Antigravity, Grok or local-model Runner work end to end.
 > Expect rough edges.
 
 **Install the release candidate (Linux x86_64):** download
@@ -75,19 +75,20 @@ gov demo           # the quickest look: a sample project, one Controller turn, o
 ### Connect your tools
 
 Each AI tool signs in for GovernCode once, with its own sign-in, in a home that belongs to
-GovernCode: `gov connect claude`, `gov connect codex`, `gov connect agy`, or Settings › Tools in
-the Dashboard. Claude Code and Antigravity show a link, and you paste back the code the page
-gives you; Codex's page finishes the sign-in by itself (its browser hands it back on this
-computer). For those two sign-ins the sandbox lets the tool listen on one local port for that
-hand-back; nothing else an AI tool runs may listen at all.
+GovernCode: `gov connect claude`, `gov connect codex`, `gov connect agy`, `gov connect grok`, or
+Settings › Tools in the Dashboard. Claude Code and Antigravity show a link, and you paste back
+the code the page gives you; Codex's page finishes the sign-in by itself (its browser hands it
+back on this computer); Grok shows a link and a code to enter on that page, then finishes by
+itself. For the Claude Code and Codex sign-ins the sandbox lets the tool listen on one local port
+for that hand-back; nothing else an AI tool runs may listen at all.
 
 - Your own setup for these tools (their folders, logins, settings, keyring) is not used, except
   the personal instructions you choose to bring (below). GovernCode never parses the logins it
   keeps; when a tool refreshes its login during a run, govd copies the new file back as it is.
 - Only a subscription sign-in counts as connected, never an API key: GovernCode does not switch
   anything onto paid API use.
-- Every run of Claude Code, Codex or Antigravity starts from a fresh home of its own, with only
-  the login linked in (and, for Antigravity, its helper programs, read-only), and that home is
+- Every run of Claude Code, Codex, Antigravity or Grok starts from a fresh home of its own, with
+  only the login linked in (and, for Antigravity, its helper programs, read-only), and that home is
   deleted afterwards: nothing a run writes (memory, knowledge, caches, settings, rules, skills)
   reaches another run, in this project or any other.
 - `gov disconnect TOOL` deletes GovernCode's copy of a login. Revoking the tool's access in your
@@ -219,6 +220,67 @@ Honest limits, for now:
   `_agent/`) is refused: their hooks could switch GovernCode's Gate off. A Runner that creates one
   fails its Spec.
 
+### Grok (xAI) as a Runner
+
+With the [Grok CLI](https://www.npmjs.com/package/@xai-official/grok) (`grok`, a SuperGrok or
+similar subscription) installed, connect it once:
+
+```sh
+gov connect grok    # or Settings › Tools › Connect in the Dashboard
+```
+
+GovernCode runs Grok's own device-code sign-in inside the sandbox, in a home that belongs to
+GovernCode (Grok's `GROK_HOME`): open the link it shows, enter the code it prints, sign in, and
+it finishes by itself. Your own Grok setup (`~/.grok`: its settings, hooks, plugins and login) is
+never used, and GovernCode never reads the login Grok keeps in its home. Only a subscription
+sign-in counts, never an API key. `gov disconnect grok` removes it.
+
+Then `grok` is a Runner like `codex`, driven over the Agent Client Protocol (ACP). Every run gets
+a fresh home with a config GovernCode writes: every call asks, reads, searches and directory
+listings included (Grok's `ask` mode with an `ask` rule for every tool, which outranks any `allow`
+rule a project could carry), and no hooks, no plugins, no subagents, no background workflows, no
+memory, no Claude, Cursor or Codex compatibility, no updater, no `.envrc`, folder trust on. In
+that home the run may write only where Grok keeps its sessions, logs and a few startup files: its config
+and its login are read-only to it. A run has two hours; then it is ended.
+Each permission request Grok makes is a Gate: commands get the same checks as any other command,
+file changes show the request as Grok sent it, and any other kind of call is a step of its own
+kind. GovernCode answers
+"allow once" or rejects; it never picks "allow always", so every call asks again. Its Limit comes
+from Grok's own usage report (the credits used this period, the same figure Grok's `/usage`
+shows, and when the period ends), so Grok is a measured Runner like Codex; each run's token use
+is counted as well. A Spec's Runner runs Grok's default model, or the Grok model the Controller
+names, with the reasoning effort it asks for.
+
+Honest limits, for now:
+- The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
+  and the sandbox limits where it can write, not which HTTPS sites it can reach.
+- A project that contains settings Grok would read (`.grok/`, `.agents/` (its skill and command
+  folder, which other tools use too), `.claude/settings.json` or `settings.local.json`,
+  `.mcp.json`, `.cursor/hooks.json`, `AGENTS.md`, `CLAUDE.md` and their variants, anywhere in the
+  copy) is refused: they could switch its asking off or add instructions. A Runner that creates
+  one fails its Spec.
+- Subagents and background workflows are off for every Grok run (a Runner has no use for them),
+  so the Crew card's "Runners may start subagents" does not apply to Grok. Skills have no switch,
+  but a fresh home holds none, so Grok has no skill tool. Its task list and its background-task
+  tools stay, and ask like every other call (seen live, though Grok's own guide lists them as
+  never prompting).
+- A project copy with a link to a folder, out of the copy, or to nothing is refused too: the
+  settings check does not follow links, so a link could hide an instruction file from it.
+- Grok keeps remembered approvals under its `sessions/` folder, which a run must be able to
+  write. GovernCode never grants one (the "always allow" choices are switched off and never
+  chosen), but a command you allowed could write such a file itself for the rest of that run;
+  the run's home is fresh and deleted afterwards, and the sandbox still bounds what any call
+  can do to the Spec's scope.
+- Because the login is read-only inside a run, Grok cannot refresh its token there; when it
+  expires, Grok shows as needing attention and `gov connect grok` signs it in again.
+- Its Limit is Grok's own figure: an account that has used nothing this period reports none
+  yet, and GovernCode holds Grok until it does (use Grok once outside GovernCode).
+- Grok's own questions to the user, and its requests to read or write files through the client,
+  are refused (GovernCode offers neither), so a job that needs them stops there.
+- The asking itself is Grok's: it brings each call to GovernCode as its permission request. The
+  sandbox holds whatever it does to the Spec's scope; the Gate is your review of each call Grok
+  brings, not a second sandbox.
+
 Gemini CLI (for Gemini API keys) comes later, once GovernCode can hold a key safely.
 
 ### Crew and delegation
@@ -231,7 +293,8 @@ enforces it, and the Controller is told it each turn:
   *follow the approved plan*, or *off* (the Controller works alone).
 - **Runners**: which ones this project may use, and the most one job may reserve of each.
 - **Subagents**, for the Controller and for Runners: off removes Claude Code's subagent tool,
-  switches Codex's multi-agent features off, and refuses Antigravity's subagent tools. That covers
+  switches Codex's multi-agent features off (Grok's are off in every run, whatever the card
+  says), and refuses Antigravity's subagent tools. That covers
   each tool's own subagent features; starting another AI program from a command is a step that
   always asks, whatever the card says.
 

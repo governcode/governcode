@@ -50,17 +50,19 @@ export function runHome(stateDir: string, tool: string, loginFile: string, readO
   mkdirSync(runs, { recursive: true, mode: 0o700 });
   const home = mkdtempSync(join(runs, "run-"));
   const link = join(home, loginFile);
-  mkdirSync(dirname(link), { recursive: true, mode: 0o700 });
-  if (existsSync(shared)) symlinkSync(shared, link);
-  // Large downloads the tool keeps beside its login (its own helper programs), shared read-only.
   const linked: string[] = [];
-  for (const rel of readOnlyLinks) {
-    const target = join(toolHome(stateDir, tool), rel);
-    if (!existsSync(target)) continue;
-    mkdirSync(dirname(join(home, rel)), { recursive: true, mode: 0o700 });
-    symlinkSync(target, join(home, rel));
-    linked.push(target);
-  }
+  try {
+    mkdirSync(dirname(link), { recursive: true, mode: 0o700 });
+    if (existsSync(shared)) symlinkSync(shared, link);
+    // Large downloads the tool keeps beside its login (its own helper programs), shared read-only.
+    for (const rel of readOnlyLinks) {
+      const target = join(toolHome(stateDir, tool), rel);
+      if (!existsSync(target)) continue;
+      mkdirSync(dirname(join(home, rel)), { recursive: true, mode: 0o700 });
+      symlinkSync(target, join(home, rel));
+      linked.push(target);
+    }
+  } catch (e) { removeTree(home); throw e; }   // a home that could not be set up is not left behind
   const gen = generation(stateDir, tool);
   const stamp = (): string | null => { try { const st = statSync(shared); return `${st.ino}:${st.size}:${st.mtimeMs}`; } catch { return null; } };
   const before = stamp();

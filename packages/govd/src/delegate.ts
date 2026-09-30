@@ -16,6 +16,7 @@ import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, s
 import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
+import { runGrokTurn } from "./grok.ts";
 import { mayShare, notesOf, setNotes } from "./memory.ts";
 import { runnerAllowed } from "./crew.ts";
 import type { CrewValue } from "@governcode/protocol";
@@ -360,6 +361,12 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
           noSubagents: ctx.crew?.()?.subagents.runners === false,
           openSocket: (h) => openTurnSocket(ctx.runtimeDir, h) })
           .catch((e) => done({ ok: false, summary: `the Antigravity Runner failed: ${e instanceof Error ? e.message : e}` }));
+        return;
+      }
+      if (input.to === "grok") {
+        void runGrokTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work, writePaths,
+          model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks })   // (subagents are off for every Grok run)
+          .catch((e) => done({ ok: false, summary: `the Grok Runner failed: ${e instanceof Error ? e.message : e}` }));
         return;
       }
       void runCodexTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: paths.work,

@@ -15,6 +15,7 @@ import { Ledger } from "./ledger.ts";
 import { runTurn, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { agyUsage } from "./agy.ts";
+import { grokUsage } from "./grok.ts";
 import { isConnected } from "./homes.ts";
 import { Connector, TOOLS } from "./connect.ts";
 import { contextState, mayShare, notesHistory, notesOf, projectRecord, setNotes } from "./memory.ts";
@@ -80,7 +81,8 @@ export class Daemon {
     // A cloud Runner's own usage report, with the user's counted budget on top when one is set.
     const budgeted = (provider: string, native?: UsageSource) => withBudget(provider, native, this.counted, () => this.settings().budgets[provider]);
     this.usage = { codex: budgeted("codex", codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") })),
-      ollama: ollamaUsage(), agy: budgeted("agy", agyUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir })) };
+      ollama: ollamaUsage(), agy: budgeted("agy", agyUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir })),
+      grok: budgeted("grok", grokUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") })) };
     this.limits.setReserves(this.settings().reserves);
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));

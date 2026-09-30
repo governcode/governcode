@@ -74,7 +74,8 @@ test("an ask needs a well-formed id and prompt; Home is a null project", () => {
 test("a Connect needs a well-formed stream id and a tool GovernCode can connect", () => {
   assert.deepEqual(checkConnect("connect-agy-1", "agy"), { streamId: "connect-agy-1", params: { tool: "agy" } });
   assert.throws(() => checkConnect("bad id!", "agy"), /bad stream id/);
-  assert.throws(() => checkConnect("s1", "grok"), /Invalid/);
+  assert.throws(() => checkConnect("s1", "gemini"), /Invalid/);
+  assert.deepEqual(checkConnect("s1", "grok").params, { tool: "grok" });
   assert.deepEqual(checkConnect("s2", "claude").params, { tool: "claude" });
   assert.deepEqual(checkConnect("s3", "codex").params, { tool: "codex" });
   // A sign-in code is one printable line; the renderer cannot send control characters to the tool.
@@ -142,7 +143,7 @@ test("against the real govd: hello reports the sandbox, and lists come back", as
     }
     // Unmeasured Runners show as held, not available (unknown usage holds).
     const { providers } = await link.call("limits.list", { measure: false }) as { providers: Array<{ provider: string; verdict: { ok: boolean } }> };
-    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false], ["ollama", false], ["agy", false]]);
+    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false], ["ollama", false], ["agy", false], ["grok", false]]);
     // The link watches: a project made and a Controller chosen arrive as live Trace events.
     const seen: string[] = [];
     link.onWatch((w) => { if (w.kind === "trace") seen.push(w.event.kind); });
