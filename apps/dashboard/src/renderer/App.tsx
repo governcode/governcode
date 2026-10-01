@@ -138,7 +138,7 @@ export function App() {
         <span className="brand">GovernCode</span>
         <label className="switcher">
           <span className="dim">Project</span>
-          <select value={project} onChange={(e) => setProject(e.target.value)} disabled={!up}>
+          <select value={project} onChange={(e) => setProject(e.target.value)} disabled={!up} title={project === HOME ? "No project (Home)" : project}>
             <option value={HOME}>No project (Home)</option>
             {projects.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
           </select>
@@ -148,12 +148,13 @@ export function App() {
         <button className="btn btn-quiet" disabled={!up || !current} onClick={() => setDialog("controller")}
           title={current ? controllerLabel(current.controller) : "Home uses the most recently chosen Controller"}>Controller</button>
         <span className="spacer" />
-        {status === null || status.state === "connecting" ? <Pill tone="dim">govd: connecting</Pill>
-          : status.state === "down" ? <Pill tone="danger" title={status.error}>govd: not running</Pill>
-          : <Pill tone="ok" title={`protocol ${status.hello.protocol}`}>govd {status.hello.version}</Pill>}
+        {/* A narrow window may shorten a pill; its tooltip always has the whole text. */}
+        {status === null || status.state === "connecting" ? <Pill tone="dim" title="govd: connecting">govd: connecting</Pill>
+          : status.state === "down" ? <Pill tone="danger" title={`govd: not running (${status.error})`}>govd: not running</Pill>
+          : <Pill tone="ok" title={`govd ${status.hello.version} · protocol ${status.hello.protocol}`}>govd {status.hello.version}</Pill>}
         {hello && (hello.sandbox.ok
-          ? <Pill tone="ok" title={hello.sandbox.reason}>sandbox enforced</Pill>
-          : <Pill tone="danger" title={hello.sandbox.reason}>sandbox NOT verified</Pill>)}
+          ? <Pill tone="ok" title={`sandbox enforced: ${hello.sandbox.reason}`}>sandbox enforced</Pill>
+          : <Pill tone="danger" title={`sandbox NOT verified: ${hello.sandbox.reason}`}>sandbox NOT verified</Pill>)}
       </header>
 
       <nav className="nav">
@@ -199,7 +200,7 @@ export function App() {
         {current && <span className="dim">Controller: {controllerLabel(current.controller)}</span>}
         <span className="spacer" />
         {hello && <span className="dim">protocol {hello.protocol} · {live ? "live" : "polling"}</span>}
-        <span className={gates.length ? "warn" : "dim"}>{gates.length} Gate{gates.length === 1 ? "" : "s"} waiting</span>
+        <span className={`gate-count ${gates.length ? "warn" : "dim"}`}>{gates.length} Gate{gates.length === 1 ? "" : "s"} waiting</span>
         <span className="dim mono">{status?.socketPath}</span>
       </footer>
     </div>

@@ -100,7 +100,7 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
   ];
   return (
     <div className="spec-detail">
-      <div className="row"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
+      <div className="row wrap"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
         <ConfirmButton label="Accept" tone="ok" disabled={!reviewable} confirm={`Apply ${spec.id}'s changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
         <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || spec.status === "failed")} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
       </div>
