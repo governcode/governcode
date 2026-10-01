@@ -290,7 +290,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "projects": {
         const { projects } = await api.call("project.list");
-        for (const p of projects) console.log(`${p.name.padEnd(14)} ${p.path}  ${dim(`${p.controller.provider} · ${p.controller.model} · ${p.controller.effort ?? "n/a"}`)}`);
+        for (const p of projects) console.log(`${p.name.padEnd(14)} ${p.path}  ${dim(`${[p.controller.provider, p.controller.model || "default model", p.controller.effort].filter(Boolean).join(" · ")}`)}`);
         if (!projects.length) console.log(dim("no projects yet"));
         return 0;
       }
@@ -469,7 +469,7 @@ async function main(argv: string[]): Promise<number> {
         const rows = Object.entries(settings.reserves as Record<string, Record<string, number>>);
         if (!rows.length) console.log(dim("defaults: every Runner keeps 10% of each usage window back"));
         for (const [provider, windows] of rows) console.log(`${provider.padEnd(8)} ${Object.entries(windows).map(([w, n]) => `${w} ${n}%`).join(", ")}`);
-        for (const [provider, d] of Object.entries(settings.runners as Record<string, { model: string; effort: string | null }>)) console.log(`${provider.padEnd(8)} defaults to ${d.model} · ${d.effort ?? "n/a"}`);
+        for (const [provider, d] of Object.entries(settings.runners as Record<string, { model: string; effort: string | null }>)) console.log(`${provider.padEnd(8)} defaults to ${[d.model || "default model", d.effort].filter(Boolean).join(" · ")}`);
         console.log(`per-Spec models: ${settings.specModels}`);
         for (const [provider, b] of Object.entries(settings.budgets as Record<string, { unit: string; windows: Record<string, number> }>)) {
           if (!Object.keys(b.windows).length) continue;
@@ -533,7 +533,7 @@ async function main(argv: string[]): Promise<number> {
         runner(provider);
         const { settings } = await api.call("settings.get", {});
         await api.call("settings.set", { ...settings, runners: { ...settings.runners, [provider]: { model, effort: effort ?? null } } });
-        console.log(`${provider}: defaults to ${model} · ${effort ?? "n/a"}`);
+        console.log(`${provider}: defaults to ${[model || "default model", effort].filter(Boolean).join(" · ")}`);
         return 0;
       }
       case "level": {
