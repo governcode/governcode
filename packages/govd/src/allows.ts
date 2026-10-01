@@ -57,6 +57,11 @@ const ALWAYS_ASK_SUB = new Set(["npm publish", "npm exec", "yarn publish", "pnpm
 const QUIET_READS = new Set(["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "which", "stat", "du", "df", "find",
   "sort", "cut", "nl", "echo"]);
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+// An interpreter asked only its version runs no code: exactly these two words are a quiet read.
+// Anything else asks as before (python -v is verbose mode, then a prompt that runs what it reads).
+const VERSION_ONLY: Record<string, string[]> = { node: ["--version", "-v"], python: ["--version", "-V"], python3: ["--version", "-V"],
+  ruby: ["--version", "-v"], perl: ["--version", "-v"], deno: ["--version"], bun: ["--version"] };
+const versionOnly = (w: string[]) => w.length === 2 && Object.hasOwn(VERSION_ONLY, w[0]) && VERSION_ONLY[w[0]].includes(w[1]);
 
 // Outside quotes, anything that could chain, substitute, redirect, glob or hide a command.
 const UNQUOTED = /[;&|`$<>(){}\\\n\r*?\[\]~!#]/;
@@ -290,7 +295,7 @@ export function isQuietRead(req: { tool: string; base?: string; input: Record<st
   if (!words) return false;
   // sed -n 'N,Mp' FILE...: printing a range of lines, nothing else.
   if (words[0] === "sed") return words.length >= 3 && words[1] === "-n" && /^(\d+|\$)(,(\d+|\$))?p$/.test(words[2]) && words.slice(3).every((w) => !w.startsWith("-"));
-  return QUIET_READS.has(words[0]) && quietArgs(words);
+  return versionOnly(words) || (QUIET_READS.has(words[0]) && quietArgs(words));
 }
 
 // --- Compound commands (how strict, 2026-09-27) ------------------------------------------
@@ -370,7 +375,7 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
     const kinds: Kind[] = [];
     for (const w of segs) {
       if (!w.length || w[0].includes("=") || w[0].includes("/")) return { ask: true, quiet: false, kinds: [] };
-      if (QUIET_READS.has(w[0]) && quietArgs(w)) continue;
+      if (versionOnly(w) || (QUIET_READS.has(w[0]) && quietArgs(w))) continue;
       // A read-only program with an option it is not known to read with (sort -o, tail -f,
       // grep -f, a special file) is not a kind a rule may cover: it asks (Grok's red-team).
       if (QUIET_READS.has(w[0]) && !(w.length === 2 && ["--help", "--version"].includes(w[1]))) return { ask: true, quiet: false, kinds: [] };
