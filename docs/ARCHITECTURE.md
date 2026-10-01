@@ -46,9 +46,10 @@ Spec keeps counting until the provider's report has caught up with it: a reading
 minutes after it finished that shows its window has moved, or the vendor confirming that the
 window it ran in has reset; 2 hours at most), then builds the Runner's
 workspace **in govd's own state directory**, out of every AI tool's reach: the project as the
-user has it now (what git tracks, uncommitted changes included, plus new files it does not
-ignore, except ones that look like secrets such as `.env` or a key), read without following any
-link, with its own git directory for snapshots. The
+user has it now (the last commit with the user's uncommitted edits; a new file only when an
+accepted Spec wrote it or the Spec's scope names it, never one that looks like a secret or holds
+a private key), read one folder at a time without following any link, refused over 2 GB or
+200,000 files, with its own git directory for snapshots. The
 Runner runs sandboxed with write access only to the Spec's scope (checked for symlinks).
 Snapshots hash raw bytes with git plumbing under a config that runs no program, so no repo
 filter, hook or diff driver ever executes. A change outside the scope is never offered.

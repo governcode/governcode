@@ -43,41 +43,61 @@ test("workspace, snapshots, diff and apply run no repo filter and apply exactly 
   assert.ok(!existsSync(join(proj, "PWNED")), "the repo's filter never ran");
 });
 
-test("workspace: the project as the user has it now, uncommitted changes and new files included, secrets and links never followed", () => {
+test("workspace: the project as the user has it now, edits included; new files only as allowed, never secrets, links never followed", () => {
   const proj = project();
   const outside = scratch("gc-outside-");
   writeFileSync(join(outside, "secret.txt"), "outside\n");
+  const g = (...a: string[]) => execFileSync("git", ["-C", proj, ...a], { stdio: "pipe" });
   writeFileSync(join(proj, "a.txt"), "changed, not committed\n");                 // an accepted Spec not yet committed
-  writeFileSync(join(proj, "src/new.txt"), "new\n");                              // a new file git does not ignore
+  writeFileSync(join(proj, "src/new.txt"), "new\n");                              // a new file the rule keeps
+  writeFileSync(join(proj, "notes.txt"), "my own notes\n");                       // a new file it does not
+  writeFileSync(join(proj, "src/key.txt"), "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nxyz\n");   // kept by the rule, but a key (split: no key header in this repo)
   writeFileSync(join(proj, ".gitignore"), "ignored.txt\n");
   writeFileSync(join(proj, "ignored.txt"), "ignored\n");
-  for (const f of [".env", "deploy/.env.local", "id_ed25519", "certs/site.pem"]) {
+  for (const f of [".env", "deploy/.env.local", "id_ed25519", "certs/site.pem", "src/credentials.json"]) {
     mkdirSync(join(proj, dirname(f)), { recursive: true }); writeFileSync(join(proj, f), "secret\n");
   }
-  symlinkSync("a.txt", join(proj, "link.txt"));                                     // a link stays a link
-  symlinkSync(join(outside, "secret.txt"), join(proj, "out.txt"));                 // a link out is copied as a link, never read
-  symlinkSync(outside, join(proj, "outdir"));                                      // a folder link is never entered
-  execFileSync("mkfifo", [join(proj, "pipe")]);                                    // would block a read
-  writeFileSync(join(proj, "big.bin"), "");
-  execFileSync("truncate", ["-s", "101M", join(proj, "big.bin")]);                 // a new file too big to review
+  g("add", ".env");                                                                // staged, never committed
+  symlinkSync("a.txt", join(proj, "src/link.txt"));                                 // a link stays a link
+  symlinkSync(outside, join(proj, "src/outdir"));                                  // a folder link is never entered
+  execFileSync("mkfifo", [join(proj, "src/pipe")]);                                // would block a read
+  writeFileSync(join(proj, "src/big.bin"), "");
+  execFileSync("truncate", ["-s", "101M", join(proj, "src/big.bin")]);             // a new file too big to review
   rmSync(join(proj, "src/b.txt"));                                                 // deleted, not committed
   const p = ss.specPaths(scratch("gc-state-"), "S-0010");
-  ss.createWorkspace(proj, p);
+  const r = ss.createWorkspace(proj, p, (rel) => rel.startsWith("src/") || rel === ".env");
   const has = (f: string) => { try { lstatSync(join(p.work, f)); return true; } catch { return false; } };
   assert.equal(readFileSync(join(p.work, "a.txt"), "utf8"), "changed, not committed\n");
   assert.equal(readFileSync(join(p.work, "src/new.txt"), "utf8"), "new\n");
-  for (const f of ["ignored.txt", ".env", "deploy/.env.local", "id_ed25519", "certs/site.pem", "pipe", "big.bin", "src/b.txt"]) {
+  for (const f of ["notes.txt", "ignored.txt", ".env", "deploy/.env.local", "id_ed25519", "certs/site.pem", "src/credentials.json", "src/key.txt", "src/pipe", "src/big.bin", "src/b.txt"]) {
     assert.ok(!has(f), `${f} is not in the copy`);
   }
-  assert.equal(readlinkSync(join(p.work, "link.txt")), "a.txt");
-  assert.equal(readlinkSync(join(p.work, "out.txt")), join(outside, "secret.txt"));
-  assert.equal(readlinkSync(join(p.work, "outdir")), outside, "a folder link is copied as a link, never entered");
+  assert.ok(r.left.includes("notes.txt") && r.left.includes(".env") && r.left.includes("src/credentials.json"), JSON.stringify(r));
+  assert.ok(r.skipped.includes("src/key.txt") && r.skipped.includes("src/big.bin"), JSON.stringify(r));
+  assert.ok(!r.left.includes("ignored.txt") && !r.left.includes("src/b.txt"));
+  assert.equal(readlinkSync(join(p.work, "src/link.txt")), "a.txt");
+  assert.equal(readlinkSync(join(p.work, "src/outdir")), outside, "a folder link is copied as a link, never entered");
   // What a Spec then changes applies over the uncommitted state it started from.
   const before = ss.snapshot(p, "before");
   writeFileSync(join(p.work, "a.txt"), "runner\n");
   const after = ss.snapshot(p, "after", before);
   assert.deepEqual(ss.applyToProject(p, proj, before, after), ["a.txt"]);
   assert.equal(readFileSync(join(proj, "a.txt"), "utf8"), "runner\n");
+});
+
+test("workspace: a file git is told to skip or assume unchanged is copied as committed, not with its local secrets", () => {
+  const proj = project();
+  const g = (...a: string[]) => execFileSync("git", ["-C", proj, ...a], { stdio: "pipe" });
+  rmSync(join(proj, "PWNED"), { force: true });                                    // the setup commit ran the fixture's filter once
+  writeFileSync(join(proj, "a.txt"), "password: REAL-SECRET\n");
+  writeFileSync(join(proj, "src/b.txt"), "local only too\n");
+  g("update-index", "--skip-worktree", "a.txt");
+  g("update-index", "--assume-unchanged", "src/b.txt");
+  const p = ss.specPaths(scratch("gc-state-"), "S-0012");
+  const r = ss.createWorkspace(proj, p);
+  assert.equal(readFileSync(join(p.work, "a.txt"), "utf8"), "one\n");
+  assert.equal(readFileSync(join(p.work, "src/b.txt"), "utf8"), "bee\n");
+  assert.deepEqual(r, { left: [], skipped: [] });
 });
 
 test("workspace: a tracked file whose folder is now a link elsewhere is never read through it", () => {
@@ -87,7 +107,7 @@ test("workspace: a tracked file whose folder is now a link elsewhere is never re
   renameSync(join(proj, "src"), join(proj, "src-moved"));
   symlinkSync(outside, join(proj, "src"));                                         // git still tracks src/b.txt
   const p = ss.specPaths(scratch("gc-state-"), "S-0011");
-  ss.createWorkspace(proj, p);
+  ss.createWorkspace(proj, p, () => true);
   assert.ok(lstatSync(join(p.work, "src")).isSymbolicLink(), "the folder link is copied as a link, its file never read");
   assert.deepEqual(readdirSync(outside), ["b.txt"], "and nothing written through it");
   assert.equal(readFileSync(join(p.work, "a.txt"), "utf8"), "one\n");
