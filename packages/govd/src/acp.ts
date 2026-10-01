@@ -163,7 +163,8 @@ export function permissionGate(agent: string, params: any, id: string): GateRequ
     tool = `${agent} fileChange`;
     input = { kind, ...(title ? { title } : {}), locations, input: raw };
   } else {
-    const variant = typeof raw.variant === "string" && /^[A-Za-z][A-Za-z0-9]{0,29}$/.test(raw.variant) ? raw.variant : null;
+    // Capitalised, as Grok's are, so a name can never read as a kind (`grok_read`).
+    const variant = typeof raw.variant === "string" && /^[A-Z][A-Za-z0-9]{0,29}$/.test(raw.variant) ? raw.variant : null;
     tool = variant ? `${agent}_${variant}` : kind !== "other" && /^[a-z_]{1,30}$/.test(kind) ? `${agent}_${kind}` : `${agent} unknown tool`;
     input = { kind, ...(title ? { title } : {}), locations, input: raw };
   }
@@ -173,7 +174,7 @@ export function permissionGate(agent: string, params: any, id: string): GateRequ
 /**
  * A run's token use from `turn_completed` updates ({ usage: { inputTokens, outputTokens,
  * totalTokens, ... } }), summed over the run's turns (a subagent's turn is one more; an update
- * with a `prompt_id` already counted is the same turn sent twice). The prompt's own answer may
+ * with a `prompt_id` and figures already counted is the same turn sent twice). The prompt's own answer may
  * carry the run's totals too (`prompt`): each figure is then the larger of the two, never their
  * sum. A run with no report reports null; a run that did not end normally, or sent a report that
  * could not be read, reports what it saw with `complete: false` (a floor: a token budget holds on it).
@@ -190,9 +191,11 @@ export function acpTokenTally() {
   };
   return {
     add(update: any): void {
-      if (typeof update?.prompt_id === "string") { if (counted.has(update.prompt_id)) return; counted.add(update.prompt_id); }
       const u = read(update?.usage);
       if (!u) { malformed = true; return; }
+      // The same turn sent again: the same prompt and the same figures (a report that differs counts).
+      const key = typeof update?.prompt_id === "string" ? `${update.prompt_id}|${u.totalTokens}|${u.inputTokens}|${u.outputTokens}` : null;
+      if (key) { if (counted.has(key)) return; counted.add(key); }
       if (u.totalTokens === 0) empty = true;   // a turn that reports nothing used is not believed
       turns++;
       totalTokens = Math.min(totalTokens + u.totalTokens, MAX_RUN_TOKENS); inputTokens = Math.min(inputTokens + u.inputTokens, MAX_RUN_TOKENS); outputTokens = Math.min(outputTokens + u.outputTokens, MAX_RUN_TOKENS);
@@ -240,9 +243,18 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
   let said = 0;   // a Runner's words and steps reach the hooks up to a budget of bytes; a flood does not fill govd
   const within = (s: string) => (said += Buffer.byteLength(s)) <= 1_000_000;
   // The agent streams its words in pieces of a few characters; they reach the hooks whole, before
-  // its next step or Gate, at the end of the turn, or every few thousand characters.
+  // its next step or Gate and at the end of the turn. A long message goes in parts of a few
+  // thousand characters, cut at a line or a space.
   let words = "";
-  const flush = () => { const w = words; words = ""; if (w && within(w)) o.hooks.text(w); };
+  const say = (w: string) => { if (w && within(w)) o.hooks.text(w); };
+  const flush = () => { const w = words; words = ""; say(w); };
+  const flushLong = () => {
+    if (words.length < 4000) return;
+    let cut = words.lastIndexOf("\n");
+    if (cut <= 0) cut = words.lastIndexOf(" ");
+    if (cut <= 0) return flush();
+    const w = words.slice(0, cut); words = words.slice(cut + 1); say(w);
+  };
   rpc.onRequest(async (method, params) => {
     if (method !== "session/request_permission") throw new Error(`GovernCode does not answer ${method}`);
     const mine = prompting && stopped === null && typeof params?.sessionId === "string" && params.sessionId === sessionId;
@@ -275,7 +287,7 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
     if (xai) return;
     if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && typeof u.content.text === "string") {
       words += u.content.text;
-      if (words.length >= 4000) flush();
+      flushLong();
     }
     if (u.sessionUpdate === "tool_call") {
       flush();

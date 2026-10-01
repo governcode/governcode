@@ -108,9 +108,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   for (const w of ["fin", "ish", "ed"]) update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: w } });
   if (cfg.mode === "old-channel") update(turn);                       // before 1.0.46: on session/update
   else if (cfg.mode === "twice") { xai(turn); xai(turn, null); update(turn); }   // the same turn, sent again (one without its session)
+  else if (cfg.mode === "xai-only") xai(turn, null);                 // only xAI's channel, without its session
+  else if (cfg.mode === "split") { xai({ ...turn, usage: { inputTokens: 300, outputTokens: 40, totalTokens: 340 } }); xai({ ...turn, usage: { inputTokens: 5, outputTokens: 5, totalTokens: 10 } }); }
   else if (cfg.mode !== "meta-only") xai(turn);
   record();
-  const meta = cfg.mode === "old-channel" ? {} : cfg.mode === "meta-only" ? { _meta: { totalTokens: 300, inputTokens: 250, outputTokens: 50 } }
+  const meta = cfg.mode === "old-channel" || cfg.mode === "xai-only" ? {} : cfg.mode === "meta-only" ? { _meta: { totalTokens: 300, inputTokens: 250, outputTokens: 50 } }
     : { _meta: { totalTokens: 120, inputTokens: 100, outputTokens: 20, modelId: "grok-x" } };   // the same turn's totals again
   out({ id: m.id, result: { stopReason: cfg.stopReason || "end_turn", ...meta } });
   if (cfg.mode === "late-ask") setTimeout(async () => {   // asking, and talking, after the turn ended
@@ -392,13 +394,20 @@ test("acp: Grok's reads, searches and listings are quiet reads; every other call
   const list = g("other", { variant: "ListDir", target_directory: "/w/test" });
   assert.equal(list.tool, "grok_ListDir");
   assert.deepEqual(q(list), { ask: false, quiet: true, kinds: [] });
-  assert.equal(q(g("read", { variant: "ReadFile", file_path: "/w/src/cli.js" })).quiet, true);
+  assert.equal(q(g("read", { variant: "ReadFile", target_file: "/w/src/cli.js" })).quiet, true);
   assert.equal(q(g("search", { variant: "Grep", pattern: "x", path: null })).quiet, true);
-  // A read tool name with another kind, or of a special place, is not a quiet read.
-  assert.equal(q(g("fetch", { variant: "ReadFile", file_path: "/w/a" })).quiet, false);
-  assert.equal(q(g("read", { variant: "ReadFile", file_path: "/dev/zero" })).quiet, false);
-  assert.equal(q(g("read", { variant: "ReadFile", file_path: "/w/../../proc/self/environ" })).quiet, false);
-  assert.equal(q(g("other", { variant: "ListDir", target_directory: 7 })).quiet, false);
+  assert.equal(q(g("search", { variant: "Grep", pattern: "x", path: "/w/src" })).quiet, true);
+  // A read tool with another kind, without its own path, or reaching a special place always asks
+  // (as `cat /dev/zero` does), and is never a kind a rule could remember.
+  const asks = { ask: true, quiet: false, kinds: [] };
+  for (const r of [g("fetch", { variant: "ReadFile", target_file: "/w/a" }), g("read", { variant: "ReadFile", target_file: "/dev/zero" }),
+    g("read", { variant: "ReadFile", target_file: "/w/../../proc/self/environ" }), g("read", { variant: "ReadFile", file_path: "/w/a" }),
+    g("other", { variant: "ListDir" }), g("other", { variant: "ListDir", target_directory: 7 }), g("search", { variant: "Grep", pattern: "x", path: "/proc" }),
+    permissionGate("grok", { toolCall: { kind: "read", rawInput: { variant: "ReadFile", target_file: "/w/a" }, locations: [{ path: "/sys/kernel" }] } }, "g")]) {
+    assert.deepEqual(q(r), asks, JSON.stringify(r.input));
+  }
+  // A lower-case name is not a tool name: it could read as a kind (grok_read).
+  assert.equal(g("fetch", { variant: "read" }).tool, "grok_fetch");
   // Any other tool is a kind of its own: allowing it never covers another.
   const todo = g("other", { variant: "TodoWrite", todos: [] });
   assert.equal(todo.tool, "grok_TodoWrite");
@@ -500,6 +509,9 @@ test("acp: token use counts from xAI's channel, the old one or the prompt's tota
   assert.deepEqual(await usage("old-channel"), once);
   assert.deepEqual(await usage("twice"), once, "the same turn on two channels, and again without its session, counts once");
   assert.deepEqual(await usage("meta-only"), { totalTokens: 300, inputTokens: 250, outputTokens: 50, complete: true });
+  assert.deepEqual(await usage("xai-only"), once, "xAI's channel alone, with no session and no totals in the answer, is read");
+  assert.deepEqual(await usage("split"), { totalTokens: 350, inputTokens: 305, outputTokens: 45, complete: true },
+    "two different reports for one prompt both count, and outweigh smaller totals in the answer");
   // Words come in pieces: each message reaches the hooks whole, before the step that follows it.
   const d = direct("", [{ kind: "execute", title: "ls", say: ["Let me ", "look", "."], rawInput: { command: "ls" } }], async () => "allow");
   const order: string[] = [];

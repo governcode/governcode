@@ -243,9 +243,11 @@ workflows, no memory, no Claude, Cursor or Codex compatibility, no updater, no `
 trust on. In that home the run may write only where Grok keeps its sessions, logs and a few startup
 files: its config and its login are read-only to it. A run has two hours; then it is ended.
 GovernCode judges each request Grok makes: reading a file, searching and listing a folder are quiet
-reads, like a plain `cat` or `ls` (the sandbox bounds what they can read); commands get the same
-checks as any other command; file changes show the request as Grok sent it; and any other call is
-a step named after Grok's own tool (a call Grok does not name always asks). GovernCode answers
+reads, like a plain `cat` or `ls` (the sandbox bounds what they can read; one that reaches `/dev`,
+`/proc` and the like always asks, as `cat` would); commands get the same checks as any other
+command; file changes show the request as Grok sent it; and any other call is a step named after
+Grok's own tool, or after its kind when Grok gives no name (a catch-all call with no name always
+asks). GovernCode answers
 "allow once" or rejects; it never picks "allow always", so every call asks again. Its Limit comes
 from Grok's own usage report (the credits used this period, the same figure Grok's `/usage`
 shows, and when the period ends), so Grok is a measured Runner like Codex; each run's token use
