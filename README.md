@@ -39,11 +39,13 @@ releases, tagged `vX.Y.Z`). The first Motion is
 ```sh
 sha256sum -c SHA256SUMS
 tar xzf governcode-0.1.0-motion.8-linux-x86_64.tar.gz
-cd governcode-0.1.0-motion.8-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
-govd &
+cd governcode-0.1.0-motion.8-linux-x86_64 && ./install.sh --service   # everything under ~/.local, no root; govd starts at login
 gov connect claude   # sign Claude Code in for GovernCode (once); gov connect codex too, for the demo's Runner steps
 gov demo
+governcode-dashboard # the desktop app (also "GovernCode Dashboard" in your app launcher)
 ```
+
+Without `--service`, start govd yourself when you want it: `govd &`, or `gov daemon start`.
 
 To remove it: `./install.sh --uninstall` takes out the service, the commands, the launcher entry
 and every release it installed, and keeps your settings and Trace; add `--purge` to remove those
@@ -106,6 +108,7 @@ gov allows         # the standing allows you remembered for projects (revocable)
 gov trace          # what happened (gov trace --jsonl to export it)
 gov turns          # Checkpoints of the Controller's turns that changed files
 gov undo T-12      # put those files back, if you have not changed them since
+gov status         # govd's version and sandbox; gov projects and gov settings list the rest
 ```
 
 A Gate waits for your answer: in `gov ask`, from another terminal, or in the Dashboard. In
@@ -179,6 +182,12 @@ commit between Specs. Other new files you have not committed come in only if the
 names them (the Spec says which stayed out); files git ignores, and new files that look like
 secrets (`.env`, keys) or hold a private key, never do.
 
+An honest limit that applies to every Runner: a Runner can read its own login (the sign-in it
+works with, in its run's home) inside the sandbox, and reading is a quiet step, so no Gate asks
+first. Like any text, a Runner could repeat it in its words or write it into its changes, where
+you would see it in the diff. Keeping the login out of the Runner's own reach is planned together
+with GovernCode's secrets storage.
+
 A **budget** is optional, for any cloud Runner: a cap per window (`5-hour`, `daily`, `weekly`,
 `monthly`) in tokens where the Runner reports them, turns otherwise. It is counted by GovernCode
 only: GovernCode sees what its own Runners use, not your own sessions or other apps, so set it
@@ -226,8 +235,8 @@ Antigravity's own usage report (weekly and 5-hour windows).
 Honest limits, for now:
 - It runs **Gemini models only** (or Antigravity's default): its Limit reads Antigravity's Gemini
   pool, and Claude or GPT models through Antigravity draw on another pool it does not watch yet.
-- The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
-  and the sandbox limits where it can write, not which HTTPS sites it can reach.
+- The Runner can read its own login inside the sandbox, as every Runner can (see Delegation), and
+  the sandbox limits where it can write, not which HTTPS sites it can reach.
 - `gov disconnect agy` deletes GovernCode's copy of the login. Revoking Antigravity's access in
   your Google account ends every Antigravity sign-in, your own included.
 - A project that contains Antigravity customization folders (`.agents/`, `.agent/`, `_agents/`,
@@ -269,8 +278,8 @@ is counted as well. A Spec's Runner runs Grok's default model, or the Grok model
 names, with the reasoning effort it asks for.
 
 Honest limits, for now:
-- The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
-  and the sandbox limits where it can write, not which HTTPS sites it can reach.
+- The Runner can read its own login inside the sandbox, as every Runner can (see Delegation), and
+  the sandbox limits where it can write, not which HTTPS sites it can reach.
 - A project that contains settings Grok would read (`.grok/`, `.agents/` (its skill and command
   folder, which other tools use too), `.claude/settings.json` or `settings.local.json`,
   `.mcp.json`, `.cursor/hooks.json`, `AGENTS.md`, `CLAUDE.md` and their variants, anywhere in the
@@ -327,8 +336,8 @@ delegate tool.
 ### The Dashboard (desktop app, early)
 
 ```sh
-npm run build -w apps/dashboard
-npm start -w apps/dashboard
+governcode-dashboard                                           # from a release
+npm run build -w apps/dashboard && npm start -w apps/dashboard  # from a checkout
 ```
 
 It talks to the same `govd`: chat with the Controller and answer Gates inline, review
@@ -377,7 +386,7 @@ should work for as many people as want it, and three platforms find more bugs th
 | Spec | One delegated job: brief, acceptance, scope, budget, workspace, model and effort |
 | Limit | The usage reserve a provider must keep; unknown usage means held |
 | Gate | An approval request |
-| Checkpoint | A git snapshot before and after a Spec, for diff and undo |
+| Checkpoint | A snapshot of files before and after a Controller turn (for undo) or a Spec (for its diff) |
 | Trace | The append-only history |
 | Dashboard / Pager | The desktop app / the phone app |
 | Modules / Registry | Plugins / where they are published |
