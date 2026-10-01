@@ -108,12 +108,14 @@ gov turns          # Checkpoints of the Controller's turns that changed files
 gov undo T-12      # put those files back, if you have not changed them since
 ```
 
-A Gate waits for your answer: in `gov ask`, from another terminal, or in the Dashboard; `gov ask`
-says when one was answered elsewhere. With no input to read (run from a script, or stdin closed),
-`gov ask` answers nothing itself. It says where to answer and keeps waiting:
-`gov gate G-N allow|deny [--turn|--spec|--project]` for a Gate,
+A Gate waits for your answer: in `gov ask`, from another terminal, or in the Dashboard. In
+`gov ask` a line counts only for the question on screen: one typed (or piped) before it was shown,
+or in its first second, is ignored, so an answer never lands on a question you did not see. With
+stdin closed (e.g. `< /dev/null`), `gov ask` answers nothing itself; it says where to answer and
+keeps waiting: `gov gate G-N allow|deny [--turn|--spec|--project]` for a Gate,
 `gov plan GP-N approve [1,3]|just-you|reject` for a game plan, and
-`gov proposal P-N create|cancel` for a proposed project.
+`gov proposal P-N create|cancel` for a proposed project. A question answered elsewhere leaves
+`gov ask` with a line saying so.
 
 How often Gates ask is your choice: **Relaxed**, **Balanced** (the default) or **Strict**
 (`gov level`, or Settings in the Dashboard). At a Gate you can allow one step, or **allow that

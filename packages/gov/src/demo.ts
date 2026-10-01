@@ -50,7 +50,10 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
   say(dim("\"t\" and \"p\" only skip the question for that kind of step. They never widen the sandbox, and"));
   say(dim("every step is still recorded. Deleting, networking, changing the git repository, installing packages and"));
   say(dim("handing work to a paid AI always ask. How often the rest asks is yours to set: gov level relaxed|balanced|strict."));
-  if ((await o.tty.next("\nReady? [Y/n] "))?.trim().toLowerCase().startsWith("n")) return 0;
+  const ready = await o.tty.next("\nReady? [Y/n] ");
+  // No input here: nobody to answer its Gates, so no paid turn is started.
+  if (ready === null) { say(dim("no input here: gov demo needs you at the terminal; run it again there.")); return 1; }
+  if (ready.trim().toLowerCase().startsWith("n")) return 0;
 
   step(1, "a sample project");
   mkdirSync(path, { recursive: true });
