@@ -340,7 +340,8 @@ export class Daemon {
         return { server: "govd", version: this.opts.version, protocol: PROTOCOL, features: FEATURES,
           sandbox: { ok: this.sandboxOk, reason: this.sandboxReason } };
       case "project.list":
-        return { projects: L.projects() };
+        // home: the Controller a turn at Home would use now, so a client asks about the right tool.
+        return { projects: L.projects(), home: { controller: this.homeController() } };
       case "project.new": {
         this.nameFree(p.name);
         const path = this.newProjectPath(p.name, p.path);

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { COUNTED_LABEL, COUNTED_WINDOWS, setBudget, type CountedWindow } from "@governcode/protocol";
+import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
@@ -19,6 +19,8 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+
 function open(): Promise<{ call(method: string, params?: unknown): Promise<any>; onEvent(f: (e: any) => void): void; sock: Socket }> {
   return new Promise((ok, fail) => {
     const sock = connect(socketPath);
@@ -26,7 +28,7 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
     const waiting = new Map<number, (r: Reply) => void>();
     let listener: (e: any) => void = () => {};
     sock.once("error", () => fail(new Error(host ? `no tunnel to ${host} (no socket at ${socketPath}). Open one with: gov tunnel ${host}`
-      : `govd is not running (no socket at ${socketPath}). Start it with: npm run govd`)));
+      : `govd is not running (no socket at ${socketPath}). Start it with: gov daemon start (or run govd in another terminal)`)));
     const lines = createInterface({ input: sock });
     lines.on("error", () => {});   // the socket's own error handler reports it
     lines.on("line", (line) => {
@@ -47,35 +49,43 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
   });
 }
 
-/** Answers typed (or piped) by the user, one line each; end of input means "no". */
-function answers(): { next(prompt: string): Promise<string>; close(): void } {
+/** Answers typed (or piped) by the user, one line each. null: no answer, so none is sent. Either
+ *  nobody can answer here (end of input), or the question was withdrawn (answered elsewhere). */
+function answers(): { next(prompt: string, withdrawn?: AbortSignal): Promise<string | null>; close(): void } {
   const lines: string[] = [];
-  const waiting: Array<(l: string) => void> = [];
+  const waiting: Array<(l: string | null) => void> = [];
   let ended = false;
   const rl = createInterface({ input: process.stdin });
   rl.on("line", (l) => (waiting.length ? waiting.shift()!(l) : lines.push(l)));
-  rl.on("close", () => { ended = true; while (waiting.length) waiting.shift()!(""); });
+  // A prompt still on screen gets its line ended, so what follows starts on a new one.
+  rl.on("close", () => { ended = true; if (waiting.length) process.stdout.write("\n"); while (waiting.length) waiting.shift()!(null); });
   return {
-    next: (prompt) => {
+    next: (prompt, withdrawn) => {
+      if (lines.length) { process.stdout.write(prompt); return Promise.resolve(lines.shift()!); }
+      if (ended) return Promise.resolve(null);
       process.stdout.write(prompt);
-      if (lines.length) return Promise.resolve(lines.shift()!);
-      if (ended) return Promise.resolve("");
-      return new Promise((ok) => waiting.push(ok));
+      return new Promise((ok) => {
+        waiting.push(ok);
+        withdrawn?.addEventListener("abort", () => {
+          const i = waiting.indexOf(ok);
+          if (i >= 0) { waiting.splice(i, 1); process.stdout.write("\n"); ok(null); }
+        }, { once: true });
+      });
     },
     close: () => rl.close(),
   };
 }
 
 const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (Anthropic)", codex: "Codex (OpenAI)" };
+// What gov controller sets without --model or --effort (the models the Dashboard suggests first).
+const CONTROLLER_DEFAULTS: Record<string, { model: string; effort: string }> = { "claude-code": { model: "opus", effort: "high" }, codex: { model: "gpt-5.5", effort: "medium" } };
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
 /** The first time a Controller works, ask once whether the user's own instructions come along
  *  (off by default; said plainly both ways). */
-async function askPersonal(api: Awaited<ReturnType<typeof open>>, project: string | null, tty: ReturnType<typeof answers>): Promise<void> {
+async function askPersonal(api: Awaited<ReturnType<typeof open>>, provider: "claude" | "codex", tty: ReturnType<typeof answers>): Promise<void> {
   const { settings } = await api.call("settings.get", {});
-  const { projects } = await api.call("project.list", {});
-  const provider = projects.find((p: any) => p.name === project)?.controller.provider === "codex" ? "codex" : "claude";
   if (settings.personal?.[provider] !== null) return;
   const tool = provider === "codex" ? "Codex" : "Claude Code";
   const files = provider === "codex" ? "your AGENTS.md" : "your CLAUDE.md, skills, agents, commands, plugins and hooks";
@@ -83,14 +93,34 @@ async function askPersonal(api: Awaited<ReturnType<typeof open>>, project: strin
   console.log(`  No (the default): ${tool} starts clean, from its own defaults and GovernCode's instructions only.`);
   console.log(`  Yes: it reads ${files}, as it does outside GovernCode, so what you have built up comes along.`);
   console.log(dim("  The sandbox and Gates apply the same either way. Change it later: gov personal " + provider + " on|off"));
-  const a = (await tty.next("Use your own instructions? [y/N] ")).trim().toLowerCase();
+  const a = (await tty.next("Use your own instructions? [y/N] "))?.trim().toLowerCase();
+  if (a === undefined) { console.log(dim(`no input here: off for now, and asked again next time (gov personal ${provider} on|off sets it)`)); return; }
   await api.call("settings.set", { ...settings, personal: { ...settings.personal, [provider]: a === "y" || a === "yes" } });
 }
 
 /** One Controller turn in the terminal: text streams, Gates ask (with standing-allow choices). */
 export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: string | null, prompt: string,
     tty: ReturnType<typeof answers>): Promise<{ ok: boolean; summary: string }> {
-  await askPersonal(api, project, tty);
+  // The tool this turn runs (the project's Controller, or Home's) is asked about only once it is
+  // connected; otherwise govd refuses the turn and says how to connect, and nothing is asked first.
+  const { projects, home } = await api.call("project.list", {});
+  const provider = (project ? projects.find((p: any) => p.name === project)?.controller : home?.controller)?.provider === "codex" ? "codex" : "claude";
+  const { tools } = await api.call("tools.list", {});
+  if (tools.some((t: any) => t.tool === provider && t.connected)) await askPersonal(api, provider, tty);
+  // Questions shown here and not answered yet, by id. With no input here they stay open, to be
+  // answered from another terminal (a Gate in the Dashboard too): gov never sends an answer the
+  // user did not give. One answered elsewhere is withdrawn, so the next line typed goes to the next question.
+  const open = new Map<string, AbortController>();
+  const question = async (id: string, prompt: string, elsewhere: string): Promise<string | undefined> => {
+    const withdraw = new AbortController();
+    open.set(id, withdraw);
+    const a = await tty.next(prompt, withdraw.signal);
+    if (a !== null) open.delete(id);
+    else if (open.has(id)) console.log(dim(`no input here: answer from another terminal with ${elsewhere}`));
+    return a?.trim().toLowerCase();
+  };
+  const failed = (id: string) => (e: Error) => console.log(dim(`${id}: ${e.message}`));
+  const PLAN_ANSWERS: Record<string, string> = { approve: "approved", "just-you": "answered just you", reject: "rejected" };
   api.onEvent(async (ev) => {
     if (ev.kind === "text") process.stdout.write(ev.text + "\n");
     else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
@@ -109,10 +139,11 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
         " That only skips this question; the sandbox still applies to every step."));
       if (ev.suggest) console.log(dim(`  Suggested: [${keys[ev.suggest]}], so this kind of step stops asking in this ${ev.suggest}.`));
       const choices = ["y", ...scopes.map((s) => keys[s])].join("/");
-      const a = (await tty.next(`Allow? [${choices}/N] `)).trim().toLowerCase();
+      const a = await question(ev.id, `Allow? [${choices}/N] `, `gov gate ${ev.id} allow|deny`);
+      if (a === undefined) return;
       if (!a) console.log("");
       const remember = scopes.find((s) => keys[s] === a);
-      await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" || remember ? "allow" : "deny", ...(remember ? { remember } : {}) });
+      await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" || remember ? "allow" : "deny", ...(remember ? { remember } : {}) }).catch(failed(ev.id));
     } else if (ev.kind === "allowed") {
       console.log(dim(`· allowed without asking: ${ev.why} (the sandbox still applies)`));
     } else if (ev.kind === "plan") {
@@ -120,18 +151,32 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
       ev.items.forEach((it: any, i: number) => console.log(`  ${i + 1}. ${it.who === "me" ? "Controller" : it.who}: ${it.what}${it.scope?.length ? dim(` (${it.scope.join(", ")})`) : ""}`));
       if (ev.note) console.log(dim(`  ${ev.note}`));
       console.log(dim(ev.handoff === "plan" ? "  Each approved handoff runs once without asking again; anything else still asks." : "  Handoffs still ask at a Gate (Crew card: ask each time)."));
-      const a = (await tty.next("Approve? [y = all / 1,3 = only those / j = just you / N] ")).trim().toLowerCase();
+      const a = await question(ev.id, "Approve? [y = all / 1,3 = only those / j = just you / N] ", `gov plan ${ev.id} approve [1,3]|just-you|reject`);
+      if (a === undefined) return;
       const nums = /^\d+(\s*,\s*\d+)*$/.test(a) ? a.split(",").map((x) => Number(x.trim())) : null;
-      await api.call("plan.answer", { id: ev.id, ...(a === "y" || a === "yes" ? { answer: "approve" } : nums ? { answer: "approve", items: nums } : a === "j" ? { answer: "just-you" } : { answer: "reject" }) });
+      await api.call("plan.answer", { id: ev.id, ...(a === "y" || a === "yes" ? { answer: "approve" } : nums ? { answer: "approve", items: nums } : a === "j" ? { answer: "just-you" } : { answer: "reject" }) })
+        .catch(failed(ev.id));
     } else if (ev.kind === "proposal") {
       console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
       if (ev.reason) console.log(dim(ev.reason));
-      const a = (await tty.next("Create it? [y/N] ")).trim().toLowerCase();
-      const r = await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" });
-      console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created"));
+      const a = await question(ev.id, "Create it? [y/N] ", `gov proposal ${ev.id} create|cancel`);
+      if (a === undefined) return;
+      await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" })
+        .then((r) => console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created")), failed(ev.id));
+    } else if (ev.kind === "trace" && (ev.event.kind === "gate.allowed" || ev.event.kind === "gate.denied" || ev.event.kind === "plan.answered")) {
+      // A question shown here was answered elsewhere (another terminal, the Dashboard) or ended with the turn.
+      const e = ev.event, id = e.data.gate ?? e.data.plan;
+      if (!open.has(id)) return;
+      const w = open.get(id)!;
+      open.delete(id);
+      w.abort();
+      const what = e.kind === "gate.allowed" ? "allowed" : e.kind === "gate.denied" ? "denied" : PLAN_ANSWERS[e.data.answer] ?? e.data.answer;
+      console.log(dim(`${id}: ${what} ${e.data.by === "user" ? "from elsewhere" : `(${e.data.by})`}`));
     }
   });
-  return await api.call("ask", { project, prompt });
+  // Every Trace event from here on, for the answers given elsewhere (an older govd: none are seen).
+  await api.call("watch", {}).catch(() => {});
+  try { return await api.call("ask", { project, prompt }); } finally { open.clear(); }
 }
 
 async function currentProject(api: Awaited<ReturnType<typeof open>>): Promise<string | null> {
@@ -148,6 +193,7 @@ async function main(argv: string[]): Promise<number> {
     argv = argv.slice(2);
   }
   const [cmd, ...rest] = argv;
+  if (cmd === "help" || cmd === "--help" || cmd === "-h") { console.log(USAGE); return 0; }
   if (cmd === "daemon") return daemon(rest[0]);
   if (cmd === "socket-path") { console.log(socketPath); return 0; }
   if (cmd === "tunnel") {
@@ -192,10 +238,14 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "controller": {
+        // Checked before anything is asked or recorded. "claude" is the name connect and personal use.
+        const provider = rest[0] === "claude" ? "claude-code" : rest[0];
+        const flag = (f: string) => { const i = rest.indexOf(f); return i >= 0 ? rest[i + 1] ?? "" : undefined; };
+        const d = provider && Object.hasOwn(CONTROLLER_DEFAULTS, provider) ? CONTROLLER_DEFAULTS[provider] : null;
+        const model = flag("--model") ?? d?.model, effort = flag("--effort") ?? d?.effort;
+        if (!d || !model || !Effort.safeParse(effort).success) throw new Error("usage: gov controller claude-code|codex [--model M] [--effort low|medium|high|max]");
         const project = await currentProject(api);
         if (!project) throw new Error("run this inside a project folder");
-        const m = rest.indexOf("--model"), e = rest.indexOf("--effort");
-        const provider = rest[0] ?? "claude-code";
         // Project memory goes to another provider only if the user says so, once per project.
         const ctx = await api.call("context.state", { project });
         if (ctx.providers.some((x: string) => x !== provider) && ctx.shared[provider] === undefined) {
@@ -204,13 +254,13 @@ async function main(argv: string[]): Promise<number> {
           console.log(warn(`\n${who} will see this project's conversation, its record (${ctx.specs} Specs, ${ctx.checkpoints} Checkpoints) and its notes${ctx.notes ? ":" : " (none yet)."}`));
           if (ctx.notes) console.log(dim(ctx.notes.split("\n").slice(0, 8).map((l: string) => "  " + l).join("\n") + (ctx.notes.split("\n").length > 8 ? "\n  …" : "")));
           console.log(dim("  Yes: it picks up where the last Controller left off. No: it starts fresh here, with only its own turns."));
-          const a = (await tty.next("Share this project's context with it? [y/N] ")).trim().toLowerCase();
+          const a = (await tty.next("Share this project's context with it? [y/N] "))?.trim().toLowerCase();
           tty.close();
-          await api.call("context.share", { project, provider, share: a === "y" || a === "yes" });
+          if (a === undefined) console.log(dim("no input here: nothing is shared, so it starts fresh; run gov controller again in a terminal to choose"));
+          else await api.call("context.share", { project, provider, share: a === "y" || a === "yes" });
         }
-        await api.call("controller.set", { project, controller: { provider,
-          model: m >= 0 ? rest[m + 1] : "opus", effort: e >= 0 ? rest[e + 1] : "high" } });
-        console.log(`Controller for ${project}: ${rest[0] ?? "claude-code"}`);
+        await api.call("controller.set", { project, controller: { provider, model, effort } });
+        console.log(`Controller for ${project}: ${provider} · ${model} · ${effort}`);
         return 0;
       }
       case "crew": {
@@ -289,6 +339,24 @@ async function main(argv: string[]): Promise<number> {
         if (!id || (answer !== "allow" && answer !== "deny") || (flag && !remember)) throw new Error("usage: gov gate G-N allow|deny [--turn|--spec|--project]");
         await api.call("gate.answer", { id, answer, ...(remember ? { remember } : {}) });
         console.log(`${id}: ${answer === "deny" ? "denied" : remember ? `allowed, and this kind of step for the rest of this ${remember} (the sandbox still applies)` : "allowed once"}`);
+        return 0;
+      }
+      case "plan": {
+        // gov plan GP-N approve [1,3]|just-you|reject: a game plan gov ask could not ask about.
+        const [id, answer, items] = rest;
+        if (!id || !["approve", "just-you", "reject"].includes(answer) || (items !== undefined && (answer !== "approve" || !/^\d+(,\d+)*$/.test(items)))) {
+          throw new Error("usage: gov plan GP-N approve [1,3]|just-you|reject");
+        }
+        await api.call("plan.answer", { id, answer, ...(items ? { items: items.split(",").map(Number) } : {}) });
+        console.log(`${id}: ${answer === "approve" ? `approved${items ? ` (items ${items})` : ""}` : answer === "just-you" ? "just you (the Controller does it all itself this turn)" : "rejected"}`);
+        return 0;
+      }
+      case "proposal": {
+        // gov proposal P-N create|cancel: a Home Controller's proposal gov ask could not ask about.
+        const [id, answer] = rest;
+        if (!id || (answer !== "create" && answer !== "cancel")) throw new Error("usage: gov proposal P-N create|cancel");
+        const r = await api.call("proposal.answer", { id, answer });
+        console.log(r.created ? `created ${r.created.name} at ${r.created.path}` : `${id}: not created`);
         return 0;
       }
       case "allows": {
@@ -431,7 +499,7 @@ async function main(argv: string[]): Promise<number> {
           } else if (ev.url) {
             console.log(warn("\nOpen this link and sign in:"));
             console.log(ev.url);
-            const code = (await tty.next("\nPaste the code it gives you here: ")).trim();
+            const code = (await tty.next("\nPaste the code it gives you here: "))?.trim();
             if (code) await api.call("connect.input", { id, text: code });
             else await api.call("connect.cancel", { id });
           } else if (ev.text) console.log(dim(ev.text));
@@ -444,7 +512,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "disconnect": {
         const tool = rest[0];
-        if (!["agy", "claude", "codex"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex");
+        if (!["agy", "claude", "codex", "grok"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex|grok");
         console.log((await api.call("tools.disconnect", { tool })).note);
         return 0;
       }
@@ -532,7 +600,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path]");
+        console.error(USAGE);
         return 2;
     }
   } finally {

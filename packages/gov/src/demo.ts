@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 type Api = { call(method: string, params: unknown): Promise<any> };
-type Tty = { next(prompt: string): Promise<string>; close(): void };
+type Tty = { next(prompt: string): Promise<string | null>; close(): void };   // null: no answer here
 type Opts = { path?: string; tty: Tty; runAsk(api: any, project: string | null, prompt: string, tty: Tty): Promise<{ ok: boolean; summary: string }>;
   dim(s: string): string; warn(s: string): string };
 
@@ -30,6 +30,10 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
     say("That is on purpose: it fails closed. Run ./target/release/govern-sup selftest to see what is missing.");
     return 1;
   }
+  // Checked before anything is made: the demo's Controller is Claude Code; Codex is optional.
+  const tools = (await api.call("tools.list", {})).tools as Array<{ tool: string; connected: boolean }>;
+  const connected = (tool: string) => tools.some((t) => t.tool === tool && t.connected);
+  if (!connected("claude")) { say("Claude Code is not connected for GovernCode yet. Run gov connect claude, then gov demo again."); return 1; }
   const path = resolve(o.path ?? join(homedir(), "governcode-demo"));
   if (existsSync(path)) { say(`${path} already exists. Remove it, or pass another folder: gov demo --path DIR`); return 2; }
 
@@ -46,7 +50,7 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
   say(dim("\"t\" and \"p\" only skip the question for that kind of step. They never widen the sandbox, and"));
   say(dim("every step is still recorded. Deleting, networking, changing the git repository, installing packages and"));
   say(dim("handing work to a paid AI always ask. How often the rest asks is yours to set: gov level relaxed|balanced|strict."));
-  if ((await o.tty.next("\nReady? [Y/n] ")).trim().toLowerCase().startsWith("n")) return 0;
+  if ((await o.tty.next("\nReady? [Y/n] "))?.trim().toLowerCase().startsWith("n")) return 0;
 
   step(1, "a sample project");
   mkdirSync(path, { recursive: true });
@@ -70,13 +74,18 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
   say(dim(first.ok ? "— done" : `— the turn ended: ${first.summary}`));
 
   step(3, "handing a job to a Runner");
-  const runners = (await api.call("limits.list", { measure: true })).providers as Array<{ provider: string; verdict: { ok: boolean; reason?: string } }>;
+  const runners = connected("codex") ? (await api.call("limits.list", { measure: true })).providers as Array<{ provider: string; verdict: { ok: boolean; reason?: string } }> : [];
   const codex = runners.find((r) => r.provider === "codex");
   let reviewed = false;
-  if (!codex?.verdict.ok) {
+  if (!connected("codex")) {
+    say("Skipped: Codex is not connected for GovernCode (gov connect codex, then run the demo again).");
+  } else if (!codex?.verdict.ok) {
     say(`Skipped: ${codex ? `Codex is held (${codex.verdict.reason}).` : "no Runner is set up (install and log in to Codex to try this)."}`);
-    say(dim("A held Runner is the Limit working: GovernCode starts no job that would reach into the reserve you"));
-    say(dim("keep. Usage reports lag a little, so a job already running can overshoot slightly; it is stopped when seen."));
+    // Only a Limit or budget hold is the Limit working; a Runner held without a reading says why above.
+    if (codex?.verdict.reason?.startsWith("inside its ")) {
+      say(dim("A held Runner is the Limit working: GovernCode starts no job that would reach into the reserve you"));
+      say(dim("keep. Usage reports lag a little, so a job already running can overshoot slightly; it is stopped when seen."));
+    }
   } else {
     say("The Controller hands one small job to Codex. Codex works in its own copy of the project, in its");
     say("own sandbox, and can only write the files the job allows. Nothing reaches your folder until you accept.");
@@ -95,8 +104,10 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
         say("The Runner changed nothing, so there is nothing to review. (Discarded.)");
       } else {
         say(diff);
-        const yes = (await o.tty.next(`Accept ${spec.id} into the project? [y/N] `)).trim().toLowerCase().startsWith("y");
-        if (yes) {
+        const a = (await o.tty.next(`Accept ${spec.id} into the project? [y/N] `))?.trim().toLowerCase();
+        if (a === undefined) {
+          say(dim(`no input here: ${spec.id} waits for your review (gov accept ${spec.id} or gov discard ${spec.id})`));
+        } else if (a.startsWith("y")) {
           const r = await api.call("spec.accept", { id: spec.id });
           say(`Applied ${r.applied.length} file(s). ${dim("It is a plain change in your folder now; git sees it too.")}`);
         } else {
