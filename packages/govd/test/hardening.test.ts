@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, symlin
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { gitGuard } from "../src/gitguard.ts";
-import { toolEnv, claudePolicy, toolchainDirs } from "../src/claude.ts";
+import { toolEnv, claudePolicy, toolchainDirs, claudeRunHome } from "../src/claude.ts";
 import { codexPolicy } from "../src/codex.ts";
 import { Daemon } from "../src/daemon.ts";
 import { scratch, markConnected } from "./scratch.ts";
@@ -249,4 +249,25 @@ test("tool homes: a run that chmods what it shares, or its own folders, cannot b
   assert.equal(statSync(join(home, "bin", "helper")).mode & 0o777, 0o755, "the helper is readable and runnable again");
   assert.equal(readFileSync(join(b.home, "token"), "utf8"), "login");
   b.finish();
+});
+
+test("a Claude turn's home links the user's ~/.claude for their hooks, and removing it never touches the user's files", () => {
+  const user = scratch("gc-user-claude-");
+  mkdirSync(join(user, "hooks"));
+  writeFileSync(join(user, "CLAUDE.md"), "mine\n");
+  writeFileSync(join(user, "hooks", "check.sh"), "#!/bin/sh\n");
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = user;
+  try {
+    const rh = claudeRunHome(scratch("gc-state-home-"), true);
+    assert.ok(lstatSync(join(rh.home, ".claude")).isSymbolicLink());
+    assert.ok(existsSync(join(rh.home, ".claude", "hooks", "check.sh")), "~/.claude/hooks/... resolves as before");
+    rh.finish();
+    assert.ok(!existsSync(rh.home), "the run's home is gone");
+    assert.equal(readFileSync(join(user, "CLAUDE.md"), "utf8"), "mine\n", "the user's own files are untouched");
+    assert.ok(existsSync(join(user, "hooks", "check.sh")));
+    const plain = claudeRunHome(scratch("gc-state-home-"), false);
+    assert.ok(!existsSync(join(plain.home, ".claude")), "without personal instructions there is no link");
+    plain.finish();
+  } finally { if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was; }
 });

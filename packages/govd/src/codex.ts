@@ -103,7 +103,9 @@ async function session(o: { supervisor: string; policyDir: string; stateDir: str
   // turn's socket, nothing more (as for Claude).
   const policy = o.mcp ? withMcpRead({ ...base, exec: [...base.exec, dirname(o.mcp.node)], unix_connect: [...base.unix_connect, o.mcp.socket] }, o.mcp) : base;
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
-  const rpc = start(o.supervisor, policyFile, bin, { ...toolEnv(tmp), CODEX_HOME: home }, o.worktree);
+  // HOME is the run's own home too: `bash -lc` would otherwise fail on the user's ~/.bash_profile,
+  // which the sandbox does not let it read, before every command.
+  const rpc = start(o.supervisor, policyFile, bin, { ...toolEnv(tmp), HOME: home, CODEX_HOME: home }, o.worktree);
   // The run's home goes only once Codex has exited (a login refresh must not be cut off), whether
   // the session ends normally or Codex never got as far as answering.
   void rpc.exited.then(() => rh.finish());
