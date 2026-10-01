@@ -205,7 +205,7 @@ export class Daemon {
   private newProjectPath(name: string, raw: string): string {
     if (this.ledger.project(name)) throw new RpcError(Errors.refused, `a project named ${name} already exists`);
     const path = resolve(raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw);
-    if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists; use project.open`);
+    if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists: open it as a project instead (gov open PATH)`);
     this.checkProjectPath(path);
     this.checkProjectPath(realAncestor(path));   // a symlinked parent must not smuggle in a denied folder
     return path;
