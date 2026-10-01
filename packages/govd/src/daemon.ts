@@ -481,7 +481,7 @@ export class Daemon {
       case "spec.discard": {
         const s = this.specOr404(p.id);
         discard(this.stateDir(), s.id);
-        if (s.status === "needs-review" || s.status === "failed") L.updateSpec(s.id, { status: "undone", note: "discarded by the user" }, "user");
+        if (s.status === "needs-review" || s.status === "failed") L.updateSpec(s.id, { status: "discarded", note: "discarded by the user" }, "user");
         return { id: s.id, discarded: true };
       }
       case "gate.list":

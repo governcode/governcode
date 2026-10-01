@@ -9,6 +9,9 @@ export type Project = { name: string; path: string; created: string; controller:
 
 const DEFAULT_CONTROLLER: ControllerChoice = { provider: "claude-code", model: "opus", effort: "high" };
 
+// A discarded Spec was stored as "undone" before 0.1.0-motion.9: read as what it is.
+const specOf = (body: string): Spec => { const s = JSON.parse(body); return s.status === "undone" ? { ...s, status: "discarded" } : s; };
+
 export class Ledger {
   private db: DatabaseSync;
   private listeners = new Set<(e: TraceEvent) => void>();
@@ -142,7 +145,7 @@ export class Ledger {
 
   updateSpec(id: string, change: Partial<Pick<Spec, "status" | "checkpoints" | "files" | "note">>, actor: string): Spec {
     const kinds: Partial<Record<SpecStatus, TraceEvent["kind"]>> = { held: "spec.held", running: "spec.started",
-      "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", undone: "spec.undone" };
+      "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", discarded: "spec.discarded" };
     return this.tx(() => {
       const spec = this.spec(id);
       if (!spec) throw new Error(`no spec ${id}`);
@@ -156,13 +159,13 @@ export class Ledger {
 
   spec(id: string): Spec | undefined {
     const row = this.db.prepare("SELECT body FROM specs WHERE id = ?").get(id) as { body: string } | undefined;
-    return row ? JSON.parse(row.body) : undefined;
+    return row ? specOf(row.body) : undefined;
   }
 
   specs(project?: string): Spec[] {
     const rows = (project ? this.db.prepare("SELECT body FROM specs WHERE project = ? ORDER BY id").all(project)
                           : this.db.prepare("SELECT body FROM specs ORDER BY id").all()) as Array<{ body: string }>;
-    return rows.map((r) => JSON.parse(r.body));
+    return rows.map((r) => specOf(r.body));
   }
 
   close(): void {

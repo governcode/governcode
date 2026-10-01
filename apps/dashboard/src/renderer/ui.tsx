@@ -7,7 +7,7 @@ export function Pill({ tone, children, title }: { tone: "ok" | "warn" | "danger"
   return <span className={`pill pill-${tone}`} title={title}>{children}</span>;
 }
 
-const SPEC_TONE = { queued: "info", held: "warn", running: "accent", "needs-review": "warn", accepted: "ok", undone: "dim", failed: "danger" } as const;
+const SPEC_TONE = { queued: "info", held: "warn", running: "accent", "needs-review": "warn", accepted: "ok", discarded: "dim", failed: "danger" } as const;
 export function SpecPill({ status }: { status: keyof typeof SPEC_TONE }) {
   return <Pill tone={SPEC_TONE[status] ?? "dim"}>{status}</Pill>;
 }

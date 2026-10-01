@@ -119,7 +119,7 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
         throw new Error("the user declined discarding it");
       }
       discard(ctx.stateDir, s.id);
-      ctx.ledger.updateSpec(s.id, { status: "undone", note: "discarded by the Controller" }, "controller");
+      ctx.ledger.updateSpec(s.id, { status: "discarded", note: "discarded by the Controller" }, "controller");
       return { id: s.id, discarded: true };
     }
     if (method === "controller.project_notes") {

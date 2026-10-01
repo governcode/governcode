@@ -37,7 +37,7 @@ export const SpecInput = z.object({
   reason: z.string().min(1).max(2_000),                  // why this Runner, shown to the user
 });
 export type SpecInput = z.infer<typeof SpecInput>;
-export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "undone" | "failed";
+export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "discarded" | "failed";
 export type Spec = SpecInput & { id: string; project: string; status: SpecStatus; created: string;
   checkpoints: { before: string | null; after: string | null }; files: string[]; note?: string };
 
@@ -195,7 +195,7 @@ export type TraceEvent = {
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
-    | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.undone"
+    | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.discarded" | "spec.undone"
     | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared" | "crew.set" | "plan.proposed" | "plan.answered" | "spec.step";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;

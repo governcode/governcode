@@ -227,7 +227,7 @@ test("the Controller can discard its own Spec, but not one that was accepted", a
   assert.equal(r.result.status, "needs-review");
   const d = await t.call("controller.spec_discard", { id: r.result.id });
   assert.equal(d.result.discarded, true);
-  assert.equal(t.ledger.spec(r.result.id)!.status, "undone");
+  assert.equal(t.ledger.spec(r.result.id)!.status, "discarded");
   const again = await t.call("controller.spec_discard", { id: r.result.id });
   assert.match(again.error.message, /only a Spec waiting for review, failed or held/);
 });
