@@ -1,4 +1,7 @@
 #!/bin/sh
 # GovernCode Dashboard: a thin desktop client of govd (release layout).
 here=$(dirname "$(readlink -f "$0")")
+# Started from a terminal inside another Electron app (an editor, T3 Code), this can be inherited
+# and would run Electron as plain Node, which cannot open a window.
+unset ELECTRON_RUN_AS_NODE
 exec "$here/../node_modules/electron/dist/electron" "$here/../apps/dashboard" "$@"

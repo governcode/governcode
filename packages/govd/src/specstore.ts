@@ -4,8 +4,8 @@
 // call here uses a git directory govd created, plumbing that never runs filters, hooks or
 // external diff drivers, and a config that turns off anything that could run a program.
 import { execFileSync } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync,
-  renameSync, rmSync, unlinkSync, mkdtempSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync,
+  readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, mkdtempSync, writeSync } from "node:fs";
 import { join, relative, resolve, sep, dirname, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -31,15 +31,170 @@ export function specPaths(stateDir: string, specId: string): SpecPaths {
   return { root, work: join(root, "work"), gitDir: join(root, "git") };
 }
 
-/** Make the Runner's workspace: the project's committed HEAD, exported without filters. */
-export function createWorkspace(projectPath: string, p: SpecPaths): void {
+// A new file that looks like a secret never reaches a Runner's copy (its provider sees the copy),
+// whatever the rules below allow; nor does one holding a private key, whatever its name.
+const SECRET_FILE = /(^|\/)(\.env.*|.*\.env|\.netrc|\.npmrc|\.pypirc|\.pgpass|\.htpasswd|\.git-credentials|credentials(\.json)?|secrets?\.(ya?ml|json)|kubeconfig(\.ya?ml)?|.*(service.?account|client_secret).*\.json|id_(rsa|dsa|ecdsa|ed25519)\w*|.*\.(pem|key|p8|p12|pfx|jks|keystore|ppk|kdbx|tfvars|tfvars\.json|tfstate(\.backup)?))$|(^|\/)\.(ssh|aws|kube|docker|gnupg|terraform)\//i;
+const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+
+/**
+ * Make the Runner's workspace from the project as the user has it now, so a Spec builds on what
+ * they see: every file in the last commit, with the user's uncommitted edits (a file git is told
+ * to skip or assume unchanged, which often holds local settings, as committed). A new file, one
+ * not in the last commit (untracked and not ignored, or only staged), comes in only if `keepNew`
+ * says so, never one that looks like a secret or holds a private key, and never one larger than
+ * a snapshot takes. Read without following any link (see copyIn); a file that cannot be read that
+ * way is skipped. Returns the new files left out and the files skipped. A project over
+ * MAX_COPY_BYTES or MAX_COPY_FILES is refused, never cut short. Only `ls-files`, `ls-tree` and
+ * `cat-file` run on the project, with every program-running option off and a time limit.
+ */
+export function createWorkspace(projectPath: string, p: SpecPaths, keepNew: (rel: string) => boolean = () => false): { left: string[]; skipped: string[] } {
   mkdirSync(p.work, { recursive: true, mode: 0o700 });
   chmodSync(p.root, 0o700);
   execFileSync("git", ["init", "-q", "--bare", p.gitDir], { env: { ...process.env, ...ENV }, stdio: "ignore" });
-  // `git archive` of HEAD reads objects only; tar format runs no configured program.
-  const tar = execFileSync("git", [...SAFE, "-C", projectPath, "archive", "--format=tar", "HEAD"],
-    { env: { ...process.env, ...ENV }, maxBuffer: 1024 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-  execFileSync("tar", ["-x", "--no-same-owner", "--no-same-permissions", "-C", p.work], { input: tar });
+  if (lstatSync(projectPath).isSymbolicLink()) throw new Error(`the project folder ${projectPath} is now a symlink; refused`);
+  const index = listFiles(projectPath, ["-v", "--cached"]), fresh = listFiles(projectPath, ["--others", "--exclude-standard"]);
+  if (!index || !fresh) throw new Error("git could not list the project's files");
+  const head = headEntries(projectPath);
+  const root = realpathSync(projectPath);
+  const rootFd = openSync(root, DIR);
+  const left: string[] = [], skipped: string[] = [];
+  const budget = { bytes: 0, files: 0 };
+  try {
+    const copy = (rel: string, maxSize?: number, noKeys?: boolean) => {
+      const r = rel.includes("\uFFFD") ? "skipped" : copyIn(rootFd, root, p.work, rel, budget, maxSize, noKeys);   // a name that is not UTF-8
+      if (r === "skipped") skipped.push(rel);
+      return r;
+    };
+    const addNew = (rel: string) => {
+      if (keepNew(rel) && !SECRET_FILE.test(rel) && copy(rel, MAX_SNAPSHOT_FILE, true) === "copied") return;
+      if (lstatOrNull(join(root, rel)) && !skipped.includes(rel)) left.push(rel);
+    };
+    const seen = new Set<string>();
+    for (const line of index) {
+      const tag = line[0], rel = line.slice(2);
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      const committed = head.get(rel);
+      if (!committed) addNew(rel);
+      // (one a sparse checkout leaves out is not on disk: left out here too)
+      else if (tag === "S" || tag !== tag.toUpperCase()) { if (lstatOrNull(join(root, rel)) && !fromHead(root, p.work, rel, committed, budget)) skipped.push(rel); }
+      else copy(rel);
+    }
+    for (const rel of fresh) if (!seen.has(rel)) addNew(rel);
+  } finally { closeSync(rootFd); }
+  return { left, skipped };
+}
+
+// A Spec's copy is refused above this, never cut short (git archive held at most 1 GB before).
+const MAX_COPY_BYTES = 2 * 1024 ** 3, MAX_COPY_FILES = 200_000;
+function spend(budget: { bytes: number; files: number }, bytes: number): void {
+  budget.bytes += bytes; budget.files++;
+  if (budget.bytes > MAX_COPY_BYTES || budget.files > MAX_COPY_FILES) throw new Error("the project is too large for a Spec's copy (over 2 GB or 200,000 files)");
+}
+const DIR = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NOCTTY;
+const GIT_LIMIT = { timeout: 120_000, killSignal: "SIGKILL" as const };   // a FIFO a Controller planted at .gitignore must not hang govd
+
+/** Whether the project has a commit yet. */
+export function hasCommit(projectPath: string): boolean {
+  try { execFileSync("git", [...SAFE, "-C", projectPath, "rev-parse", "--verify", "-q", "HEAD"], { env: { ...process.env, ...ENV }, stdio: "ignore", ...GIT_LIMIT }); return true; }
+  catch { return false; }
+}
+
+/** The last commit's files and their modes (none before the first commit). */
+function headEntries(projectPath: string): Map<string, string> {
+  const m = new Map<string, string>();
+  try {
+    const out = execFileSync("git", [...SAFE, "-C", projectPath, "ls-tree", "-r", "-z", "HEAD"],
+      { env: { ...process.env, ...ENV }, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"], ...GIT_LIMIT }).toString();
+    for (const rec of out.split("\0")) { const t = rec.indexOf("\t"); if (t > 0) m.set(rec.slice(t + 1), rec.slice(0, t).split(" ")[0]); }
+  } catch { /* no commit yet */ }
+  return m;
+}
+
+/** A file as the last commit has it, read from git's objects (no filter runs). False if it could not be. */
+function fromHead(projectPath: string, work: string, rel: string, mode: string, budget: { bytes: number; files: number }): boolean {
+  if (mode !== "100644" && mode !== "100755" && mode !== "120000") return true;   // a submodule: nothing to copy
+  try {
+    const dest = safeTarget(work, rel);
+    const blob = execFileSync("git", [...SAFE, "-C", projectPath, "cat-file", "blob", `HEAD:${rel}`],
+      { env: { ...process.env, ...ENV }, maxBuffer: 1024 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"], ...GIT_LIMIT });
+    spend(budget, blob.length);
+    mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+    if (mode === "120000") { symlinkSync(blob.toString(), dest); return true; }
+    const fd = openSync(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { for (let off = 0; off < blob.length;) off += writeSync(fd, blob, off, blob.length - off); fchmodSync(fd, mode === "100755" ? 0o755 : 0o644); } finally { closeSync(fd); }
+    return true;
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("the project is too large")) throw e;
+    return false;
+  }
+}
+
+/**
+ * One project file into the workspace. Never through a link: its folder is opened one folder at a
+ * time from the project's root, each step relative to the last through /proc/self/fd with
+ * O_NOFOLLOW (a folder swapped for a link meanwhile fails, it is never followed), and the file
+ * itself is opened O_NOFOLLOW, non-blocking, never as a terminal; a link is copied as a link.
+ * Only a regular file is read, at most the size it had when checked (a file still growing does
+ * not run on), and it must still be the file at that path in the real project folder. "absent":
+ * not there (deleted, or not a file or link); "skipped": there, but not safely readable or over
+ * `maxSize`, or holding a private key when `noKeys`.
+ * ponytail: Linux only (/proc); macOS needs openat through another route. This relies on Landlock's
+ * REFER rule too: a sandboxed tool cannot hard-link a file it may not read into the project.
+ */
+function copyIn(rootFd: number, root: string, work: string, rel: string, budget: { bytes: number; files: number }, maxSize = Infinity, noKeys = false): "copied" | "absent" | "skipped" {
+  const parts = rel.split("/");
+  if (parts.some((c) => c === "" || c === "." || c === "..")) return "skipped";
+  let dirFd = rootFd, fd: number | null = null;
+  try {
+    for (const name of parts.slice(0, -1)) { const next = openSync(`/proc/self/fd/${dirFd}/${name}`, DIR); if (dirFd !== rootFd) closeSync(dirFd); dirFd = next; }
+    const at = `/proc/self/fd/${dirFd}/${parts[parts.length - 1]}`;
+    const st = lstatOrNull(at);
+    if (!st || !(st.isSymbolicLink() || st.isFile())) return "absent";
+    const dest = safeTarget(work, rel);
+    if (st.isSymbolicLink()) {
+      const text = readlinkSync(at);
+      spend(budget, text.length);
+      mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+      symlinkSync(text, dest);
+      return "copied";
+    }
+    fd = openSync(at, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_NOCTTY);
+    const f = fstatSync(fd);
+    if (!f.isFile() || f.size > maxSize || readlinkSync(`/proc/self/fd/${fd}`) !== join(root, rel)) return "skipped";
+    spend(budget, f.size);
+    const buf = Buffer.allocUnsafe(1 << 20);
+    let rest = f.size, n = readSync(fd, buf, 0, Math.min(buf.length, rest), null);
+    if (noKeys && PRIVATE_KEY.test(buf.subarray(0, n).toString("latin1"))) return "skipped";
+    mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+    const out = openSync(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      for (; n > 0; rest -= n, n = rest > 0 ? readSync(fd, buf, 0, Math.min(buf.length, rest), null) : 0) for (let off = 0; off < n;) off += writeSync(out, buf, off, n - off);
+      fchmodSync(out, f.mode & 0o111 ? 0o755 : 0o644);
+    } finally { closeSync(out); }
+    return "copied";
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("the project is too large")) throw e;
+    return "skipped";
+  } finally {
+    if (fd !== null) closeSync(fd);
+    if (dirFd !== rootFd) closeSync(dirFd);
+  }
+}
+
+/** A regular file's bytes, or null: never through a link at its end, never blocking on a FIFO or
+ *  opening a terminal, and at most the size it had when opened. */
+function readRegular(path: string): Buffer | null {
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_NOCTTY); } catch { return null; }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    const buf = Buffer.alloc(st.size);
+    let got = 0;
+    for (let n; got < buf.length && (n = readSync(fd, buf, got, buf.length - got, null)) > 0;) got += n;
+    return buf.subarray(0, got);
+  } finally { closeSync(fd); }
 }
 
 /** Snapshot a directory as a commit in the spec's own git dir, hashing raw bytes (no filters). */
@@ -54,7 +209,9 @@ export function snapshot(p: SpecPaths, label: string, parent?: string | null, on
     } else if (st.isFile() && st.size <= MAX_SNAPSHOT_FILE) {
       // Regular files only (never a FIFO or device, which could block or never end), and
       // not huge ones, which would be read whole into memory.
-      const oid = git(p.gitDir, ["hash-object", "-w", "--no-filters", "--stdin"], readFileSync(full)).toString().trim();
+      const data = readRegular(full);
+      if (!data) return;
+      const oid = git(p.gitDir, ["hash-object", "-w", "--no-filters", "--stdin"], data).toString().trim();
       entries.push(`${st.mode & 0o111 ? "100755" : "100644"} ${oid}\t${rel}`);
     }
   };
@@ -94,9 +251,22 @@ function lstatExists(p: string): boolean {
  * ignore, listed by git with every program-running option off. Null if not a git project.
  */
 export function projectFiles(projectPath: string): string[] | null {
+  return listFiles(projectPath, ["--cached", "--others", "--exclude-standard"]);
+}
+
+// The user's own global ignore file, which git would read from their config (left out with the
+// rest of it here): only its path is taken, and only a regular file (a FIFO would hang git).
+function globalExcludes(): string[] {
   try {
-    const out = execFileSync("git", [...SAFE, "-C", projectPath, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-      { env: { ...process.env, ...ENV }, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).toString();
+    const f = execFileSync("git", ["config", "--global", "--get", "--path", "core.excludesFile"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim();
+    return f && statSync(f).isFile() ? ["-c", `core.excludesFile=${f}`] : [];
+  } catch { return []; }
+}
+
+function listFiles(projectPath: string, which: string[]): string[] | null {
+  try {
+    const out = execFileSync("git", [...SAFE, ...globalExcludes(), "-C", projectPath, "ls-files", "-z", ...which],
+      { env: { ...process.env, ...ENV }, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"], ...GIT_LIMIT }).toString();
     return [...new Set(out.split("\0").filter(Boolean))];
   } catch {
     return null;
@@ -165,7 +335,9 @@ export function applyToProject(p: SpecPaths, projectPath: string, before: string
     const st = lstatOrNull(target);
     if (!st) return null;
     if (!st.isFile()) return undefined;      // a symlink, folder or device: never overwritten
-    const oid = git(p.gitDir, ["hash-object", "--no-filters", "--stdin"], readFileSync(target)).toString().trim();
+    const data = readRegular(target);
+    if (!data) return undefined;            // swapped for one since
+    const oid = git(p.gitDir, ["hash-object", "--no-filters", "--stdin"], data).toString().trim();
     return `${st.mode & 0o111 ? "100755" : "100644"} ${oid}`;
   };
   const was = (e: Entry): string | null => (e ? `${e.mode} ${e.oid}` : null);

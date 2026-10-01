@@ -99,6 +99,25 @@ test("quiet reads: only reads no project file can steer", () => {
   assert.ok(!isQuietRead({ tool: "Edit", input: { command: "ls" } }));
 });
 
+test("an interpreter asked only its version is a quiet read; any other argument still asks", () => {
+  const a = (c: string) => analyze(bash(c));
+  for (const c of ["node --version", "node -v", "python --version", "python -V", "python3 --version", "python3 -V", "ruby -v", "ruby --version",
+    "perl -v", "perl --version", "deno --version", "bun --version", "cd app && node -v 2>&1 | head -1"]) {
+    assert.deepEqual(a(c), { ask: false, quiet: true, kinds: [] }, c);
+  }
+  assert.ok(isQuietRead(bash("node --version")) && isQuietRead(bash(["bash", "-lc", "python3 -V"])));
+  assert.ok(analyze({ tool: "codex command", input: { command: ["node", "-v"] } }).quiet, "Codex's argv form too");
+  for (const c of ["node", "node -e 1", "node -v x.js", "node x.js --version", "node --version --version", "node -vv", "node -V", "node --version=1",
+    "python -v", "python3 -v", "python3 -V x.py", "python3 -c 'print(1)' --version", "ruby -v x.rb", "ruby -V", "perl -V", "perl -v -e 1",
+    "deno -v", "deno run x.ts", "bun -v", "bun x.ts", "python3.13 --version", "nodejs --version", "pypy --version", "php --version",
+    "NODE_OPTIONS=--require=./x node -v", "./node -v", "node -v; rm -rf x", "node -v && node x.js"]) {
+    assert.equal(a(c).quiet, false, c);
+    assert.equal(a(c).ask, true, c);
+    assert.equal(isQuietRead(bash(c)), false, c);
+  }
+  assert.equal(kindOf(bash("node --version")), null, "never a kind a rule could widen");
+});
+
 test("scopes: the Controller per turn or project, a Runner per Spec or project, Home per turn", () => {
   const k = kindOf(bash("npm test"));
   assert.deepEqual(scopesFor(k, { project: "p", turn: "T-1" }), ["turn", "project"]);

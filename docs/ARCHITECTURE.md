@@ -41,10 +41,15 @@ only a socket `govd` opens for that one turn. That socket offers no Gate answers
 undo. Each call is a Gate the user answers; for Codex, govd answers only the approval for
 the GovernCode tool call Codex just announced, and declines any other server's.
 
-`delegate` measures the Runner's usage and checks the Limit (unknown means held; finished
-Specs keep counting until the provider's counter catches up), then builds the Runner's
-workspace **in govd's own state directory**, out of every AI tool's reach: the project's
-committed HEAD, exported without filters, with its own git directory for snapshots. The
+`delegate` measures the Runner's usage and checks the Limit (unknown means held; a finished
+Spec keeps counting until the provider's report has caught up with it: a reading taken 15
+minutes after it finished that shows its window has moved, or the vendor confirming that the
+window it ran in has reset; 2 hours at most), then builds the Runner's
+workspace **in govd's own state directory**, out of every AI tool's reach: the project as the
+user has it now (the last commit with the user's uncommitted edits; a new file only when an
+accepted Spec wrote it or the Spec's scope names it, never one that looks like a secret or holds
+a private key), read one folder at a time without following any link, refused over 2 GB or
+200,000 files, with its own git directory for snapshots. The
 Runner runs sandboxed with write access only to the Spec's scope (checked for symlinks).
 Snapshots hash raw bytes with git plumbing under a config that runs no program, so no repo
 filter, hook or diff driver ever executes. A change outside the scope is never offered.
@@ -80,8 +85,7 @@ user's own sessions, other apps) is invisible to it, so the budget should sit be
 and it keeps no reserve unless one is set. A token budget holds if a run reported no tokens. When
 the provider has its own usage report too, both are read and every reading is checked, so the
 stricter one decides; if either cannot be read, the Runner is held. A provider with neither a
-report nor a budget is held, unless the user explicitly opts it in to run unmetered (no Limit,
-nothing counted). Local models have no quota: their Limit is the machine's (`gov local N M`: at
+report nor a budget is held (running one unmetered is not offered). Local models have no quota: their Limit is the machine's (`gov local N M`: at
 most N local Specs at once, each stopped after M minutes).
 
 ## Proposing a project from Home
@@ -103,16 +107,23 @@ after-state, and only once.
 ## Protocol
 
 JSON-RPC 2.0, one object per line. `hello` returns the protocol number, a feature list and
-the sandbox status; clients check features, not versions. Methods: `project.list`,
-`project.new`, `project.open`, `controller.set`, `ask` (streams `event` notifications),
-`gate.list`, `gate.answer`, `trace.list`, `spec.list`, `spec.diff`, `spec.accept`,
-`spec.discard`, `turn.list` (a project's Checkpoints: id, time, files, whether undone),
-`turn.undo`, and `watch`: after it, the connection also receives every Trace append
-(`{kind: "trace", event}`) and a `{kind: "gates"}` nudge whenever a Gate opens or is
-settled, so clients update without polling. Parameters are validated with Zod schemas in
-`packages/protocol`.
+the sandbox status; clients check features, not versions. Methods, by area:
+
+- projects and turns: `project.list`, `project.new`, `project.open`, `proposal.answer`,
+  `controller.set`, `ask` (streams `event` notifications), `conversation.reset`,
+  `context.state`, `context.share`, `notes.get`, `notes.set`, `crew.get`, `crew.set`,
+  `plan.answer`;
+- Gates and rules: `gate.list`, `gate.answer`, `allows.list`, `allows.revoke`;
+- Specs and Checkpoints: `spec.list`, `spec.diff`, `spec.accept`, `spec.discard`, `turn.list`
+  (a project's Checkpoints: id, time, files, whether undone), `turn.undo`;
+- Limits, settings and tools: `limits.list`, `settings.get`, `settings.set`, `tools.list`,
+  `connect.start`, `connect.input`, `connect.cancel`, `tools.disconnect`;
+- the record: `trace.list`, and `watch`: after it, the connection also receives every Trace
+  append (`{kind: "trace", event}`) and a `{kind: "gates"}` nudge whenever a Gate opens or is
+  settled, so clients update without polling.
+
+Parameters are validated with Zod schemas in `packages/protocol`.
 
 ## Roadmap
 
-See the README. Phase 1 adds the `delegate` tool (over MCP, on its own socketpair), Specs,
-Checkpoints with guarded undo, and the first measured Runner.
+See the README's Plan.

@@ -57,6 +57,11 @@ const ALWAYS_ASK_SUB = new Set(["npm publish", "npm exec", "yarn publish", "pnpm
 const QUIET_READS = new Set(["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "which", "stat", "du", "df", "find",
   "sort", "cut", "nl", "echo"]);
 const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+// An interpreter asked only its version runs no code: exactly these two words are a quiet read.
+// Anything else asks as before (python -v is verbose mode, then a prompt that runs what it reads).
+const VERSION_ONLY: Record<string, string[]> = { node: ["--version", "-v"], python: ["--version", "-V"], python3: ["--version", "-V"],
+  ruby: ["--version", "-v"], perl: ["--version", "-v"], deno: ["--version"], bun: ["--version"] };
+const versionOnly = (w: string[]) => w.length === 2 && Object.hasOwn(VERSION_ONLY, w[0]) && VERSION_ONLY[w[0]].includes(w[1]);
 
 // Outside quotes, anything that could chain, substitute, redirect, glob or hide a command.
 const UNQUOTED = /[;&|`$<>(){}\\\n\r*?\[\]~!#]/;
@@ -290,7 +295,7 @@ export function isQuietRead(req: { tool: string; base?: string; input: Record<st
   if (!words) return false;
   // sed -n 'N,Mp' FILE...: printing a range of lines, nothing else.
   if (words[0] === "sed") return words.length >= 3 && words[1] === "-n" && /^(\d+|\$)(,(\d+|\$))?p$/.test(words[2]) && words.slice(3).every((w) => !w.startsWith("-"));
-  return QUIET_READS.has(words[0]) && quietArgs(words);
+  return versionOnly(words) || (QUIET_READS.has(words[0]) && quietArgs(words));
 }
 
 // --- Compound commands (how strict, 2026-09-27) ------------------------------------------
@@ -370,7 +375,7 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
     const kinds: Kind[] = [];
     for (const w of segs) {
       if (!w.length || w[0].includes("=") || w[0].includes("/")) return { ask: true, quiet: false, kinds: [] };
-      if (QUIET_READS.has(w[0]) && quietArgs(w)) continue;
+      if (versionOnly(w) || (QUIET_READS.has(w[0]) && quietArgs(w))) continue;
       // A read-only program with an option it is not known to read with (sort -o, tail -f,
       // grep -f, a special file) is not a kind a rule may cover: it asks (Grok's red-team).
       if (QUIET_READS.has(w[0]) && !(w.length === 2 && ["--help", "--version"].includes(w[1]))) return { ask: true, quiet: false, kinds: [] };
@@ -388,10 +393,32 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
   if (/^(mcp__governcode__spec_discard|governcode spec_discard)$/.test(tool)) {
     return { ask: false, quiet: false, kinds: [runner({ key: "spec:discard", label: "throwing away a Spec it proposed (accepting is always yours)" })] };
   }
+  const read = quietTool(tool, req.input);
+  if (read !== null) return read ? { ask: false, quiet: true, kinds: [] } : { ask: true, quiet: false, kinds: [] };
   const k = kindOf(req);
   return k ? { ask: false, quiet: false, kinds: [k] } : { ask: true, quiet: false, kinds: [] };
 }
 const LOCAL_RUNNERS = ["ollama"];
+
+// A Runner agent's own read-only tools (Grok's, seen live with 1.0.46), each with the ACP kind it
+// comes with and the field naming what it reads: they read what the sandbox lets the Runner read,
+// as a plain `cat`, `ls` or `grep` does, so they are quiet reads too.
+const QUIET_TOOLS: Record<string, { kind: string; path: string; optional?: true }> = {
+  grok_ReadFile: { kind: "read", path: "target_file" },
+  grok_ListDir: { kind: "other", path: "target_directory" },
+  grok_Grep: { kind: "search", path: "path", optional: true },   // none: the workspace
+};
+/** null: not one of those tools. false: one of them with another kind, without its path, or
+ *  reaching a special place (as `cat /dev/zero` does): it always asks, and is never remembered. */
+function quietTool(tool: string, input: Record<string, unknown>): boolean | null {
+  if (!Object.hasOwn(QUIET_TOOLS, tool)) return null;
+  const t = QUIET_TOOLS[tool];
+  const raw = input.input && typeof input.input === "object" ? input.input as Record<string, unknown> : {};
+  const p = raw[t.path];
+  if (input.kind !== t.kind || !(typeof p === "string" || (t.optional && (p === null || p === undefined)))) return false;
+  const where = [p, ...(Array.isArray(input.locations) ? input.locations : [])];
+  return where.every((x) => x === null || x === undefined || (typeof x === "string" && !SPECIAL.test(x)));
+}
 
 /** The scopes a Gate may offer: a Controller's steps per turn or project, a Runner's per Spec or
  *  project; Home (no project) per turn only. */
@@ -409,7 +436,8 @@ export class Allows {
     this.file = file;
     try {
       const saved = JSON.parse(readFileSync(file, "utf8"));
-      if (Array.isArray(saved)) this.rules = saved.filter((r) => r && r.scope === "project" && typeof r.key === "string");
+      // (a rule for Grok's catch-all kind is left behind: since 0.1.0-motion.9 each Grok tool is a kind of its own)
+      if (Array.isArray(saved)) this.rules = saved.filter((r) => r && r.scope === "project" && typeof r.key === "string" && r.key !== "runner:tool:grok_other");
       this.seq = Math.max(0, ...this.rules.map((r) => Number(String(r.id).slice(2)) || 0));
     } catch { /* none yet */ }
   }

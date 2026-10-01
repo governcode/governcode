@@ -195,8 +195,9 @@ type Opts = { supervisor: string; policyDir: string; stateDir: string };
 
 /** Grok's `_x.ai/billing` answer as a Measurement: credits used this period, as a percentage,
  *  and the period's end. Null when there is no figure from 0 to 100 (= held): Grok leaves the
- *  field out until the account has used something in the period, and unknown holds. */
-export function parseBilling(r: unknown): Measurement | null {
+ *  field out until the account has used something in the period, and unknown holds. at: when it
+ *  was asked for. */
+export function parseBilling(r: unknown, at = Date.now()): Measurement | null {
   const c = (r as any)?.config;
   if (!c || typeof c !== "object") return null;
   const period = c.currentPeriod && typeof c.currentPeriod === "object" && !Array.isArray(c.currentPeriod) ? c.currentPeriod : null;
@@ -206,7 +207,7 @@ export function parseBilling(r: unknown): Measurement | null {
   if (pct === null) return null;
   const type = String(period?.type ?? "").replace(/^USAGE_PERIOD_TYPE_/, "").toLowerCase();
   const end = typeof period?.end === "string" ? Date.parse(period.end) : NaN;
-  return { provider: "grok", measuredAt: Date.now(), readings: [{ window: type === "weekly" ? "weekly" : type === "monthly" ? "monthly" : "period",
+  return { provider: "grok", measuredAt: at, readings: [{ window: type === "weekly" ? "weekly" : type === "monthly" ? "monthly" : "period",
     usedPercent: pct, resetsAt: Number.isFinite(end) ? new Date(end).toISOString() : null }] };
 }
 
@@ -236,7 +237,8 @@ export async function readGrokUsage(o: Opts & { scratch: string }): Promise<Meas
   try {
     const init = await rpc.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } }, clientInfo: CLIENT_INFO }, 20_000);
     if (init?.protocolVersion !== 1) return null;
-    return parseBilling(await rpc.request("_x.ai/billing", {}, 20_000));
+    const sent = Date.now();
+    return parseBilling(await rpc.request("_x.ai/billing", {}, 20_000), sent);
   } catch {
     return null;
   } finally {

@@ -7,7 +7,7 @@ export function Pill({ tone, children, title }: { tone: "ok" | "warn" | "danger"
   return <span className={`pill pill-${tone}`} title={title}>{children}</span>;
 }
 
-const SPEC_TONE = { queued: "info", held: "warn", running: "accent", "needs-review": "warn", accepted: "ok", undone: "dim", failed: "danger" } as const;
+const SPEC_TONE = { queued: "info", held: "warn", running: "accent", "needs-review": "warn", accepted: "ok", discarded: "dim", failed: "danger" } as const;
 export function SpecPill({ status }: { status: keyof typeof SPEC_TONE }) {
   return <Pill tone={SPEC_TONE[status] ?? "dim"}>{status}</Pill>;
 }
@@ -56,7 +56,7 @@ export function GateCard(props: { id: string; tool: string; canonical: string; p
       <div className="gate-label dim">Exactly this will run:</div>
       <pre className="code">{props.canonical}</pre>
       {props.state === "waiting" && (
-        <div className="row">
+        <div className="row wrap">
           {/* Balanced: the suggested answer first, so the next similar step does not ask again. */}
           {props.suggest && (props.scopes ?? []).includes(props.suggest) && (
             <button className="btn btn-accent" disabled={busy} onClick={() => answer("allow", props.suggest!)}>Allow for {SCOPE_LABEL[props.suggest] ?? props.suggest}</button>

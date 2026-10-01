@@ -86,6 +86,9 @@ const SETTINGS_KEEP = ["hooks", "enabledPlugins", "outputStyle", "permissions", 
 export function claudeRunHome(stateDir: string, personal: boolean): { home: string; login: string; finish(): void } {
   const rh = runHome(stateDir, "claude", ".credentials.json");
   if (personal) {
+    // The turn's HOME is this home (runTurn); hooks the user wrote as ~/.claude/... still find
+    // their files through this link (only the files they chose to bring are readable).
+    if (existsSync(userClaudeDir())) symlinkSync(userClaudeDir(), join(rh.home, ".claude"));
     for (const name of PERSONAL_CLAUDE) {
       const src = join(userClaudeDir(), name);
       if (name === "settings.json" || !existsSync(src)) continue;
@@ -229,7 +232,9 @@ export function runTurn(opts: {
   const child = spawn(opts.supervisor, ["run", "--policy", policyFile, "--", which("claude"), ...args], {
     cwd: opts.worktree, stdio: ["pipe", "pipe", "pipe"], detached: true,
     // A delegated Spec can run for many minutes while the Controller's tool call waits.
-    env: { ...toolEnv(sessionTmp), CLAUDE_CONFIG_DIR: cfg, MCP_TOOL_TIMEOUT: String(60 * 60_000) },
+    // HOME is the run's own home too: the user's shell files (~/.bashrc), which the sandbox does
+    // not let it read, are not there to fail on every command.
+    env: { ...toolEnv(sessionTmp), HOME: cfg, CLAUDE_CONFIG_DIR: cfg, MCP_TOOL_TIMEOUT: String(60 * 60_000) },
   });
   let stderr = "";
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));

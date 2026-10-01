@@ -34,7 +34,7 @@ test("the project record comes from the Trace alone, and is empty for a new proj
   L.append("p", "checkpoint.undone", "govd", { turn: "T-1" });
   const r = JSON.parse(projectRecord(L, "p", ["`npm test` commands"]));
   assert.equal(r.specs[0].runner, "codex");
-  assert.deepEqual(r.checkpoints[0], { turn: "T-1", at: r.checkpoints[0].at, files: ["README.md"], undone: true });
+  assert.deepEqual(r.checkpoints[0], { turn: "T-1", at: r.checkpoints[0].at, files: ["README.md"], undone: "the user undid this turn: these files are back as they were before it" });
   assert.deepEqual(r.allowedForThisProject, ["`npm test` commands"]);
   L.close();
 });

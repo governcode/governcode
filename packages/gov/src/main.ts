@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { COUNTED_LABEL, COUNTED_WINDOWS, setBudget, type CountedWindow } from "@governcode/protocol";
+import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, ProjectName, RUNNERS, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
@@ -19,6 +19,26 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+
+// The commands that talk to govd: any other word gets the usage without connecting.
+const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
+  "turns", "undo", "settings", "budget", "local", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
+  "limits", "specs", "diff", "accept", "discard", "trace", "ask", "demo"]);
+
+/** A Runner name, checked before anything is saved (govd checks too): a typo would be saved and never used. */
+function runner(name: string): string {
+  if (!(RUNNERS as readonly string[]).includes(name)) throw new Error(`unknown Runner ${name} (Runners: ${RUNNERS.join(", ")})`);
+  return name;
+}
+
+/** A project name, or the plain rule it breaks. */
+function projectName(name: string): string {
+  const bad = ProjectName.safeParse(name).error;
+  if (bad) throw new Error(bad.issues[0].message);
+  return name;
+}
+
 function open(): Promise<{ call(method: string, params?: unknown): Promise<any>; onEvent(f: (e: any) => void): void; sock: Socket }> {
   return new Promise((ok, fail) => {
     const sock = connect(socketPath);
@@ -26,7 +46,7 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
     const waiting = new Map<number, (r: Reply) => void>();
     let listener: (e: any) => void = () => {};
     sock.once("error", () => fail(new Error(host ? `no tunnel to ${host} (no socket at ${socketPath}). Open one with: gov tunnel ${host}`
-      : `govd is not running (no socket at ${socketPath}). Start it with: npm run govd`)));
+      : `govd is not running (no socket at ${socketPath}). Start it with: gov daemon start (or run govd in another terminal)`)));
     const lines = createInterface({ input: sock });
     lines.on("error", () => {});   // the socket's own error handler reports it
     lines.on("line", (line) => {
@@ -35,10 +55,13 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
       waiting.get(msg.id)?.(msg);
       waiting.delete(msg.id);
     });
+    // govd going away (a restart, a crash) fails every call still waiting: gov never hangs or exits quietly.
+    sock.on("close", () => { for (const w of waiting.values()) w({ error: { code: -1, message: "govd closed the connection" } }); waiting.clear(); });
     sock.once("connect", () => ok({
       sock,
       onEvent: (f) => (listener = f),
       call: (method, params = {}) => new Promise((res, rej) => {
+        if (sock.destroyed) return rej(new Error("govd closed the connection"));
         const id = next++;
         waiting.set(id, (r) => (r.error ? rej(new Error(r.error.message)) : res(r.result)));
         sock.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
@@ -47,35 +70,75 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
   });
 }
 
-/** Answers typed (or piped) by the user, one line each; end of input means "no". */
-function answers(): { next(prompt: string): Promise<string>; close(): void } {
-  const lines: string[] = [];
-  const waiting: Array<(l: string) => void> = [];
-  let ended = false;
+// A line answers only the question on screen when it was typed. One typed with no question
+// waiting, or in the first second a question is shown (it was meant for what was there before: a
+// question since answered elsewhere, or none), is dropped and said so, never kept for the next
+// question. Piped input is held to the same rule: it cannot see which question it would answer.
+const SETTLE_MS = 1000;
+
+/** Answers typed by the user, one line each, one question on screen at a time. null: no answer,
+ *  so none is sent: nobody can answer here (end of input), or the question was withdrawn. */
+function answers(): { next(prompt: string, withdrawn?: AbortSignal): Promise<string | null>; reshow(): void; close(): void } {
+  type Question = { prompt: string; ok: (l: string | null) => void };
+  const waiting: Question[] = [];
+  let ended = false, onScreen = false, current: Question | null = null, shown = 0;
+  // The first question waiting gets the prompt; a different one than before starts the clock again.
+  const show = () => {
+    if (onScreen || !waiting.length) return;
+    if (waiting[0] !== current) { current = waiting[0]; shown = Date.now(); }
+    process.stdout.write(current.prompt);
+    onScreen = true;
+  };
   const rl = createInterface({ input: process.stdin });
-  rl.on("line", (l) => (waiting.length ? waiting.shift()!(l) : lines.push(l)));
-  rl.on("close", () => { ended = true; while (waiting.length) waiting.shift()!(""); });
+  rl.on("line", (l) => {
+    if (!waiting.length) { if (l.trim()) console.log(dim("ignored: no question was waiting")); return; }
+    onScreen = false;
+    if (Date.now() - shown < SETTLE_MS) { console.log(dim("ignored: typed before this question was shown; answer again")); return show(); }
+    waiting.shift()!.ok(l);
+    show();
+  });
+  // A prompt still on screen gets its line ended, so what follows starts on a new one.
+  rl.on("close", () => { ended = true; if (onScreen) process.stdout.write("\n"); onScreen = false; while (waiting.length) waiting.shift()!.ok(null); });
   return {
-    next: (prompt) => {
-      process.stdout.write(prompt);
-      if (lines.length) return Promise.resolve(lines.shift()!);
-      if (ended) return Promise.resolve("");
-      return new Promise((ok) => waiting.push(ok));
+    next: (prompt, withdrawn) => {
+      if (ended) return Promise.resolve(null);
+      return new Promise((ok) => {
+        const q = { prompt, ok };
+        waiting.push(q);
+        show();
+        // Withdrawn (answered elsewhere): its prompt goes, the reason (a string) is said, and the
+        // question now first is shown.
+        withdrawn?.addEventListener("abort", () => {
+          const i = waiting.indexOf(q);
+          if (i < 0) return;
+          waiting.splice(i, 1);
+          if (onScreen) process.stdout.write("\n");
+          onScreen = false;
+          if (typeof withdrawn.reason === "string") console.log(withdrawn.reason);
+          show();
+          ok(null);
+        }, { once: true });
+      });
     },
+    /** The waiting question's prompt again, below whatever buried it; its clock starts again. */
+    reshow: () => { if (!waiting.length) return; if (onScreen) process.stdout.write("\n"); onScreen = false; current = null; show(); },
     close: () => rl.close(),
   };
 }
 
 const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (Anthropic)", codex: "Codex (OpenAI)" };
+// What gov controller sets without --model or --effort (the models the Dashboard suggests first).
+const CONTROLLER_DEFAULTS: Record<string, { model: string; effort: string }> = { "claude-code": { model: "opus", effort: "high" }, codex: { model: "gpt-5.5", effort: "medium" } };
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
+// A tool's own "open this URL" line before its link (Grok's, Codex's): gov says it once, with the
+// link. Only a whole line of these fixed words is left out, so no code, link or error is hidden.
+const PREAMBLE = /^(to sign in, |if your browser did not open, )?(open|navigate to) this url( in your browser)?( to authenticate)?:$/i;
 
 /** The first time a Controller works, ask once whether the user's own instructions come along
  *  (off by default; said plainly both ways). */
-async function askPersonal(api: Awaited<ReturnType<typeof open>>, project: string | null, tty: ReturnType<typeof answers>): Promise<void> {
+async function askPersonal(api: Awaited<ReturnType<typeof open>>, provider: "claude" | "codex", tty: ReturnType<typeof answers>): Promise<void> {
   const { settings } = await api.call("settings.get", {});
-  const { projects } = await api.call("project.list", {});
-  const provider = projects.find((p: any) => p.name === project)?.controller.provider === "codex" ? "codex" : "claude";
   if (settings.personal?.[provider] !== null) return;
   const tool = provider === "codex" ? "Codex" : "Claude Code";
   const files = provider === "codex" ? "your AGENTS.md" : "your CLAUDE.md, skills, agents, commands, plugins and hooks";
@@ -83,14 +146,43 @@ async function askPersonal(api: Awaited<ReturnType<typeof open>>, project: strin
   console.log(`  No (the default): ${tool} starts clean, from its own defaults and GovernCode's instructions only.`);
   console.log(`  Yes: it reads ${files}, as it does outside GovernCode, so what you have built up comes along.`);
   console.log(dim("  The sandbox and Gates apply the same either way. Change it later: gov personal " + provider + " on|off"));
-  const a = (await tty.next("Use your own instructions? [y/N] ")).trim().toLowerCase();
+  const a = (await tty.next("Use your own instructions? [y/N] "))?.trim().toLowerCase();
+  if (a === undefined) { console.log(dim(`no input here: off for now, and asked again next time (gov personal ${provider} on|off sets it)`)); return; }
   await api.call("settings.set", { ...settings, personal: { ...settings.personal, [provider]: a === "y" || a === "yes" } });
 }
 
 /** One Controller turn in the terminal: text streams, Gates ask (with standing-allow choices). */
 export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: string | null, prompt: string,
     tty: ReturnType<typeof answers>): Promise<{ ok: boolean; summary: string }> {
-  await askPersonal(api, project, tty);
+  // The tool this turn runs (the project's Controller, or Home's) is asked about only once it is
+  // connected; otherwise govd refuses the turn and says how to connect, and nothing is asked first.
+  const { projects, home } = await api.call("project.list", {});
+  const provider = (project ? projects.find((p: any) => p.name === project)?.controller : home?.controller)?.provider === "codex" ? "codex" : "claude";
+  const { tools } = await api.call("tools.list", {});
+  if (tools.some((t: any) => t.tool === provider && t.connected)) await askPersonal(api, provider, tty);
+  // Questions shown here and not answered yet, by id: the prompt's withdrawal, or null once left
+  // open (no input here) for another terminal (a Gate in the Dashboard too). gov never sends an
+  // answer the user did not give; one answered elsewhere is withdrawn and named.
+  const open = new Map<string, AbortController | null>();
+  const question = async (id: string, prompt: string, elsewhere: string): Promise<string | undefined> => {
+    const withdraw = new AbortController();
+    open.set(id, withdraw);
+    const a = await tty.next(prompt, withdraw.signal);
+    if (a !== null) open.delete(id);
+    else if (open.get(id) === withdraw) { open.set(id, null); console.log(dim(`no input here: answer from another terminal with ${elsewhere}`)); }
+    return a?.trim().toLowerCase();
+  };
+  const failed = (id: string) => (e: Error) => console.log(dim(`${id}: ${e.message}`));
+  const PLAN_ANSWERS: Record<string, string> = { approve: "approved", "just-you": "answered just you", reject: "rejected" };
+  const proposals: Promise<void>[] = [];   // a proposal outlives the turn (govd keeps it until answered)
+  const proposal = async (ev: any) => {
+    console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
+    if (ev.reason) console.log(dim(ev.reason));
+    const a = await question(ev.id, `Create ${ev.name}? [y/N] `, `gov proposal ${ev.id} create|cancel`);
+    if (a === undefined) return;
+    await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" })
+      .then((r) => console.log(dim(r.created ? `created ${r.created.name} at ${r.created.path} (cd there to work in it)` : "not created")), failed(ev.id));
+  };
   api.onEvent(async (ev) => {
     if (ev.kind === "text") process.stdout.write(ev.text + "\n");
     else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
@@ -109,10 +201,11 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
         " That only skips this question; the sandbox still applies to every step."));
       if (ev.suggest) console.log(dim(`  Suggested: [${keys[ev.suggest]}], so this kind of step stops asking in this ${ev.suggest}.`));
       const choices = ["y", ...scopes.map((s) => keys[s])].join("/");
-      const a = (await tty.next(`Allow? [${choices}/N] `)).trim().toLowerCase();
+      const a = await question(ev.id, `Allow ${ev.id}? [${choices}/N] `, `gov gate ${ev.id} allow|deny`);
+      if (a === undefined) return;
       if (!a) console.log("");
       const remember = scopes.find((s) => keys[s] === a);
-      await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" || remember ? "allow" : "deny", ...(remember ? { remember } : {}) });
+      await api.call("gate.answer", { id: ev.id, answer: a === "y" || a === "yes" || remember ? "allow" : "deny", ...(remember ? { remember } : {}) }).catch(failed(ev.id));
     } else if (ev.kind === "allowed") {
       console.log(dim(`· allowed without asking: ${ev.why} (the sandbox still applies)`));
     } else if (ev.kind === "plan") {
@@ -120,18 +213,40 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
       ev.items.forEach((it: any, i: number) => console.log(`  ${i + 1}. ${it.who === "me" ? "Controller" : it.who}: ${it.what}${it.scope?.length ? dim(` (${it.scope.join(", ")})`) : ""}`));
       if (ev.note) console.log(dim(`  ${ev.note}`));
       console.log(dim(ev.handoff === "plan" ? "  Each approved handoff runs once without asking again; anything else still asks." : "  Handoffs still ask at a Gate (Crew card: ask each time)."));
-      const a = (await tty.next("Approve? [y = all / 1,3 = only those / j = just you / N] ")).trim().toLowerCase();
-      const nums = /^\d+(\s*,\s*\d+)*$/.test(a) ? a.split(",").map((x) => Number(x.trim())) : null;
-      await api.call("plan.answer", { id: ev.id, ...(a === "y" || a === "yes" ? { answer: "approve" } : nums ? { answer: "approve", items: nums } : a === "j" ? { answer: "just-you" } : { answer: "reject" }) });
+      // Items outside the plan would be refused, leaving it waiting with no question here: asked again.
+      let a: string | undefined, nums: number[] | null;
+      for (;;) {
+        a = await question(ev.id, `Approve ${ev.id}? [y = all / 1,3 = only those / j = just you / N] `, `gov plan ${ev.id} approve [1,3]|just-you|reject`);
+        if (a === undefined) return;
+        nums = /^\d+(\s*,\s*\d+)*$/.test(a) ? a.split(",").map((x) => Number(x.trim())) : null;
+        if (!nums || nums.every((n) => n >= 1 && n <= ev.items.length)) break;
+        console.log(dim(`the items are 1 to ${ev.items.length}`));
+      }
+      await api.call("plan.answer", { id: ev.id, ...(a === "y" || a === "yes" ? { answer: "approve" } : nums ? { answer: "approve", items: nums } : a === "j" ? { answer: "just-you" } : { answer: "reject" }) })
+        .catch(failed(ev.id));
     } else if (ev.kind === "proposal") {
-      console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
-      if (ev.reason) console.log(dim(ev.reason));
-      const a = (await tty.next("Create it? [y/N] ")).trim().toLowerCase();
-      const r = await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" });
-      console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created"));
+      proposals.push(proposal(ev));
+    } else if (ev.kind === "trace") {
+      // A question shown here was answered elsewhere (another terminal, the Dashboard) or ended with the turn.
+      const e = ev.event, d = e.data, id = d.gate ?? d.plan ?? d.proposal;
+      const what = e.kind === "gate.allowed" ? "allowed" : e.kind === "gate.denied" ? "denied" : e.kind === "plan.answered" ? PLAN_ANSWERS[d.answer] ?? d.answer
+        : e.kind === "project.created" ? "created" : e.kind === "project.declined" ? "not created" : null;
+      if (!what || !open.has(id)) return;
+      const w = open.get(id);
+      open.delete(id);
+      const note = dim(`${id}: ${what} ${d.by === undefined || d.by === "user" ? "from elsewhere" : `(${d.by})`}`);
+      if (w) w.abort(note); else console.log(note);
     }
   });
-  return await api.call("ask", { project, prompt });
+  // Every Trace event from here on, for the answers given elsewhere (an older govd: none are seen).
+  await api.call("watch", {}).catch(() => {});
+  let r;
+  try { r = await api.call("ask", { project, prompt }); }
+  finally { for (const [id, w] of open) if (!id.startsWith("P-")) { open.delete(id); w?.abort(); } }   // the turn's Gates and plans end with it
+  // A proposal's question stays after the turn, shown again below the Controller's last words.
+  tty.reshow();
+  await Promise.all(proposals);
+  return r;
 }
 
 async function currentProject(api: Awaited<ReturnType<typeof open>>): Promise<string | null> {
@@ -148,6 +263,7 @@ async function main(argv: string[]): Promise<number> {
     argv = argv.slice(2);
   }
   const [cmd, ...rest] = argv;
+  if (cmd === "help" || cmd === "--help" || cmd === "-h") { console.log(USAGE); return 0; }
   if (cmd === "daemon") return daemon(rest[0]);
   if (cmd === "socket-path") { console.log(socketPath); return 0; }
   if (cmd === "tunnel") {
@@ -160,6 +276,7 @@ async function main(argv: string[]): Promise<number> {
     if (rest.length !== (i >= 0 ? 3 : 1) || (i >= 0 && i !== 1)) throw new Error("usage: gov tunnel HOST [--remote-socket PATH] | gov tunnel --stop HOST | gov tunnel");
     return t.runTunnel(rest[0], i >= 0 ? rest[i + 1] : undefined, env);
   }
+  if (cmd !== undefined && !COMMANDS.has(cmd)) { console.error(USAGE); return 2; }
   const api = await open();
   try {
     switch (cmd) {
@@ -173,29 +290,36 @@ async function main(argv: string[]): Promise<number> {
       }
       case "projects": {
         const { projects } = await api.call("project.list");
-        for (const p of projects) console.log(`${p.name.padEnd(14)} ${p.path}  ${dim(`${p.controller.provider} · ${p.controller.model} · ${p.controller.effort ?? "n/a"}`)}`);
+        for (const p of projects) console.log(`${p.name.padEnd(14)} ${p.path}  ${dim(`${[p.controller.provider, p.controller.model || "default model", p.controller.effort].filter(Boolean).join(" · ")}`)}`);
         if (!projects.length) console.log(dim("no projects yet"));
         return 0;
       }
       case "new": {
         const name = rest[0];
         const at = rest.indexOf("--path");
-        const path = at >= 0 ? rest[at + 1] : join(process.cwd(), name ?? "");
+        if (!name || name.startsWith("-") || (at >= 0 && !rest[at + 1])) throw new Error("usage: gov new NAME [--path P] [--no-git]");
+        projectName(name);
+        const path = at >= 0 ? rest[at + 1] : join(process.cwd(), name);
         const { project } = await api.call("project.new", { name, path, git: !rest.includes("--no-git") });
-        console.log(`created ${project.name} at ${project.path}`);
+        // Already registered: nothing to open, only somewhere to go.
+        console.log(`created ${project.name} at ${project.path} (cd there to work in it)`);
         return 0;
       }
       case "open": {
         const path = resolve(rest[0] ?? ".");
-        const { project } = await api.call("project.open", { path, name: rest[1] });
+        const { project } = await api.call("project.open", { path, name: rest[1] === undefined ? undefined : projectName(rest[1]) });
         console.log(`opened ${project.name} (${project.path})`);
         return 0;
       }
       case "controller": {
+        // Checked before anything is asked or recorded. "claude" is the name connect and personal use.
+        const provider = rest[0] === "claude" ? "claude-code" : rest[0];
+        const flag = (f: string) => { const i = rest.indexOf(f); return i >= 0 ? rest[i + 1] ?? "" : undefined; };
+        const d = provider && Object.hasOwn(CONTROLLER_DEFAULTS, provider) ? CONTROLLER_DEFAULTS[provider] : null;
+        const model = flag("--model") ?? d?.model, effort = flag("--effort") ?? d?.effort;
+        if (!d || !model || !Effort.safeParse(effort).success) throw new Error("usage: gov controller claude-code|codex [--model M] [--effort low|medium|high|max]");
         const project = await currentProject(api);
         if (!project) throw new Error("run this inside a project folder");
-        const m = rest.indexOf("--model"), e = rest.indexOf("--effort");
-        const provider = rest[0] ?? "claude-code";
         // Project memory goes to another provider only if the user says so, once per project.
         const ctx = await api.call("context.state", { project });
         if (ctx.providers.some((x: string) => x !== provider) && ctx.shared[provider] === undefined) {
@@ -204,13 +328,13 @@ async function main(argv: string[]): Promise<number> {
           console.log(warn(`\n${who} will see this project's conversation, its record (${ctx.specs} Specs, ${ctx.checkpoints} Checkpoints) and its notes${ctx.notes ? ":" : " (none yet)."}`));
           if (ctx.notes) console.log(dim(ctx.notes.split("\n").slice(0, 8).map((l: string) => "  " + l).join("\n") + (ctx.notes.split("\n").length > 8 ? "\n  …" : "")));
           console.log(dim("  Yes: it picks up where the last Controller left off. No: it starts fresh here, with only its own turns."));
-          const a = (await tty.next("Share this project's context with it? [y/N] ")).trim().toLowerCase();
+          const a = (await tty.next("Share this project's context with it? [y/N] "))?.trim().toLowerCase();
           tty.close();
-          await api.call("context.share", { project, provider, share: a === "y" || a === "yes" });
+          if (a === undefined) console.log(dim("no input here: nothing is shared, so it starts fresh; run gov controller again in a terminal to choose"));
+          else await api.call("context.share", { project, provider, share: a === "y" || a === "yes" });
         }
-        await api.call("controller.set", { project, controller: { provider,
-          model: m >= 0 ? rest[m + 1] : "opus", effort: e >= 0 ? rest[e + 1] : "high" } });
-        console.log(`Controller for ${project}: ${rest[0] ?? "claude-code"}`);
+        await api.call("controller.set", { project, controller: { provider, model, effort } });
+        console.log(`Controller for ${project}: ${provider} · ${model} · ${effort}`);
         return 0;
       }
       case "crew": {
@@ -220,13 +344,13 @@ async function main(argv: string[]): Promise<number> {
         if (!project) throw new Error("run this inside a project folder");
         const { crew } = await api.call("crew.get", { project });
         const [what, a, b] = rest;
-        const usage = "usage: gov crew [works on|off | handoff ask|plan|off | runners all|R1,R2 | max RUNNER N|none | subagents controller|runners on|off]";
+        const usage = "usage: gov crew [works on|off | handoff ask|plan|off | runners all|R1,R2 | max RUNNER 1-25|none | subagents controller|runners on|off]";
         if (what) {
           if (what === "works" && ["on", "off"].includes(a)) crew.controllerWorks = a === "on";
           else if (what === "handoff" && ["ask", "plan", "off"].includes(a)) crew.handoff = a;
-          else if (what === "runners" && a) crew.runners = a === "all" ? null : a.split(",").map((x: string) => x.trim()).filter(Boolean);
+          else if (what === "runners" && a) crew.runners = a === "all" ? null : a.split(",").map((x: string) => x.trim()).filter(Boolean).map(runner);
           else if (what === "max" && a && b === "none") delete crew.maxPercent[a];
-          else if (what === "max" && a && Number.isInteger(Number(b))) crew.maxPercent[a] = Number(b);
+          else if (what === "max" && a && Number.isInteger(Number(b)) && Number(b) >= 1 && Number(b) <= 25) crew.maxPercent[runner(a)] = Number(b);
           else if (what === "subagents" && ["controller", "runners"].includes(a) && ["on", "off"].includes(b)) crew.subagents[a] = b === "on";
           else throw new Error(usage);
           await api.call("crew.set", { project, crew });
@@ -286,14 +410,35 @@ async function main(argv: string[]): Promise<number> {
       case "gate": {
         const [id, answer, flag] = rest;
         const remember = flag === "--turn" ? "turn" : flag === "--spec" ? "spec" : flag === "--project" ? "project" : undefined;
-        if (!id || (answer !== "allow" && answer !== "deny") || (flag && !remember)) throw new Error("usage: gov gate G-N allow|deny [--turn|--spec|--project]");
+        if (!/^G-\d+$/.test(id ?? "") || (answer !== "allow" && answer !== "deny") || (flag && !remember)) throw new Error("usage: gov gate G-N allow|deny [--turn|--spec|--project]");
         await api.call("gate.answer", { id, answer, ...(remember ? { remember } : {}) });
         console.log(`${id}: ${answer === "deny" ? "denied" : remember ? `allowed, and this kind of step for the rest of this ${remember} (the sandbox still applies)` : "allowed once"}`);
+        return 0;
+      }
+      case "plan": {
+        // gov plan GP-N approve [1,3]|just-you|reject: a game plan gov ask could not ask about.
+        const [id, answer, items] = rest;
+        if (!/^GP-\d+$/.test(id ?? "") || rest.length > 3 || !["approve", "just-you", "reject"].includes(answer) || (items !== undefined && (answer !== "approve" || !/^\d+(,\d+)*$/.test(items)))) {
+          throw new Error("usage: gov plan GP-N approve [1,3]|just-you|reject");
+        }
+        const r = await api.call("plan.answer", { id, answer, ...(items ? { items: items.split(",").map(Number) } : {}) });
+        // What govd approved, not what was typed.
+        const approved = r.approved ? `approved: ${r.approved.length ? `item${r.approved.length === 1 ? "" : "s"} ${r.approved.join(", ")}` : "nothing"}` : "approved";
+        console.log(`${id}: ${answer === "approve" ? approved : answer === "just-you" ? "just you (the Controller does it all itself this turn)" : "rejected"}`);
+        return 0;
+      }
+      case "proposal": {
+        // gov proposal P-N create|cancel: a Home Controller's proposal gov ask could not ask about.
+        const [id, answer] = rest;
+        if (!/^P-\d+$/.test(id ?? "") || (answer !== "create" && answer !== "cancel")) throw new Error("usage: gov proposal P-N create|cancel");
+        const r = await api.call("proposal.answer", { id, answer });
+        console.log(r.created ? `created ${r.created.name} at ${r.created.path} (cd there to work in it)` : `${id}: not created`);
         return 0;
       }
       case "allows": {
         // gov allows [revoke R-N]: the standing allows remembered for projects.
         if (rest[0] === "revoke") {
+          if (!/^R-\d+$/.test(rest[1] ?? "")) throw new Error("usage: gov allows revoke R-N (see gov allows)");
           await api.call("allows.revoke", { id: rest[1] });
           console.log(`${rest[1]} revoked: that kind of step asks again`);
           return 0;
@@ -314,6 +459,7 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "undo": {
+        if (!/^T-\d+$/.test(rest[0] ?? "")) throw new Error("usage: gov undo T-N (see gov turns)");
         const r = await api.call("turn.undo", { id: rest[0] });
         console.log(`${r.id}: restored ${r.restored.length} file(s): ${r.restored.join(", ")}`);
         return 0;
@@ -323,7 +469,7 @@ async function main(argv: string[]): Promise<number> {
         const rows = Object.entries(settings.reserves as Record<string, Record<string, number>>);
         if (!rows.length) console.log(dim("defaults: every Runner keeps 10% of each usage window back"));
         for (const [provider, windows] of rows) console.log(`${provider.padEnd(8)} ${Object.entries(windows).map(([w, n]) => `${w} ${n}%`).join(", ")}`);
-        for (const [provider, d] of Object.entries(settings.runners as Record<string, { model: string; effort: string | null }>)) console.log(`${provider.padEnd(8)} defaults to ${d.model} · ${d.effort ?? "n/a"}`);
+        for (const [provider, d] of Object.entries(settings.runners as Record<string, { model: string; effort: string | null }>)) console.log(`${provider.padEnd(8)} defaults to ${[d.model || "default model", d.effort].filter(Boolean).join(" · ")}`);
         console.log(`per-Spec models: ${settings.specModels}`);
         for (const [provider, b] of Object.entries(settings.budgets as Record<string, { unit: string; windows: Record<string, number> }>)) {
           if (!Object.keys(b.windows).length) continue;
@@ -336,8 +482,14 @@ async function main(argv: string[]): Promise<number> {
         // gov budget codex daily 20 turns: at most 20 Runner turns a day, counted by GovernCode.
         // gov budget codex daily off; gov budget codex off. Without arguments: the budgets.
         const [provider, window, value, unitArg] = rest;
-        const { settings } = await api.call("settings.get", {});
         const usage = `usage: gov budget [PROVIDER (${Object.keys(COUNTED_WINDOWS).join("|")}) N tokens|turns | PROVIDER [WINDOW] off]`;
+        // Removing a whole budget takes any name, so one saved under a typo can go.
+        if (provider && window !== "off") {
+          if (!window) throw new Error(usage);
+          runner(provider);
+          if (!Object.hasOwn(COUNTED_WINDOWS, window)) throw new Error(`unknown window ${window} (windows: ${Object.keys(COUNTED_WINDOWS).join(", ")})`);
+        }
+        const { settings } = await api.call("settings.get", {});
         if (!provider) {
           const rows = Object.entries(settings.budgets as Record<string, { unit: string; windows: Record<string, number> }>).filter(([, b]) => Object.keys(b.windows).length);
           if (!rows.length) console.log(dim("no budgets: Runners are held by their own usage reports only"));
@@ -349,7 +501,6 @@ async function main(argv: string[]): Promise<number> {
         if (window === "off") {
           budgets = { ...budgets }; delete budgets[provider];
         } else {
-          if (!(window in COUNTED_WINDOWS)) throw new Error(usage);
           const cap = value === "off" ? null : Number(value);
           const unit = unitArg ?? budgets[provider]?.unit;   // the budget's unit, once it has one
           if (cap !== null && (!Number.isInteger(cap) || cap < 1 || (unit !== "tokens" && unit !== "turns"))) throw new Error(usage);
@@ -378,10 +529,11 @@ async function main(argv: string[]): Promise<number> {
         // gov runner codex --model gpt-5.5 --effort medium: the Runner's default model and effort.
         const provider = rest[0], flag = (f: string) => { const i = rest.indexOf(f); return i >= 0 ? rest[i + 1] : undefined; };
         const model = flag("--model"), effort = flag("--effort");
-        if (!provider || !model) throw new Error("usage: gov runner PROVIDER --model M [--effort low|medium|high|max]");
+        if (!provider || !model || (effort !== undefined && !Effort.safeParse(effort).success)) throw new Error("usage: gov runner PROVIDER --model M [--effort low|medium|high|max]");
+        runner(provider);
         const { settings } = await api.call("settings.get", {});
         await api.call("settings.set", { ...settings, runners: { ...settings.runners, [provider]: { model, effort: effort ?? null } } });
-        console.log(`${provider}: defaults to ${model} · ${effort ?? "n/a"}`);
+        console.log(`${provider}: defaults to ${[model || "default model", effort].filter(Boolean).join(" · ")}`);
         return 0;
       }
       case "level": {
@@ -431,10 +583,10 @@ async function main(argv: string[]): Promise<number> {
           } else if (ev.url) {
             console.log(warn("\nOpen this link and sign in:"));
             console.log(ev.url);
-            const code = (await tty.next("\nPaste the code it gives you here: ")).trim();
+            const code = (await tty.next("\nPaste the code it gives you here: "))?.trim();
             if (code) await api.call("connect.input", { id, text: code });
             else await api.call("connect.cancel", { id });
-          } else if (ev.text) console.log(dim(ev.text));
+          } else if (ev.text && !PREAMBLE.test(ev.text)) console.log(dim(ev.text));
         });
         console.log(dim("Signing in inside GovernCode's sandbox, in a home that belongs to GovernCode (not your own setup)."));
         const r = await api.call("connect.start", { tool });
@@ -444,7 +596,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "disconnect": {
         const tool = rest[0];
-        if (!["agy", "claude", "codex"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex");
+        if (!["agy", "claude", "codex", "grok"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex|grok");
         console.log((await api.call("tools.disconnect", { tool })).note);
         return 0;
       }
@@ -468,7 +620,9 @@ async function main(argv: string[]): Promise<number> {
         // gov reserve codex weekly 15: keep 15% of Codex's weekly window back (0 to 90).
         const [provider, window, value] = rest;
         const n = Number(value);
-        if (!provider || !window || !Number.isInteger(n)) throw new Error("usage: gov reserve PROVIDER WINDOW PERCENT   (e.g. gov reserve codex weekly 15)");
+        if (!provider || !window || !value || !Number.isInteger(n) || n < 0 || n > 90) throw new Error("usage: gov reserve PROVIDER WINDOW PERCENT   (0-90, e.g. gov reserve codex weekly 15)");
+        runner(provider);
+        // (the window is govd's to check: it also knows the windows each Runner reports right now)
         const { settings } = await api.call("settings.get", {});
         const reserves = { ...settings.reserves, [provider]: { ...(settings.reserves[provider] ?? {}), [window]: n } };
         await api.call("settings.set", { ...settings, reserves });   // the whole object: set replaces it
@@ -480,7 +634,8 @@ async function main(argv: string[]): Promise<number> {
         if (!providers.length) console.log(dim("no measured Runners"));
         for (const x of providers) {
           const windows = x.readings.map((r: any) => `${r.window} ${r.counted ? `${r.counted.used}/${r.counted.cap} ${r.counted.unit}` : `${r.usedPercent}%`}${r.resetsAt ? ` (resets ${r.resetsAt})` : ""}`).join(", ") || "not measured";
-          const held = [x.reservedPercent ? `${x.reservedPercent}% reserved` : "", x.owedPercent ? `${x.owedPercent}% owed` : ""].filter(Boolean).join(", ");
+          const held = [x.reservedPercent ? `${x.reservedPercent}% reserved by running Specs` : "",
+            x.owedPercent ? `${x.owedPercent}% held for finished Specs until the usage report catches up` : ""].filter(Boolean).join(", ");
           const rule = x.local ? `local: at most ${x.local.maxRunning} at once, ${x.local.maxMinutes} min each` : `${windows}  · keeps ${x.reservePercent}% back`;
           console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${rule}${held ? ` · ${held}` : ""}${x.counted ? ` · ${x.counted}` : ""}${x.unmetered ? " · unmetered (your opt-in)" : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
         }
@@ -490,37 +645,61 @@ async function main(argv: string[]): Promise<number> {
         const project = await currentProject(api);
         const { specs } = await api.call("spec.list", { project: project ?? undefined });
         if (!specs.length) console.log(dim("no Specs yet"));
-        for (const x of specs) console.log(`${x.id}  ${x.to.padEnd(8)} ${`${x.model} · ${x.effort ?? "n/a"}`.padEnd(20)} ${x.status.padEnd(13)} ${String(x.files.length).padStart(3)} files  ${dim(x.brief.slice(0, 50))}`);
+        // An empty model is the Runner's default; an effort is shown only when the Spec set one.
+        const used = (x: any) => [x.model || "default model", x.effort].filter(Boolean).join(" · ");
+        const width = Math.max(20, ...specs.map((x: any) => used(x).length));
+        for (const x of specs) console.log(`${x.id}  ${x.to.padEnd(8)} ${used(x).padEnd(width)} ${x.status.padEnd(13)} ${String(x.files.length).padStart(3)} files  ${dim(x.brief.slice(0, 50))}`);
         return 0;
       }
       case "diff": {
+        if (!/^S-\d{4,}$/.test(rest[0] ?? "")) throw new Error("usage: gov diff S-NNNN (see gov specs)");
         const r = await api.call("spec.diff", { id: rest[0] });
         console.log(r.diff || dim("(no changes)"));
         return 0;
       }
       case "accept": {
+        if (!/^S-\d{4,}$/.test(rest[0] ?? "")) throw new Error("usage: gov accept S-NNNN (see gov specs)");
         const r = await api.call("spec.accept", { id: rest[0] });
         console.log(`${r.id}: applied ${r.applied.length} file(s) to the project: ${r.applied.join(", ")}`);
         return 0;
       }
       case "discard": {
+        if (!/^S-\d{4,}$/.test(rest[0] ?? "")) throw new Error("usage: gov discard S-NNNN (see gov specs)");
         await api.call("spec.discard", { id: rest[0] });
         console.log(`${rest[0]}: discarded`);
         return 0;
       }
       case "trace": {
         const project = await currentProject(api);
-        // gov trace --jsonl: every event of this project (or all), one JSON object per line, for export.
-        const jsonl = rest.includes("--jsonl");
-        const { events } = await api.call("trace.list", { project: project ?? undefined, limit: jsonl ? 1000 : 50 });
-        if (jsonl) { for (const e of events) console.log(JSON.stringify(e)); return 0; }
+        // gov trace --jsonl: every event of this project (or all), oldest first, one JSON object per
+        // line, for export. Read a page at a time; an older govd ignores `after` and repeats its newest
+        // page, which ends it rather than looping.
+        if (rest.includes("--jsonl")) {
+          // A page is written only as fast as the reader takes it, and a reader that has gone (| head)
+          // ends the export: the whole Trace is never queued in memory.
+          let gone = false;
+          process.stdout.on("error", () => { gone = true; });
+          for (let after = 0; !gone;) {
+            const page = (await api.call("trace.list", { project: project ?? undefined, limit: 1000, after })).events.filter((e: any) => e.seq > after);
+            for (const e of page) {
+              if (gone) break;
+              if (!process.stdout.write(JSON.stringify(e) + "\n")) await new Promise((ok) => { process.stdout.once("drain", ok); process.stdout.once("error", ok); });
+            }
+            if (page.length < 1000) return 0;
+            after = page.at(-1).seq;
+          }
+          return 0;
+        }
+        const { events } = await api.call("trace.list", { project: project ?? undefined, limit: 50 });
         for (const e of events) console.log(`${new Date(e.ts).toTimeString().slice(0, 8)}  ${e.kind.padEnd(16)} ${(e.project ?? "-").padEnd(12)} ${dim(e.actor)}`);
         return 0;
       }
       case "ask": {
+        const prompt = rest.join(" ");
+        if (!prompt.trim()) throw new Error('usage: gov ask "PROMPT"');
         const project = await currentProject(api);
         const tty = answers();
-        const r = await runAsk(api, project, rest.join(" "), tty);
+        const r = await runAsk(api, project, prompt, tty);
         tty.close();
         console.log(dim(r.ok ? "— done" : `— failed: ${r.summary}`));
         return r.ok ? 0 : 1;
@@ -532,7 +711,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path]");
+        console.error(USAGE);
         return 2;
     }
   } finally {
@@ -540,7 +719,10 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-main(process.argv.slice(2)).then((code) => process.exit(code), (err) => { console.error(`gov: ${err.message}`); process.exit(1); });
+// Exit once stdout has flushed: into a pipe its writes queue, and exiting at once cut off whatever a
+// slow reader (| less, | jq) had not taken yet.
+const exit = (code: number) => process.stdout.write("", () => process.exit(code));
+main(process.argv.slice(2)).then(exit, (err) => { console.error(`gov: ${err.message}`); exit(1); });
 
 async function daemon(verb: string | undefined): Promise<number> {
   const svc = await import("./service.ts");

@@ -1,7 +1,7 @@
 // Pipeline: the Specs, their status, and for one Spec its details, its diff, and the choice
 // to accept it into the project or discard it.
 import { useCallback, useEffect, useState } from "react";
-import { call, clock, useFallbackPoll, useWatch, type Spec } from "../api.ts";
+import { call, clock, dotted, modelLabel, useFallbackPoll, useWatch, type Spec } from "../api.ts";
 import { ConfirmButton, DiffView, Empty, SpecPill } from "../ui.tsx";
 
 export function Pipeline({ project, live }: { project: string | null; live: boolean }) {
@@ -53,7 +53,7 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
               <button key={s.id} className={`list-row ${s.id === selected ? "active" : ""}`} onClick={() => setSelected(s.id)}>
                 <div className="row"><b className="mono">{s.id}</b><span className="dim">{s.to}</span><span className="spacer" /><SpecPill status={s.status} /></div>
                 <div className="dim ellipsis">{s.brief}</div>
-                <div className="dim small">{s.project} · {s.model} · {s.effort ?? "n/a"} · {s.files.length} file{s.files.length === 1 ? "" : "s"} · {clock(s.created)}</div>
+                <div className="dim small">{dotted(s.project, modelLabel(s.model, s.effort), `${s.files.length} file${s.files.length === 1 ? "" : "s"}`, clock(s.created))}</div>
               </button>
             ))}
           </div>
@@ -89,7 +89,7 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
     ["Status", spec.status + (spec.note ? ` (${spec.note})` : "")],
     ["Project", spec.project],
     ["Runner", spec.to],
-    ["Model", `${spec.model} · effort ${spec.effort ?? "n/a"}`],
+    ["Model", dotted(spec.model.trim() || "default model", spec.effort && `effort ${spec.effort}`)],
     ["Limit budget", `${spec.budgetPercent}%`],
     ["Workspace", spec.workspace],
     ["Scope", `read ${JSON.stringify(spec.scope.read)} · write ${JSON.stringify(spec.scope.write)}`],
@@ -100,7 +100,7 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
   ];
   return (
     <div className="spec-detail">
-      <div className="row"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
+      <div className="row wrap"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
         <ConfirmButton label="Accept" tone="ok" disabled={!reviewable} confirm={`Apply ${spec.id}'s changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
         <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || spec.status === "failed")} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
       </div>

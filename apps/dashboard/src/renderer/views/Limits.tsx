@@ -60,7 +60,7 @@ export function Limits() {
                   : p.verdict.ok ? <Pill tone="ok">available</Pill>
                   : <Pill tone="warn" title={p.verdict.reason}>held{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt)}` : ""}</Pill>}
               </div>
-              {p.readings.map((r) => {
+              {p.readings.length > 0 && <div className="windows">{p.readings.map((r) => {
                 const keep = r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;
                 const inside = r.usedPercent > 100 - keep;
                 return (
@@ -74,11 +74,11 @@ export function Limits() {
                     <span className="dim small">{r.resetsAt ? `resets ${clock(r.resetsAt)}` : ""}</span>
                   </div>
                 );
-              })}
+              })}</div>}
               <div className="dim small">
                 {p.measuredAt ? `${p.local ? "answered" : "measured"} ${ago(p.measuredAt)}` : p.local ? "not checked yet" : "never measured"}
                 {p.reservedPercent ? ` · ${p.reservedPercent}% reserved by running Specs` : ""}
-                {p.owedPercent ? ` · ${p.owedPercent}% still owed by finished Specs` : ""}
+                {p.owedPercent ? ` · ${p.owedPercent}% held for finished Specs until the usage report catches up` : ""}
                 {!p.verdict.ok && ` · ${p.verdict.reason}`}
               </div>
             </div>

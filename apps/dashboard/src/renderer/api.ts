@@ -20,7 +20,7 @@ export type Controller = { provider: string; model: string; effort: string | nul
 export type Project = { name: string; path: string; created: string; controller: Controller };
 export type Turn = { id: string; at: string; files: string[]; undone?: boolean };
 export type Gate = { id: string; project: string | null; tool: string; canonical: string; opened: string; covers?: string | null; scopes?: string[]; suggest?: string | null };
-export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "undone" | "failed";
+export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "discarded" | "failed";
 export type Spec = {
   id: string; project: string; status: SpecStatus; created: string; to: string; brief: string; result: string;
   scope: { read: string[]; write: string[] }; budgetPercent: number; workspace: string; model: string;
@@ -39,7 +39,7 @@ export function clock(iso: string, now = new Date()): string {
   return sameDay ? time : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}`;
 }
 
-export const controllerLabel = (c: Controller) => `${c.provider} · ${c.model} · ${c.effort ?? "n/a"}`;
+export { controllerLabel, dotted, modelLabel, personalKey } from "../shared/labels.ts";
 
 export const START_GOVD = "node packages/gov/src/main.ts daemon start";
 

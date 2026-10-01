@@ -10,7 +10,7 @@
     "dev": "node scripts/dev.ts",
     "build": "npm run typecheck && node scripts/build.ts",
     "prestart": "node ../../node_modules/electron/install.js",
-    "start": "electron .",
+    "start": "node scripts/start.ts",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json",
     "test": "node --test test/*.test.ts"
   },

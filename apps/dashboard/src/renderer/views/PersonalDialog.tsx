@@ -9,13 +9,13 @@ const WHAT: Record<"claude" | "codex", { tool: string; files: string }> = {
   codex: { tool: "Codex", files: "your AGENTS.md" },
 };
 
-export function PersonalDialog(props: { provider: "claude" | "codex"; onChoose: (use: boolean) => void; onClose: () => void }) {
+export function PersonalDialog(props: { provider: "claude" | "codex"; home?: boolean; onChoose: (use: boolean) => void; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const w = WHAT[props.provider];
   const choose = (use: boolean) => { setBusy(true); props.onChoose(use); };
   return (
     <Modal title={`Use your own ${w.tool} instructions?`} onClose={props.onClose}>
-      <p>{w.tool} is about to work as this project's Controller. You may already have set it up with {w.files}.</p>
+      <p>{w.tool} is about to work as {props.home ? "Home's" : "this project's"} Controller. You may already have set it up with {w.files}.</p>
       <div className="choice">
         <p><b>Start clean</b> (the default): {w.tool} works from its own defaults and GovernCode's instructions only.
           Nothing you set up elsewhere applies here, so it behaves the same for everyone, and none of your other workflows or

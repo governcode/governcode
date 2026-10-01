@@ -3,20 +3,22 @@
 About fifteen minutes. Talk to the Controller in plain words; the prompts below are only
 suggestions. Paste them into the Dashboard's **Terminal** view, or run `gov ask "..."` in a shell.
 
-**You need:** GovernCode installed (`./install.sh` from a release), `govd` running, and Claude
-Code logged in (the Controller). Optional: Codex logged in, and Ollama with a model pulled
-(`ollama pull qwen3.5:9b`), for the two Runners. Every AI step runs inside the sandbox, always.
+**You need:** GovernCode installed (`./install.sh --service` from a release), `govd` running, and
+Claude Code connected for GovernCode (`gov connect claude`; it is the Controller). Optional: Codex
+connected (`gov connect codex`), and Ollama with a model pulled (`ollama pull qwen3.5:9b`), for the
+two Runners. Every AI step runs inside the sandbox, always.
 
 ## 0. A copy to work on
 
-GovernCode works on a git project, so make your own copy of this folder:
+GovernCode works on a git project, so make your own copy of this folder (from the release's or
+the repository's folder):
 
 ```sh
-cp -r tidepool ~/tidepool && cd ~/tidepool
+cp -r examples/tidepool ~/tidepool && cd ~/tidepool
 git init -q && git add -A && git commit -qm "Tidepool, before the crew"
 ```
 
-In the Dashboard: **Open folder** → `~/tidepool`, and pick **Claude Code** as the Controller. The
+In the Dashboard (`governcode-dashboard`): **Open folder** → `~/tidepool`, and pick **Claude Code** as the Controller. The
 first message asks whether to use your own Claude Code instructions: **Start clean** is right for
 a demo.
 

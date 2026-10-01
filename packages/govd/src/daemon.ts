@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, existsSync, sta
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RpcError, Settings, type SettingsValue, type Method, type WatchEvent, type TraceEvent } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, issues, ProjectName, ProjectProposal, Request, RESERVE_WINDOWS, RUNNERS, RpcError, Settings, type CrewValue, type SettingsValue, type Method, type WatchEvent, type TraceEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
@@ -87,6 +87,11 @@ export class Daemon {
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
     this.connector = new Connector({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir });
+    // Ids go on from the Trace after a restart, so G-3 in yesterday's transcript is still that Gate.
+    const last = (kind: TraceEvent["kind"], field: string) => Number(String(this.ledger.lastOfKind(kind)?.data[field] ?? "").replace(/^[A-Z]+-/, "")) || 0;
+    this.gateSeq = last("gate.opened", "gate");
+    this.planSeq = last("plan.proposed", "plan");
+    this.proposalSeq = last("project.proposed", "proposal");
   }
 
   /** The project's recent conversation, since its last reset: the user's messages and the
@@ -205,7 +210,7 @@ export class Daemon {
   private newProjectPath(name: string, raw: string): string {
     if (this.ledger.project(name)) throw new RpcError(Errors.refused, `a project named ${name} already exists`);
     const path = resolve(raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw);
-    if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists; use project.open`);
+    if (existsSync(path)) throw new RpcError(Errors.refused, `${path} already exists: open it as a project instead (gov open PATH)`);
     this.checkProjectPath(path);
     this.checkProjectPath(realAncestor(path));   // a symlinked parent must not smuggle in a denied folder
     return path;
@@ -244,7 +249,7 @@ export class Daemon {
   /** Home's Controller: the most recently chosen project Controller, else the default. */
   /** Home uses the Controller the user chose most recently (projects list by name, not by time). */
   private homeController() {
-    const last = this.ledger.events(undefined, 5000).filter((e) => e.kind === "controller.set").at(-1);
+    const last = this.ledger.lastOfKind("controller.set");
     const chosen = last ? this.ledger.project(String(last.project))?.controller : undefined;
     return chosen ?? { provider: "claude-code" as const, model: "opus", effort: "high" as const };
   }
@@ -276,7 +281,8 @@ export class Daemon {
         if (!(req.method in Params)) throw new RpcError(Errors.unknownMethod, `unknown method ${req.method}`);
         const method = req.method as Method;
         const parsed = Params[method].safeParse(req.params ?? {});
-        if (!parsed.success) throw new RpcError(Errors.badParams, parsed.error.issues.map((i) => i.message).join("; "));
+        // Each problem names its field (id: ..., reserves.codex.weekly: ...), for the CLI and the Dashboard alike.
+        if (!parsed.success) throw new RpcError(Errors.badParams, issues(parsed.error));
         const result = await this.call(method, parsed.data as never, (n) => write({ jsonrpc: "2.0", method: "event", params: n }), sock);
         write({ jsonrpc: "2.0", id, result });
       } catch (err) {
@@ -286,10 +292,10 @@ export class Daemon {
     });
   }
 
-  /** The user's answer to a game plan. */
-  private answerPlan(id: string, answer: "approve" | "just-you" | "reject", items: number[] | undefined, by: string): boolean {
+  /** The user's answer to a game plan: the item numbers approved, or null when no such plan waits. */
+  private answerPlan(id: string, answer: "approve" | "just-you" | "reject", items: number[] | undefined, by: string): number[] | null {
     const pl = this.plans.get(id);
-    if (!pl) return false;
+    if (!pl) return null;
     this.plans.delete(id);
     // No selection: all items. A selection (even an empty one): only those.
     const approved = answer !== "approve" ? [] : items === undefined ? pl.items : pl.items.filter((_, i) => items.includes(i + 1));
@@ -297,9 +303,10 @@ export class Daemon {
     state.approved.push(...approved.map((x) => ({ ...x })));
     if (answer === "just-you") state.justYou = true;
     this.turnPlans.set(pl.turn, state);
-    this.ledger.append(pl.project, "plan.answered", "user", { plan: id, answer, by, approved: approved.map((x) => pl.items.indexOf(x) + 1) });
+    const numbers = approved.map((x) => pl.items.indexOf(x) + 1);
+    this.ledger.append(pl.project, "plan.answered", "user", { plan: id, answer, by, approved: numbers });
     pl.answer({ answer, approved });
-    return true;
+    return numbers;
   }
 
   private settle(id: string, answer: "allow" | "deny", by: string, remember?: AllowScope): boolean {
@@ -340,7 +347,8 @@ export class Daemon {
         return { server: "govd", version: this.opts.version, protocol: PROTOCOL, features: FEATURES,
           sandbox: { ok: this.sandboxOk, reason: this.sandboxReason } };
       case "project.list":
-        return { projects: L.projects() };
+        // home: the Controller a turn at Home would use now, so a client asks about the right tool.
+        return { projects: L.projects(), home: { controller: this.homeController() } };
       case "project.new": {
         this.nameFree(p.name);
         const path = this.newProjectPath(p.name, p.path);
@@ -366,7 +374,7 @@ export class Daemon {
           throw new RpcError(Errors.refused, `${path} led somewhere else while being created; nothing was kept`);
         }
         if (prop.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
-        return { id: p.id, created: L.addProject(prop.name, path, "project.created") };
+        return { id: p.id, created: L.addProject(prop.name, path, "project.created", { proposal: p.id }) };
       }
       case "project.open": {
         if (!existsSync(resolve(p.path)) || !statSync(resolve(p.path)).isDirectory()) throw new RpcError(Errors.notFound, `${resolve(p.path)} is not a folder`);
@@ -403,13 +411,15 @@ export class Daemon {
         return { crew: crewOf(L, p.project) };
       case "crew.set":
         if (!L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
+        knownNames(crewNames(p.crew), crewNames(crewOf(L, p.project)));
         return { crew: setCrew(L, p.project, p.crew) };
       case "context.share":
         if (!L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
         L.append(p.project, "context.shared", "user", { provider: p.provider, share: p.share });
         return { ok: true };
       case "trace.list":
-        return { events: p.kinds && p.project ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit) };
+        if (p.kinds && p.project && p.after !== undefined) throw new RpcError(Errors.badParams, "after: pages by kind are not offered; page without kinds");
+        return { events: p.kinds && p.project ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit, p.after) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
       case "conversation.reset":
@@ -427,6 +437,8 @@ export class Daemon {
       case "settings.get":
         return { settings: this.settings() };
       case "settings.set": {
+        // A window the Runner reports now counts too (the Dashboard offers exactly those).
+        knownNames(settingNames(p), settingNames(this.settings()), (r) => this.limits.view(r).readings.map((x) => x.window));
         this.saveSettings(p);
         this.limits.setReserves(p.reserves);
         this.limits.setLocal(p.local);
@@ -479,16 +491,21 @@ export class Daemon {
       case "spec.discard": {
         const s = this.specOr404(p.id);
         discard(this.stateDir(), s.id);
-        if (s.status === "needs-review" || s.status === "failed") L.updateSpec(s.id, { status: "undone", note: "discarded by the user" }, "user");
+        if (s.status === "needs-review" || s.status === "failed") L.updateSpec(s.id, { status: "discarded", note: "discarded by the user" }, "user");
         return { id: s.id, discarded: true };
       }
       case "gate.list":
         return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, kinds, ...g }) => ({ ...g,
           covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
           suggest: this.settings().gates.level === "balanced" && g.scopes.includes("project") ? "project" : null })) };
-      case "plan.answer":
-        if (!this.answerPlan(p.id, p.answer, p.items, "user")) throw new RpcError(Errors.notFound, `no plan ${p.id} is waiting`);
-        return { ok: true };
+      case "plan.answer": {
+        // An item the plan does not have is refused (the plan keeps waiting), never approved as nothing.
+        const n = this.plans.get(p.id)?.items.length;
+        if (n !== undefined && p.items?.some((i: number) => i > n)) throw new RpcError(Errors.badParams, `${p.id} has ${n} item${n === 1 ? "" : "s"}`);
+        const approved = this.answerPlan(p.id, p.answer, p.items, "user");
+        if (!approved) throw new RpcError(Errors.notFound, `no plan ${p.id} is waiting`);
+        return { ok: true, approved };
+      }
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
@@ -713,6 +730,23 @@ export class Daemon {
     });
   }
 }
+
+/** The Runners (and "runner window" pairs) a setting names must be GovernCode's: any other would be
+ *  saved and never used. One already saved, before names were checked, is let through, so an older
+ *  file never blocks a change. */
+function knownNames(names: string[], saved: string[], seen: (runner: string) => string[] = () => []): void {
+  for (const n of names) {
+    if (saved.includes(n)) continue;
+    const [runner, window] = n.split(" ");
+    if (!(RUNNERS as readonly string[]).includes(runner)) throw new RpcError(Errors.badParams, `unknown Runner ${runner} (Runners: ${RUNNERS.join(", ")})`);
+    if (window !== undefined && !(RESERVE_WINDOWS as readonly string[]).includes(window) && !seen(runner).includes(window)) {
+      throw new RpcError(Errors.badParams, `unknown window ${window} (windows: ${RESERVE_WINDOWS.join(", ")})`);
+    }
+  }
+}
+const settingNames = (s: SettingsValue) => [...Object.keys(s.runners), ...Object.keys(s.budgets),
+  ...Object.entries(s.reserves).flatMap(([r, w]) => [r, ...Object.keys(w).map((x) => `${r} ${x}`)])];
+const crewNames = (c: CrewValue) => [...(c.runners ?? []), ...Object.keys(c.maxPercent)];
 
 /** The path with its deepest existing ancestor resolved through any symlinks. */
 function realAncestor(path: string): string {

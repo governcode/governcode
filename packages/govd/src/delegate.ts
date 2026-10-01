@@ -4,7 +4,6 @@
 // result for review. The Runner's own Gates go to the same user terminal as the Controller's.
 import { createServer, type Server, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, chmodSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -12,7 +11,7 @@ import { SpecInput, type SettingsValue } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
 import { reportedTokens, usageComplete, type CountedStore, type LimitGate, type UsageSource } from "./limits.ts";
 import { canonical, type GateRequest } from "./claude.ts";
-import { applyToProject, changedFiles, createWorkspace, diff, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
+import { applyToProject, changedFiles, createWorkspace, diff, hasCommit, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
@@ -120,7 +119,7 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
         throw new Error("the user declined discarding it");
       }
       discard(ctx.stateDir, s.id);
-      ctx.ledger.updateSpec(s.id, { status: "undone", note: "discarded by the Controller" }, "controller");
+      ctx.ledger.updateSpec(s.id, { status: "discarded", note: "discarded by the Controller" }, "controller");
       return { id: s.id, discarded: true };
     }
     if (method === "controller.project_notes") {
@@ -281,14 +280,21 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   let poll: ReturnType<typeof setInterval> | undefined;
   let ran = false, runUsage: unknown;   // a cloud Runner was started: its use counts, whatever the outcome
   try {
-    // 2. Its own workspace in govd's state (out of every AI tool's reach): the project's
-    //    committed HEAD, exported without filters, with its own git dir for snapshots.
+    // 2. Its own workspace in govd's state (out of every AI tool's reach): the project as the
+    //    user has it now (specstore.createWorkspace), with its own git dir for snapshots.
     const project = ctx.project.path;
-    let head = "";
-    try { head = execFileSync("git", ["-C", project, "rev-parse", "--verify", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* none */ }
-    if (!head) throw new Error("the project has no commit yet; commit once so a Runner can work from it");
+    if (!hasCommit(project)) throw new Error("the project has no commit yet; commit once so a Runner can work from it");
     const paths = specPaths(ctx.stateDir, spec.id);
-    createWorkspace(project, paths);
+    // A new file the user has not committed reaches the Runner only when a Spec they accepted here
+    // wrote it, or this Spec's scope names it (the user saw the scope at the handoff); the others
+    // stay out, and the Spec says which.
+    const accepted = new Set(L.specs(ctx.project.name).filter((s) => s.status === "accepted").flatMap((s) => s.files));
+    const named = [...input.scope.read, ...input.scope.write].map((x) => x.replace(/^\.\/+/, "").replace(/\/+$/, "")).filter(Boolean);
+    const copied = createWorkspace(project, paths, (rel) => accepted.has(rel) || named.some((x) => rel === x || rel.startsWith(x + "/")));
+    const list = (xs: string[]) => `${xs.slice(0, 5).join(", ")}${xs.length > 5 ? `, and ${xs.length - 5} more` : ""}`;
+    const notCopied = [copied.left.length ? `not in its copy: ${copied.left.length} new file(s) you have not committed (${list(copied.left)}); commit them, or name them in the Spec's scope` : "",
+      copied.skipped.length ? `${copied.skipped.length} file(s) could not be read safely and are not in its copy (${list(copied.skipped)})` : ""].filter(Boolean).join("; ");
+    if (notCopied) L.updateSpec(spec.id, { note: [notes, notCopied].filter(Boolean).join("; ") }, "govd");
 
     // 3. Scope: real directories or files inside the workspace, never through a symlink. A scope
     //    entry that is an existing file stays a file (a file-level sandbox rule); a new file name
@@ -385,7 +391,7 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
     const scopes = input.scope.write.map((w) => w.replace(/^\.\/+/, "").replace(/\/+$/, ""));
     const outside = scopes.length ? files.filter((f) => !scopes.some((w) => f === w || f.startsWith(w + "/"))) : [];
     const ok = result.ok && !outside.length;
-    const note = outside.length ? `changed files outside its scope: ${outside.join(", ")}` : result.ok ? undefined : result.summary;
+    const note = [outside.length ? `changed files outside its scope: ${outside.join(", ")}` : result.ok ? "" : result.summary, notCopied].filter(Boolean).join("; ") || undefined;
     L.updateSpec(spec.id, { status: ok ? "needs-review" : "failed", files, checkpoints: { before, after }, note }, "govd");
     const d = files.length ? diff(paths, before, after) : "";
     return { id: spec.id, status: ok ? "needs-review" : "failed", runner: input.to, files, ...(note ? { note } : {}),

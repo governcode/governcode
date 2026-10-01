@@ -1,7 +1,8 @@
 // The Grok Runner end to end with a fake `grok` that speaks ACP the way the real one does where
 // it matters: initialize, session/new, session/prompt, a `session/request_permission` for every
-// tool call (with an "allow always" option on offer, first), a `turn_completed` update with token
-// usage, `_x.ai/billing`, `session/cancel`, and a device-code `login`.
+// tool call (with an "allow always" option on offer, first), its words in small pieces, a
+// `turn_completed` with token usage on xAI's own channel and the totals again in the prompt's
+// answer (as Grok 1.0.46 does), `_x.ai/billing`, `session/cancel`, and a device-code `login`.
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -74,6 +75,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method !== "session/prompt") return out({ id: m.id, error: { code: -32601, message: "no such method " + m.method } });
   seen.prompt = m.params.prompt[0].text; record();
   const update = (u, sid = "s-1") => out({ method: "session/update", params: { sessionId: sid, update: u } });
+  const xai = (u, sid = "s-1") => out({ method: "_x.ai/session_notification", params: { ...(sid ? { sessionId: sid } : {}), update: u } });
+  const turn = { sessionUpdate: "turn_completed", prompt_id: "p-1", usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedReadTokens: 50 } };
   if (cfg.mode === "flood") {   // more steps than the record takes
     for (let i = 0; i < 15000; i++) update({ sessionUpdate: "tool_call", toolCallId: "f" + i, title: "step number " + i + " of a very long list of steps that says little", kind: "other", status: "pending" });
     update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "after the flood" } });
@@ -82,12 +85,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     seen.refused = await ask("fs/read_text_file", { sessionId: "s-1", path: "/etc/passwd" });
     update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "not mine" } }, "s-other");
     update({ sessionUpdate: "turn_completed", usage: { inputTokens: 9999, outputTokens: 9999, totalTokens: 19998 } }, "s-other");
+    xai({ sessionUpdate: "turn_completed", usage: { inputTokens: 9999, outputTokens: 9999, totalTokens: 19998 } }, "s-other");
     seen.otherSession = await ask("session/request_permission", { sessionId: "s-other", toolCall: { toolCallId: "x", kind: "execute", title: "x", rawInput: { command: "id" } },
       options: [{ optionId: "once", kind: "allow_once" }, { optionId: "no", kind: "reject_once" }] });
   }
   let n = 0;
   for (const call of cfg.calls || []) {
     const id = "tc-" + (++n);
+    for (const w of call.say || []) update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: w } });
     update({ sessionUpdate: "tool_call", toolCallId: id, title: call.title, kind: call.kind, status: "pending", rawInput: call.rawInput });
     if (cfg.mode === "die") { process.stderr.write("boom: out of cheese\\n"); record(); process.exit(7); }
     if (cfg.mode === "wait-cancel") { await new Promise((ok) => (cancelled = ok)); record(); return out({ id: m.id, result: { stopReason: "cancelled" } }); }
@@ -100,10 +105,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     if ((d === "once" || d === "always") && call.link) { fs.mkdirSync(path.dirname(call.link), { recursive: true }); fs.symlinkSync(call.rawInput.target, call.link); }
     update({ sessionUpdate: "tool_call_update", toolCallId: id, status: d === "once" || d === "always" ? "completed" : "failed" });
   }
-  update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "finished" } });
-  update({ sessionUpdate: "turn_completed", usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedReadTokens: 50 } });
+  for (const w of ["fin", "ish", "ed"]) update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: w } });
+  if (cfg.mode === "old-channel") update(turn);                       // before 1.0.46: on session/update
+  else if (cfg.mode === "twice") { xai(turn); xai(turn, null); update(turn); }   // the same turn, sent again (one without its session)
+  else if (cfg.mode === "xai-only") xai(turn, null);                 // only xAI's channel, without its session
+  else if (cfg.mode === "split") { xai({ ...turn, usage: { inputTokens: 300, outputTokens: 40, totalTokens: 340 } }); xai({ ...turn, usage: { inputTokens: 5, outputTokens: 5, totalTokens: 10 } }); }
+  else if (cfg.mode !== "meta-only") xai(turn);
   record();
-  out({ id: m.id, result: { stopReason: cfg.stopReason || "end_turn" } });
+  const meta = cfg.mode === "old-channel" || cfg.mode === "xai-only" ? {} : cfg.mode === "meta-only" ? { _meta: { totalTokens: 300, inputTokens: 250, outputTokens: 50 } }
+    : { _meta: { totalTokens: 120, inputTokens: 100, outputTokens: 20, modelId: "grok-x" } };   // the same turn's totals again
+  out({ id: m.id, result: { stopReason: cfg.stopReason || "end_turn", ...meta } });
   if (cfg.mode === "late-ask") setTimeout(async () => {   // asking, and talking, after the turn ended
     update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "too late" } });
     process.stdout.write(JSON.stringify({ id: 999, method: "session/request_permission", result: {}, params: {} }) + "\\n");   // not JSON-RPC 2.0: ignored
@@ -364,6 +375,48 @@ test("acp permission mapping: 'allow once' or a rejection, never 'allow always',
   assert.equal(z.usage(true)!.complete, false, "nothing used is not a complete report");
   z.add({ usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } });
   assert.deepEqual(z.usage(true), { totalTokens: 15, inputTokens: 10, outputTokens: 5, complete: false }, "one empty turn keeps the run incomplete");
+  // The prompt's own totals: the larger figure, never the sum; a turn sent twice counts once.
+  const p = acpTokenTally();
+  p.add({ prompt_id: "a", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }); p.add({ prompt_id: "a", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } });
+  p.prompt({ stopReason: "end_turn", _meta: { totalTokens: 15, inputTokens: 10, outputTokens: 5 } });
+  assert.deepEqual(p.usage(true), { totalTokens: 15, inputTokens: 10, outputTokens: 5, complete: true });
+  const only = acpTokenTally(); only.prompt({ usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } });
+  assert.deepEqual(only.usage(true), { totalTokens: 10, inputTokens: 7, outputTokens: 3, complete: true }, "ACP's own usage field is a report");
+  const none = acpTokenTally(); none.prompt({ stopReason: "end_turn", _meta: { modelId: "m" } });
+  assert.equal(none.usage(true), null, "a _meta with no totals is no report");
+  const bad = acpTokenTally(); bad.prompt({ usage: { inputTokens: "lots" } });
+  assert.equal(bad.usage(true)!.complete, false, "a usage that cannot be read holds a token budget");
+});
+
+test("acp: Grok's reads, searches and listings are quiet reads; every other call is a step named after its own tool", () => {
+  const g = (kind: string, rawInput: object) => permissionGate("grok", { toolCall: { kind, title: "t", rawInput } }, "g");
+  const q = (r: ReturnType<typeof g>) => analyze({ tool: `${r.tool} (Runner · grok, S-1)`, base: r.tool, spec: "S-1", input: r.input });
+  const list = g("other", { variant: "ListDir", target_directory: "/w/test" });
+  assert.equal(list.tool, "grok_ListDir");
+  assert.deepEqual(q(list), { ask: false, quiet: true, kinds: [] });
+  assert.equal(q(g("read", { variant: "ReadFile", target_file: "/w/src/cli.js" })).quiet, true);
+  assert.equal(q(g("search", { variant: "Grep", pattern: "x", path: null })).quiet, true);
+  assert.equal(q(g("search", { variant: "Grep", pattern: "x", path: "/w/src" })).quiet, true);
+  // A read tool with another kind, without its own path, or reaching a special place always asks
+  // (as `cat /dev/zero` does), and is never a kind a rule could remember.
+  const asks = { ask: true, quiet: false, kinds: [] };
+  for (const r of [g("fetch", { variant: "ReadFile", target_file: "/w/a" }), g("read", { variant: "ReadFile", target_file: "/dev/zero" }),
+    g("read", { variant: "ReadFile", target_file: "/w/../../proc/self/environ" }), g("read", { variant: "ReadFile", file_path: "/w/a" }),
+    g("other", { variant: "ListDir" }), g("other", { variant: "ListDir", target_directory: 7 }), g("search", { variant: "Grep", pattern: "x", path: "/proc" }),
+    permissionGate("grok", { toolCall: { kind: "read", rawInput: { variant: "ReadFile", target_file: "/w/a" }, locations: [{ path: "/sys/kernel" }] } }, "g")]) {
+    assert.deepEqual(q(r), asks, JSON.stringify(r.input));
+  }
+  // A lower-case name is not a tool name: it could read as a kind (grok_read).
+  assert.equal(g("fetch", { variant: "read" }).tool, "grok_fetch");
+  // Any other tool is a kind of its own: allowing it never covers another.
+  const todo = g("other", { variant: "TodoWrite", todos: [] });
+  assert.equal(todo.tool, "grok_TodoWrite");
+  assert.deepEqual(q(todo).kinds.map((k) => k.key), ["runner:tool:grok_TodoWrite"]);
+  // A call of kind "other" with no name, or a name GovernCode cannot use, always asks.
+  for (const r of [g("other", {}), g("other", { variant: "Rm -rf" }), g("other", { variant: "x".repeat(31) })]) {
+    assert.equal(r.tool, "grok unknown tool");
+    assert.deepEqual(q(r), { ask: true, quiet: false, kinds: [] });
+  }
 });
 
 // The driver on its own, with the fake started directly: stopping, a Gate that waits too long, a dying agent.
@@ -442,6 +495,31 @@ test("acp: requests GovernCode does not offer get an error, another session's wo
   late.rpc.close(); await late.rpc.closed;
   assert.deepEqual(late.seen().late, { outcome: { outcome: "selected", optionId: "no" } });
   assert.deepEqual(late.texts, ["finished"], "words after the turn are not this run's");
+});
+
+test("acp: token use counts from xAI's channel, the old one or the prompt's totals, each turn once; words arrive whole", async () => {
+  const usage = async (mode: string) => {
+    const d = direct(mode, [], async () => "allow");
+    const r = await runAcpTurn({ rpc: d.rpc, agent: "grok", cwd: d.work, prompt: "go", hooks: d.hooks });
+    d.rpc.close(); await d.rpc.closed;
+    return r.usage;
+  };
+  const once = { totalTokens: 120, inputTokens: 100, outputTokens: 20, complete: true };
+  assert.deepEqual(await usage(""), once);
+  assert.deepEqual(await usage("old-channel"), once);
+  assert.deepEqual(await usage("twice"), once, "the same turn on two channels, and again without its session, counts once");
+  assert.deepEqual(await usage("meta-only"), { totalTokens: 300, inputTokens: 250, outputTokens: 50, complete: true });
+  assert.deepEqual(await usage("xai-only"), once, "xAI's channel alone, with no session and no totals in the answer, is read");
+  assert.deepEqual(await usage("split"), { totalTokens: 350, inputTokens: 305, outputTokens: 45, complete: true },
+    "two different reports for one prompt both count, and outweigh smaller totals in the answer");
+  // Words come in pieces: each message reaches the hooks whole, before the step that follows it.
+  const d = direct("", [{ kind: "execute", title: "ls", say: ["Let me ", "look", "."], rawInput: { command: "ls" } }], async () => "allow");
+  const order: string[] = [];
+  d.hooks.text = (s: string) => { order.push(`text:${s}`); };
+  d.hooks.tool = (n: string) => { order.push(`tool:${n}`); };
+  await runAcpTurn({ rpc: d.rpc, agent: "grok", cwd: d.work, prompt: "go", hooks: d.hooks });
+  d.rpc.close(); await d.rpc.closed;
+  assert.deepEqual(order, ["text:Let me look.", "tool:grok execute: ls", "text:finished"]);
 });
 
 test("acp: a flood of steps and words stops at the record's budget", async () => {

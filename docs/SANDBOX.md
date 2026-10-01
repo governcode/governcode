@@ -110,8 +110,11 @@ what they can do; the Gate just no longer asks each time. Use "this turn" when i
 steer (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `pwd`, `stat`, `du`, `df`, `which`,
 `find` with tests only) run without a Gate, and only with the options each is known to read
 with: any other option (`tail -f`, `rg --pre`, `grep -f`...) or a special file (`/dev`,
-`/proc`, `/sys`) asks. They are still sandboxed and still in the Trace. Turn it off in Settings to
-be asked for everything.
+`/proc`, `/sys`) asks. An interpreter asked only its version (exactly `node --version`,
+`python3 -V`, `ruby -v`...) is a quiet read too; with any other argument it asks. A Grok Runner's own read tools (reading a file, searching, listing a
+folder) are quiet reads on the same terms: one that reaches a special place, or that GovernCode
+cannot check, always asks. They are still sandboxed and still in the Trace. Turn it off in
+Settings to be asked for everything.
 
 ## Local models: nothing to run, so nothing to sandbox
 
@@ -133,11 +136,15 @@ once, how many minutes each), since there is no quota to measure.
   A stopped run gets 3 seconds to end on its own; then everything it started is killed. A per-run cgroup would close
   that; it is not needed for how GovernCode runs tools today.
 - The tool can read its own credentials (it needs them) and reach any address on port
-  443, so a misbehaving tool could send its own credentials away. The sandbox protects
-  everything else; it cannot make a tool trustworthy with what it must hold.
+  443, so a misbehaving tool could send its own credentials away. Reading them is a quiet read,
+  so no Gate asks first, and a Runner could repeat them in its words or write them into its
+  changes (you would see that in the diff). The sandbox protects everything else; it cannot make
+  a tool trustworthy with what it must hold. Keeping a Runner's login out of its own reach is
+  planned with GovernCode's secrets storage.
 - UDP is not restricted (DNS needs it); TCP is, by port but not by address.
-- An expired login token cannot be refreshed inside the sandbox (credentials are
-  read-only); run the tool once outside GovernCode to refresh it.
+- A tool that refreshes its login during a run keeps it (govd copies the new login back as it
+  is). Grok's login is read-only inside a run, so when it expires, `gov connect grok` signs it in
+  again.
 - A binary the tool writes into its worktree can still be loaded through the dynamic loader
   (`ld.so ./file`): Landlock checks execute on `execve`, not on memory mapping.
 

@@ -39,11 +39,13 @@ releases, tagged `vX.Y.Z`). The first Motion is
 ```sh
 sha256sum -c SHA256SUMS
 tar xzf governcode-0.1.0-motion.8-linux-x86_64.tar.gz
-cd governcode-0.1.0-motion.8-linux-x86_64 && ./install.sh   # everything under ~/.local, no root
-govd &
+cd governcode-0.1.0-motion.8-linux-x86_64 && ./install.sh --service   # everything under ~/.local, no root; govd starts at login
 gov connect claude   # sign Claude Code in for GovernCode (once); gov connect codex too, for the demo's Runner steps
 gov demo
+governcode-dashboard # the desktop app (also "GovernCode Dashboard" in your app launcher)
 ```
+
+Without `--service`, start govd yourself when you want it: `govd &`, or `gov daemon start`.
 
 To remove it: `./install.sh --uninstall` takes out the service, the commands, the launcher entry
 and every release it installed, and keeps your settings and Trace; add `--purge` to remove those
@@ -97,15 +99,26 @@ for that hand-back; nothing else an AI tool runs may listen at all.
 Or on your own project:
 
 ```sh
-gov new demo --path ~/code/demo && cd ~/code/demo
+gov new demo --path ~/code/demo && cd ~/code/demo   # or, for a folder you already have: gov open PATH [NAME]
 gov controller claude-code --model sonnet --effort medium
 gov ask "Add a README with one line about this project"
 gov gates          # from another terminal: what is waiting, exactly as it will run
+gov gate G-3 allow # answer it there: allow|deny, and --turn, --spec or --project to remember it
 gov allows         # the standing allows you remembered for projects (revocable)
 gov trace          # what happened (gov trace --jsonl to export it)
 gov turns          # Checkpoints of the Controller's turns that changed files
 gov undo T-12      # put those files back, if you have not changed them since
+gov status         # govd's version and sandbox; gov projects and gov settings list the rest
 ```
+
+A Gate waits for your answer: in `gov ask`, from another terminal, or in the Dashboard. In
+`gov ask` a line counts only for the question on screen: one typed (or piped) before it was shown,
+or in its first second, is ignored, so an answer never lands on a question you did not see. With
+stdin closed (e.g. `< /dev/null`), `gov ask` answers nothing itself; it says where to answer and
+keeps waiting: `gov gate G-N allow|deny [--turn|--spec|--project]` for a Gate,
+`gov plan GP-N approve [1,3]|just-you|reject` for a game plan, and
+`gov proposal P-N create|cancel` for a proposed project. A question answered elsewhere leaves
+`gov ask` with a line saying so.
 
 How often Gates ask is your choice: **Relaxed**, **Balanced** (the default) or **Strict**
 (`gov level`, or Settings in the Dashboard). At a Gate you can allow one step, or **allow that
@@ -163,7 +176,17 @@ gov spec-models within        # Controller keeps to them: free | within | defaul
 
 GovernCode checks Codex's measured usage against your Limit first, runs it in a workspace
 of its own inside the sandbox (it can write only the scope), shows every step that needs
-approval as a Gate, and applies nothing until you accept.
+approval as a Gate, and applies nothing until you accept. The workspace starts from your project
+as it is: your uncommitted edits, and the files of Specs you accepted, are in it, so you need not
+commit between Specs. Other new files you have not committed come in only if the Spec's scope
+names them (the Spec says which stayed out); files git ignores, and new files that look like
+secrets (`.env`, keys) or hold a private key, never do.
+
+An honest limit that applies to every Runner: a Runner can read its own login (the sign-in it
+works with, in its run's home) inside the sandbox, and reading is a quiet step, so no Gate asks
+first. Like any text, a Runner could repeat it in its words or write it into its changes, where
+you would see it in the diff. Keeping the login out of the Runner's own reach is planned together
+with GovernCode's secrets storage.
 
 A **budget** is optional, for any cloud Runner: a cap per window (`5-hour`, `daily`, `weekly`,
 `monthly`) in tokens where the Runner reports them, turns otherwise. It is counted by GovernCode
@@ -212,8 +235,8 @@ Antigravity's own usage report (weekly and 5-hour windows).
 Honest limits, for now:
 - It runs **Gemini models only** (or Antigravity's default): its Limit reads Antigravity's Gemini
   pool, and Claude or GPT models through Antigravity draw on another pool it does not watch yet.
-- The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
-  and the sandbox limits where it can write, not which HTTPS sites it can reach.
+- The Runner can read its own login inside the sandbox, as every Runner can (see Delegation), and
+  the sandbox limits where it can write, not which HTTPS sites it can reach.
 - `gov disconnect agy` deletes GovernCode's copy of the login. Revoking Antigravity's access in
   your Google account ends every Antigravity sign-in, your own included.
 - A project that contains Antigravity customization folders (`.agents/`, `.agent/`, `_agents/`,
@@ -236,15 +259,18 @@ never used, and GovernCode never reads the login Grok keeps in its home. Only a 
 sign-in counts, never an API key. `gov disconnect grok` removes it.
 
 Then `grok` is a Runner like `codex`, driven over the Agent Client Protocol (ACP). Every run gets
-a fresh home with a config GovernCode writes: every call asks, reads, searches and directory
-listings included (Grok's `ask` mode with an `ask` rule for every tool, which outranks any `allow`
-rule a project could carry), and no hooks, no plugins, no subagents, no background workflows, no
-memory, no Claude, Cursor or Codex compatibility, no updater, no `.envrc`, folder trust on. In
-that home the run may write only where Grok keeps its sessions, logs and a few startup files: its config
-and its login are read-only to it. A run has two hours; then it is ended.
-Each permission request Grok makes is a Gate: commands get the same checks as any other command,
-file changes show the request as Grok sent it, and any other kind of call is a step of its own
-kind. GovernCode answers
+a fresh home with a config GovernCode writes: every call asks GovernCode first, reads, searches and
+directory listings included (Grok's `ask` mode with an `ask` rule for every tool, which outranks
+any `allow` rule a project could carry), and no hooks, no plugins, no subagents, no background
+workflows, no memory, no Claude, Cursor or Codex compatibility, no updater, no `.envrc`, folder
+trust on. In that home the run may write only where Grok keeps its sessions, logs and a few startup
+files: its config and its login are read-only to it. A run has two hours; then it is ended.
+GovernCode judges each request Grok makes: reading a file, searching and listing a folder are quiet
+reads, like a plain `cat` or `ls` (the sandbox bounds what they can read; one that reaches `/dev`,
+`/proc` and the like always asks, as `cat` would); commands get the same checks as any other
+command; file changes show the request as Grok sent it; and any other call is a step named after
+Grok's own tool, or after its kind when Grok gives no name (a catch-all call with no name always
+asks). GovernCode answers
 "allow once" or rejects; it never picks "allow always", so every call asks again. Its Limit comes
 from Grok's own usage report (the credits used this period, the same figure Grok's `/usage`
 shows, and when the period ends), so Grok is a measured Runner like Codex; each run's token use
@@ -252,8 +278,8 @@ is counted as well. A Spec's Runner runs Grok's default model, or the Grok model
 names, with the reasoning effort it asks for.
 
 Honest limits, for now:
-- The Runner can read its own login inside the sandbox (as the Codex Runner can read Codex's),
-  and the sandbox limits where it can write, not which HTTPS sites it can reach.
+- The Runner can read its own login inside the sandbox, as every Runner can (see Delegation), and
+  the sandbox limits where it can write, not which HTTPS sites it can reach.
 - A project that contains settings Grok would read (`.grok/`, `.agents/` (its skill and command
   folder, which other tools use too), `.claude/settings.json` or `settings.local.json`,
   `.mcp.json`, `.cursor/hooks.json`, `AGENTS.md`, `CLAUDE.md` and their variants, anywhere in the
@@ -310,8 +336,8 @@ delegate tool.
 ### The Dashboard (desktop app, early)
 
 ```sh
-npm run build -w apps/dashboard
-npm start -w apps/dashboard
+governcode-dashboard                                           # from a release
+npm run build -w apps/dashboard && npm start -w apps/dashboard  # from a checkout
 ```
 
 It talks to the same `govd`: chat with the Controller and answer Gates inline, review
@@ -360,7 +386,7 @@ should work for as many people as want it, and three platforms find more bugs th
 | Spec | One delegated job: brief, acceptance, scope, budget, workspace, model and effort |
 | Limit | The usage reserve a provider must keep; unknown usage means held |
 | Gate | An approval request |
-| Checkpoint | A git snapshot before and after a Spec, for diff and undo |
+| Checkpoint | A snapshot of files before and after a Controller turn (for undo) or a Spec (for its diff) |
 | Trace | The append-only history |
 | Dashboard / Pager | The desktop app / the phone app |
 | Modules / Registry | Plugins / where they are published |

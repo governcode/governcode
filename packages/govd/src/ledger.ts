@@ -9,6 +9,9 @@ export type Project = { name: string; path: string; created: string; controller:
 
 const DEFAULT_CONTROLLER: ControllerChoice = { provider: "claude-code", model: "opus", effort: "high" };
 
+// A discarded Spec was stored as "undone" before 0.1.0-motion.9: read as what it is.
+const specOf = (body: string): Spec => { const s = JSON.parse(body); return s.status === "undone" ? { ...s, status: "discarded" } : s; };
+
 export class Ledger {
   private db: DatabaseSync;
   private listeners = new Set<(e: TraceEvent) => void>();
@@ -48,11 +51,14 @@ export class Ledger {
     return () => this.listeners.delete(listen);
   }
 
-  events(project: string | undefined, limit: number): TraceEvent[] {
-    const rows = (project
-      ? this.db.prepare("SELECT * FROM events WHERE project = ? ORDER BY seq DESC LIMIT ?").all(project, limit)
-      : this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT ?").all(limit)) as Array<Record<string, unknown>>;
-    return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
+  /** The newest events, newest last; with `after`, the first ones after that seq (an export pages with it). */
+  events(project: string | undefined, limit: number, after?: number): TraceEvent[] {
+    const rows = (after !== undefined
+      ? (project ? this.db.prepare("SELECT * FROM events WHERE project = ? AND seq > ? ORDER BY seq LIMIT ?").all(project, after, limit)
+        : this.db.prepare("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?").all(after, limit))
+      : (project ? this.db.prepare("SELECT * FROM events WHERE project = ? ORDER BY seq DESC LIMIT ?").all(project, limit)
+        : this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT ?").all(limit)).reverse()) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
   /** A project's events of some kinds, newest last (all of its history, not a recent window). */
@@ -61,6 +67,12 @@ export class Ledger {
     const rows = this.db.prepare(`SELECT * FROM events WHERE ${where} AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT ?`)
       .all(...(project === null ? [] : [project]), ...kinds, limit) as Array<Record<string, unknown>>;
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
+  }
+
+  /** The newest event of a kind in any project (all of history). */
+  lastOfKind(kind: TraceEvent["kind"]): TraceEvent | undefined {
+    const r = this.db.prepare("SELECT * FROM events WHERE kind = ? ORDER BY seq DESC LIMIT 1").get(kind) as Record<string, unknown> | undefined;
+    return r && { ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) };
   }
 
   /** Every Controller provider that has had a turn in the project (all of history). */
@@ -87,14 +99,14 @@ export class Ledger {
   }
 
   // --- projects (a projection kept in step with project.* events, in one transaction)
-  addProject(name: string, path: string, kind: "project.created" | "project.opened"): Project {
+  addProject(name: string, path: string, kind: "project.created" | "project.opened", data: Record<string, unknown> = {}): Project {
     const created = new Date().toISOString();
     const project: Project = { name, path, created, controller: DEFAULT_CONTROLLER };
     this.db.exec("BEGIN");
     try {
       this.db.prepare("INSERT INTO projects (name, path, created, controller) VALUES (?, ?, ?, ?)")
         .run(name, path, created, JSON.stringify(project.controller));
-      this.append(name, kind, "user", { path });
+      this.append(name, kind, "user", { path, ...data });
       this.db.exec("COMMIT");
     } catch (err) {
       this.db.exec("ROLLBACK");
@@ -136,7 +148,7 @@ export class Ledger {
 
   updateSpec(id: string, change: Partial<Pick<Spec, "status" | "checkpoints" | "files" | "note">>, actor: string): Spec {
     const kinds: Partial<Record<SpecStatus, TraceEvent["kind"]>> = { held: "spec.held", running: "spec.started",
-      "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", undone: "spec.undone" };
+      "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", discarded: "spec.discarded" };
     return this.tx(() => {
       const spec = this.spec(id);
       if (!spec) throw new Error(`no spec ${id}`);
@@ -150,13 +162,13 @@ export class Ledger {
 
   spec(id: string): Spec | undefined {
     const row = this.db.prepare("SELECT body FROM specs WHERE id = ?").get(id) as { body: string } | undefined;
-    return row ? JSON.parse(row.body) : undefined;
+    return row ? specOf(row.body) : undefined;
   }
 
   specs(project?: string): Spec[] {
     const rows = (project ? this.db.prepare("SELECT body FROM specs WHERE project = ? ORDER BY id").all(project)
                           : this.db.prepare("SELECT body FROM specs ORDER BY id").all()) as Array<{ body: string }>;
-    return rows.map((r) => JSON.parse(r.body));
+    return rows.map((r) => specOf(r.body));
   }
 
   close(): void {

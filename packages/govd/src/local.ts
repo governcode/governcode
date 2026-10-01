@@ -34,11 +34,12 @@ export function ollamaUsage(host = ollamaHost()): UsageSource & { why(): string 
     models: () => models,
     async read(): Promise<Measurement | null> {
       try {
+        const sent = Date.now();
         const r = await fetch(`${host}/api/tags`, { signal: AbortSignal.timeout(3000) });
         if (!r.ok) { why = `Ollama: ${await refusal(r)}`; return null; }
         models = ((await r.json()) as { models?: Array<{ name: string }> }).models?.map((m) => m.name) ?? [];
         why = models.length ? null : "Ollama has no models installed";
-        return models.length ? { provider: "ollama", measuredAt: Date.now(), readings: [] } : null;
+        return models.length ? { provider: "ollama", measuredAt: sent, readings: [] } : null;
       } catch {
         why = `Ollama is not answering at ${host}`;
         return null;

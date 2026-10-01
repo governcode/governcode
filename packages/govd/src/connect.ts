@@ -173,7 +173,8 @@ export class Connector {
         if (!t || t === "[code]") continue;
         if (!t || t.startsWith("{")) continue;             // the final usage JSON is read, not shown
         const url = URL_RE.exec(t)?.[0];
-        if (url && !shownUrl) { shownUrl = true; notify({ kind: "connect", id, url }); continue; }
+        // The link on its own; the line too when it says more (a code to enter beside the link).
+        if (url && !shownUrl) { shownUrl = true; notify({ kind: "connect", id, url }); if (!/[A-Za-z0-9]/.test(t.replace(url, ""))) continue; }
         notify({ kind: "connect", id, text: t.slice(0, 500) });
       }
     };

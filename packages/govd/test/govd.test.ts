@@ -6,6 +6,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { Daemon } from "../src/daemon.ts";
 import { canonical } from "../src/claude.ts";
 import { scratch, markConnected } from "./scratch.ts";
@@ -174,6 +176,32 @@ test("a Gate denied or abandoned is a deny", async () => {
   c.end(); d.close();
 });
 
+test("gov ask with no input leaves its Gate open; answered from another connection, the turn goes on", async () => {
+  const d = daemon("noinput");
+  d.selftest();
+  await d.listen();
+  const c = client(join(root, "noinput", "govd.sock"));
+  await c.call("project.new", { name: "ni", path: join(root, "noinput-p"), git: false });
+  // stdin is /dev/null, as when gov ask runs from a script: end of input at once.
+  const gov = spawn(process.execPath, [fileURLToPath(new URL("../../gov/src/main.ts", import.meta.url)), "ask", "clean up"],
+    { cwd: join(root, "noinput-p"), env: { ...process.env, GOVERNCODE_RUNTIME_DIR: join(root, "noinput") }, stdio: ["ignore", "pipe", "pipe"] });
+  opened.push(() => gov.kill());
+  let out = "";
+  gov.stdout.on("data", (b) => (out += b));
+  gov.stderr.on("data", (b) => (out += b));
+  const exited = new Promise<number | null>((ok) => gov.on("close", ok));
+  const left = /no input here: answer from another terminal with gov gate G-1 allow\|deny/;
+  for (let i = 0; i < 500 && !left.test(out); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.match(out, left);
+  assert.ok(!d.ledger.events("ni", 50).some((e) => e.kind === "gate.denied"), "no deny the user did not give");
+  assert.equal((await c.call("gate.list")).result.gates[0]?.id, "G-1");
+  await c.call("gate.answer", { id: "G-1", answer: "allow" });
+  assert.equal(await exited, 0, out);
+  assert.match(out, /G-1: allowed from elsewhere/);
+  assert.equal(d.ledger.events("ni", 50).filter((e) => e.kind === "turn.completed").length, 1);
+  c.end(); d.close();
+});
+
 test("a Gate can be answered from a second terminal, and is listed there", async () => {
   const d = daemon("second");
   d.selftest();
@@ -260,6 +288,8 @@ test("Home: the Controller may only propose a project; govd creates it on the us
   const made = await c.call("proposal.answer", { id: "P-1", answer: "create" });
   assert.equal(made.result.created.name, "harbor");
   assert.ok(existsSync(join(target, ".git")));
+  // The record says which proposal it was, so a client still asking about P-1 can let it go.
+  assert.equal(d.ledger.events("harbor", 5).find((e) => e.kind === "project.created")?.data.proposal, "P-1");
   assert.match((await c.call("proposal.answer", { id: "P-1", answer: "create" })).error.message, /no proposal P-1/);
   // A folder on the way turned into a symlink after the card was shown: Create refuses.
   const parent = join(root, "proposed2"), elsewhere = join(root, "elsewhere");
@@ -280,6 +310,11 @@ test("Home uses the Controller chosen most recently, not the alphabetically last
   for (const name of ["alpha", "zulu"]) await c.call("project.new", { name, path: join(root, `homectl-${name}`), git: false });
   await c.call("controller.set", { project: "zulu", controller: { provider: "claude-code", model: "sonnet", effort: "low" } });
   await c.call("controller.set", { project: "alpha", controller: { provider: "codex", model: "gpt-5.5", effort: "low" } });
+  assert.deepEqual((d as any).homeController(), { provider: "codex", model: "gpt-5.5", effort: "low" });
+  // Clients see it too (gov asks about the right tool's instructions at Home).
+  assert.deepEqual((await c.call("project.list")).result.home, { controller: { provider: "codex", model: "gpt-5.5", effort: "low" } });
+  // However long ago it was chosen: not only within the latest few thousand events.
+  for (let i = 0; i < 6000; i++) d.ledger.append("zulu", "turn.text", "controller · claude-code", { text: "x" });
   assert.deepEqual((d as any).homeController(), { provider: "codex", model: "gpt-5.5", effort: "low" });
   c.end(); d.close();
 });
@@ -319,6 +354,61 @@ test("settings: counted budgets are validated and survive a restart", async () =
   await d.listen();
   c = client(join(root, "budgets", "govd.sock"));
   assert.deepEqual((await c.call("settings.get", {})).result.settings.budgets, budgets);
+  c.end(); d.close();
+});
+
+test("settings and the Crew card refuse a Runner or window GovernCode does not have; one saved before never blocks a change", async () => {
+  const d = daemon("names");
+  await d.listen();
+  const c = client(join(root, "names", "govd.sock"));
+  const refused = async (method: string, params: unknown) => (await c.call(method, params)).error?.message ?? "";
+  assert.equal(await refused("settings.set", { runners: { antigravity: { model: "x", effort: null } } }), "unknown Runner antigravity (Runners: agy, codex, grok, ollama)");
+  assert.equal(await refused("settings.set", { reserves: { codex: { "5h": 20 } } }), "unknown window 5h (windows: 5-hour, daily, weekly, monthly, period)");
+  assert.match(await refused("settings.set", { budgets: { antigravity: { unit: "turns", windows: { daily: 5 } } } }), /^unknown Runner antigravity/);
+  // A window the Runner reports now is one the Dashboard offers.
+  (d as any).limits.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "primary", usedPercent: 5, resetsAt: null }] });
+  assert.ok((await c.call("settings.set", { reserves: { codex: { primary: 20, weekly: 15 }, grok: { period: 10 } } })).result);
+  // A file saved before names were checked: its typos stay (ignored, as before); new ones are refused.
+  writeFileSync(join(root, "names", "settings.json"), JSON.stringify({ runners: { antigravity: { model: "x", effort: null } }, reserves: { codex: { "5h": 20 } } }));
+  const old = (await c.call("settings.get", {})).result.settings;
+  assert.ok((await c.call("settings.set", { ...old, gates: { quietReads: true, level: "strict" } })).result, "an old typo never blocks a change");
+  assert.match(await refused("settings.set", { ...old, runners: { ...old.runners, gork: { model: "x", effort: null } } }), /^unknown Runner gork/);
+  await c.call("project.new", { name: "p", path: join(root, "names-p"), git: false });
+  const crew = (await c.call("crew.get", { project: "p" })).result.crew;
+  assert.match(await refused("crew.set", { project: "p", crew: { ...crew, runners: ["codex", "antigravity"] } }), /^unknown Runner antigravity/);
+  assert.match(await refused("crew.set", { project: "p", crew: { ...crew, maxPercent: { gemini: 10 } } }), /^unknown Runner gemini/);
+  assert.deepEqual((await c.call("crew.set", { project: "p", crew: { ...crew, runners: ["codex", "agy"] } })).result.crew.runners, ["codex", "agy"]);
+  c.end(); d.close();
+});
+
+test("a bad parameter is named in the error, for the CLI and the Dashboard alike", async () => {
+  const d = daemon("badparams");
+  await d.listen();
+  const c = client(join(root, "badparams", "govd.sock"));
+  assert.equal((await c.call("spec.diff", {})).error.message, "id: Invalid input: expected string, received undefined");
+  assert.match((await c.call("project.new", { name: "MyApp", path: join(root, "badparams-x") })).error.message,
+    /^name: a project name uses lowercase letters, digits, \. _ - and starts with a letter or digit/);
+  c.end(); d.close();
+});
+
+test("trace.list pages through every event with after, oldest first", async () => {
+  const d = daemon("paging");
+  await d.listen();
+  const c = client(join(root, "paging", "govd.sock"));
+  for (let i = 0; i < 2100; i++) d.ledger.append(i % 2 ? null : "q", "turn.text", "test", { i });
+  const all: any[] = [];
+  for (let after = 0; ;) {
+    const { events } = (await c.call("trace.list", { limit: 1000, after })).result;
+    all.push(...events);
+    if (events.length < 1000) break;
+    after = events.at(-1).seq;
+  }
+  assert.equal(all.length, 2100);
+  assert.ok(all.every((e, i) => i === 0 || e.seq > all[i - 1].seq), "oldest first, none twice");
+  assert.equal((await c.call("trace.list", { project: "q", limit: 1000, after: 0 })).result.events.length, 1000);
+  assert.equal((await c.call("trace.list", { project: "q", limit: 1000, after: all.at(-2).seq })).result.events.length, 0, "only q's events");
+  const newest = (await c.call("trace.list", { limit: 2 })).result.events;
+  assert.deepEqual(newest.map((e: any) => e.data.i), [2098, 2099], "without after: the newest, newest last");
   c.end(); d.close();
 });
 
