@@ -127,6 +127,35 @@ test("a Runner or window GovernCode does not have is refused before anything is 
   assert.deepEqual(g.calls.at(-1)!.params.budgets, {}, "a budget saved under a typo can go");
 });
 
+test("gov new says where the project is; gov specs shows the default model and leaves out an effort it does not have", async () => {
+  const g = await fakeGovd((m, p) => m === "project.new" ? { project: { name: p.name, path: p.path } } : m === "project.list" ? { projects: [] }
+    : m === "spec.list" ? { specs: [{ id: "S-0001", to: "codex", model: "", effort: null, status: "needs-review", files: ["a"], brief: "one" },
+      { id: "S-0002", to: "agy", model: "", effort: "medium", status: "accepted", files: [], brief: "two" },
+      { id: "S-0003", to: "codex", model: "gpt-5.5", effort: "high", status: "failed", files: [], brief: "three" }] } : undefined);
+  const made = await run(g.dir, ["new", "my-app", "--path", "/tmp/somewhere/my-app"]).done;
+  assert.equal(made.code, 0, made.stderr);
+  assert.equal(made.stdout, "created my-app at /tmp/somewhere/my-app (cd there to work in it)\n");
+  const specs = (await run(g.dir, ["specs"]).done).stdout.trimEnd().split("\n");
+  assert.doesNotMatch(specs.join("\n"), /n\/a/);
+  assert.match(specs[0], /^S-0001  codex    default model {10}needs-review /);
+  assert.match(specs[1], /^S-0002  agy      default model · medium accepted /);
+  assert.match(specs[2], /^S-0003  codex    gpt-5\.5 · high {9}failed /);
+  assert.equal(new Set(specs.map((l) => l.search(/(needs-review|accepted|failed) /))).size, 1, "the status column lines up");
+});
+
+test("gov connect grok: GovernCode's instruction once, then the link and the code", async () => {
+  const g = await fakeGovd((m, _p, notify) => {
+    if (m !== "connect.start") return undefined;
+    for (const e of [{ text: "To sign in, open this URL in your browser:" }, { url: "https://accounts.example/device" },
+      { text: "and enter the code ABCD-1234" }, { text: "error: open this URL: it failed" }]) notify({ kind: "connect", id: "C-1", ...e });
+    return { connected: true, note: "Grok is connected for GovernCode" };
+  });
+  const r = await run(g.dir, ["connect", "grok"]).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /To sign in, open this URL/, "the tool's own instruction is said once, by GovernCode");
+  assert.match(r.stdout, /\nOpen this link, enter the code shown here and sign in; .*:\nhttps:\/\/accounts\.example\/device\nand enter the code ABCD-1234\nerror: open this URL: it failed\nGrok is connected/);
+});
+
 test("gov trace --jsonl exports every event, oldest first, a page at a time; an older govd's single page ends it", async () => {
   const all = Array.from({ length: 2500 }, (_, i) => ({ seq: i + 1, ts: "2026-09-30T00:00:00.000Z", project: null, kind: "turn.text", actor: "test", data: {} }));
   const page = (p: any) => p.after === undefined ? all.slice(-p.limit) : all.filter((e) => e.seq > p.after).slice(0, p.limit);
@@ -369,7 +398,7 @@ test("at Home a proposal's question stays after the turn; one answered elsewhere
   const res = await r.done;
   assert.equal(res.code, 0, res.stderr);
   assert.deepEqual(g.calls.find((c) => c.method === "proposal.answer")!.params, { id: "P-1", answer: "create" });
-  assert.match(res.stdout, /created reader · gov open \/tmp\/reader\n.*— done/);
+  assert.match(res.stdout, /created reader at \/tmp\/reader \(cd there to work in it\)\n.*— done/);
 
   // Created from another terminal after the turn: withdrawn here, and gov ends.
   const h = await home(async (notify) => {
@@ -415,7 +444,7 @@ test("gov plan and gov proposal answer from another terminal", async () => {
   for (const bad of [["reject", "1"], ["approve", "1", "3"]]) {
     assert.match((await run(g.dir, ["plan", "GP-3", ...bad]).done).stderr, /usage: gov plan GP-N approve \[1,3\]\|just-you\|reject/, bad.join(" "));
   }
-  assert.match((await run(g.dir, ["proposal", "P-2", "create"]).done).stdout, /created x at \/tmp\/x/);
+  assert.match((await run(g.dir, ["proposal", "P-2", "create"]).done).stdout, /created x at \/tmp\/x \(cd there to work in it\)/);
   assert.match((await run(g.dir, ["proposal", "P-2", "maybe"]).done).stderr, /usage: gov proposal P-N create\|cancel/);
   assert.deepEqual(g.calls.map((c) => [c.method, c.params]), [["plan.answer", { id: "GP-3", answer: "approve", items: [1, 3] }],
     ["plan.answer", { id: "GP-3", answer: "just-you" }], ["proposal.answer", { id: "P-2", answer: "create" }]]);

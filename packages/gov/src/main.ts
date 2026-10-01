@@ -131,6 +131,9 @@ const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (An
 const CONTROLLER_DEFAULTS: Record<string, { model: string; effort: string }> = { "claude-code": { model: "opus", effort: "high" }, codex: { model: "gpt-5.5", effort: "medium" } };
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
+// A tool's own "open this URL" line before its link (Grok's, Codex's): gov says it once, with the
+// link. Only a whole line of these fixed words is left out, so no code, link or error is hidden.
+const PREAMBLE = /^(to sign in, |if your browser did not open, )?(open|navigate to) this url( in your browser)?( to authenticate)?:$/i;
 
 /** The first time a Controller works, ask once whether the user's own instructions come along
  *  (off by default; said plainly both ways). */
@@ -178,7 +181,7 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
     const a = await question(ev.id, `Create ${ev.name}? [y/N] `, `gov proposal ${ev.id} create|cancel`);
     if (a === undefined) return;
     await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" })
-      .then((r) => console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created")), failed(ev.id));
+      .then((r) => console.log(dim(r.created ? `created ${r.created.name} at ${r.created.path} (cd there to work in it)` : "not created")), failed(ev.id));
   };
   api.onEvent(async (ev) => {
     if (ev.kind === "text") process.stdout.write(ev.text + "\n");
@@ -298,7 +301,8 @@ async function main(argv: string[]): Promise<number> {
         projectName(name);
         const path = at >= 0 ? rest[at + 1] : join(process.cwd(), name);
         const { project } = await api.call("project.new", { name, path, git: !rest.includes("--no-git") });
-        console.log(`created ${project.name} at ${project.path}`);
+        // Already registered: nothing to open, only somewhere to go.
+        console.log(`created ${project.name} at ${project.path} (cd there to work in it)`);
         return 0;
       }
       case "open": {
@@ -428,7 +432,7 @@ async function main(argv: string[]): Promise<number> {
         const [id, answer] = rest;
         if (!/^P-\d+$/.test(id ?? "") || (answer !== "create" && answer !== "cancel")) throw new Error("usage: gov proposal P-N create|cancel");
         const r = await api.call("proposal.answer", { id, answer });
-        console.log(r.created ? `created ${r.created.name} at ${r.created.path}` : `${id}: not created`);
+        console.log(r.created ? `created ${r.created.name} at ${r.created.path} (cd there to work in it)` : `${id}: not created`);
         return 0;
       }
       case "allows": {
@@ -582,7 +586,7 @@ async function main(argv: string[]): Promise<number> {
             const code = (await tty.next("\nPaste the code it gives you here: "))?.trim();
             if (code) await api.call("connect.input", { id, text: code });
             else await api.call("connect.cancel", { id });
-          } else if (ev.text) console.log(dim(ev.text));
+          } else if (ev.text && !PREAMBLE.test(ev.text)) console.log(dim(ev.text));
         });
         console.log(dim("Signing in inside GovernCode's sandbox, in a home that belongs to GovernCode (not your own setup)."));
         const r = await api.call("connect.start", { tool });
@@ -641,7 +645,10 @@ async function main(argv: string[]): Promise<number> {
         const project = await currentProject(api);
         const { specs } = await api.call("spec.list", { project: project ?? undefined });
         if (!specs.length) console.log(dim("no Specs yet"));
-        for (const x of specs) console.log(`${x.id}  ${x.to.padEnd(8)} ${`${x.model} · ${x.effort ?? "n/a"}`.padEnd(20)} ${x.status.padEnd(13)} ${String(x.files.length).padStart(3)} files  ${dim(x.brief.slice(0, 50))}`);
+        // An empty model is the Runner's default; an effort is shown only when the Spec set one.
+        const used = (x: any) => [x.model || "default model", x.effort].filter(Boolean).join(" · ");
+        const width = Math.max(20, ...specs.map((x: any) => used(x).length));
+        for (const x of specs) console.log(`${x.id}  ${x.to.padEnd(8)} ${used(x).padEnd(width)} ${x.status.padEnd(13)} ${String(x.files.length).padStart(3)} files  ${dim(x.brief.slice(0, 50))}`);
         return 0;
       }
       case "diff": {
