@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, existsSync, sta
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RpcError, Settings, type SettingsValue, type Method, type WatchEvent, type TraceEvent } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RESERVE_WINDOWS, RUNNERS, RpcError, Settings, type CrewValue, type SettingsValue, type Method, type WatchEvent, type TraceEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
@@ -281,7 +281,8 @@ export class Daemon {
         if (!(req.method in Params)) throw new RpcError(Errors.unknownMethod, `unknown method ${req.method}`);
         const method = req.method as Method;
         const parsed = Params[method].safeParse(req.params ?? {});
-        if (!parsed.success) throw new RpcError(Errors.badParams, parsed.error.issues.map((i) => i.message).join("; "));
+        // Each problem names its field (id: ..., reserves.codex.weekly: ...), for the CLI and the Dashboard alike.
+        if (!parsed.success) throw new RpcError(Errors.badParams, parsed.error.issues.map((i) => i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message).join("; "));
         const result = await this.call(method, parsed.data as never, (n) => write({ jsonrpc: "2.0", method: "event", params: n }), sock);
         write({ jsonrpc: "2.0", id, result });
       } catch (err) {
@@ -410,13 +411,14 @@ export class Daemon {
         return { crew: crewOf(L, p.project) };
       case "crew.set":
         if (!L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
+        knownNames(crewNames(p.crew), crewNames(crewOf(L, p.project)));
         return { crew: setCrew(L, p.project, p.crew) };
       case "context.share":
         if (!L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
         L.append(p.project, "context.shared", "user", { provider: p.provider, share: p.share });
         return { ok: true };
       case "trace.list":
-        return { events: p.kinds && p.project ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit) };
+        return { events: p.kinds && p.project ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit, p.after) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);
       case "conversation.reset":
@@ -434,6 +436,8 @@ export class Daemon {
       case "settings.get":
         return { settings: this.settings() };
       case "settings.set": {
+        // A window the Runner reports now counts too (the Dashboard offers exactly those).
+        knownNames(settingNames(p), settingNames(this.settings()), (r) => this.limits.view(r).readings.map((x) => x.window));
         this.saveSettings(p);
         this.limits.setReserves(p.reserves);
         this.limits.setLocal(p.local);
@@ -725,6 +729,23 @@ export class Daemon {
     });
   }
 }
+
+/** The Runners (and "runner window" pairs) a setting names must be GovernCode's: any other would be
+ *  saved and never used. One already saved, before names were checked, is let through, so an older
+ *  file never blocks a change. */
+function knownNames(names: string[], saved: string[], seen: (runner: string) => string[] = () => []): void {
+  for (const n of names) {
+    if (saved.includes(n)) continue;
+    const [runner, window] = n.split(" ");
+    if (!(RUNNERS as readonly string[]).includes(runner)) throw new RpcError(Errors.badParams, `unknown Runner ${runner} (Runners: ${RUNNERS.join(", ")})`);
+    if (window !== undefined && !(RESERVE_WINDOWS as readonly string[]).includes(window) && !seen(runner).includes(window)) {
+      throw new RpcError(Errors.badParams, `unknown window ${window} (windows: ${RESERVE_WINDOWS.join(", ")})`);
+    }
+  }
+}
+const settingNames = (s: SettingsValue) => [...Object.keys(s.runners), ...Object.keys(s.budgets),
+  ...Object.entries(s.reserves).flatMap(([r, w]) => [r, ...Object.keys(w).map((x) => `${r} ${x}`)])];
+const crewNames = (c: CrewValue) => [...(c.runners ?? []), ...Object.keys(c.maxPercent)];
 
 /** The path with its deepest existing ancestor resolved through any symlinks. */
 function realAncestor(path: string): string {

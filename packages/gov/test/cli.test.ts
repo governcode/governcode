@@ -62,7 +62,7 @@ async function answer(r: ReturnType<typeof run>, prompt: string, line: string) {
   r.p.stdin!.write(line + "\n");
 }
 
-test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets it on stderr", async () => {
+test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets it on stderr, without govd too", async () => {
   const none = mkdtempSync(join(root, "none-"));   // no govd listens here
   for (const h of ["help", "--help", "-h"]) {
     const r = await run(none, [h]).done;
@@ -76,11 +76,103 @@ test("gov help, --help and -h print the usage on stdout and need no govd; an unk
   const down = await run(none, ["status"]).done;
   assert.equal(down.code, 1);
   assert.match(down.stderr, /govd is not running .*Start it with: gov daemon start \(or run govd in another terminal\)/);
-  const g = await fakeGovd();
-  const bad = await run(g.dir, ["frobnicate"]).done;
+  const bad = await run(none, ["frobnicate"]).done;
   assert.equal(bad.code, 2);
   assert.equal(bad.stdout, "");
   assert.match(bad.stderr, /^usage: gov /);
+});
+
+test("arguments are checked before govd is asked anything, with a usage line or a plain rule", async () => {
+  const g = await fakeGovd();
+  for (const [args, said] of [
+    [["new", "MyApp"], "gov: a project name uses lowercase letters, digits, . _ - and starts with a letter or digit, at most 63 characters (e.g. my-app)"],
+    [["new"], "gov: usage: gov new NAME [--path P] [--no-git]"], [["new", "x", "--path"], "gov: usage: gov new NAME [--path P] [--no-git]"],
+    [["open", ".", "My App"], "gov: a project name uses lowercase letters"],
+    [["undo"], "gov: usage: gov undo T-N (see gov turns)"], [["undo", "12"], "gov: usage: gov undo T-N (see gov turns)"],
+    [["diff"], "gov: usage: gov diff S-NNNN (see gov specs)"], [["diff", "S-1"], "gov: usage: gov diff S-NNNN (see gov specs)"],
+    [["accept"], "gov: usage: gov accept S-NNNN (see gov specs)"], [["discard", "1"], "gov: usage: gov discard S-NNNN (see gov specs)"],
+    [["ask"], 'gov: usage: gov ask "PROMPT"'], [["ask", " "], 'gov: usage: gov ask "PROMPT"'],
+    [["reserve", "codex", "weekly", "95"], "gov: usage: gov reserve PROVIDER WINDOW PERCENT   (0-90, e.g. gov reserve codex weekly 15)"],
+    [["gate", "3", "allow"], "gov: usage: gov gate G-N allow|deny"], [["plan", "1", "approve"], "gov: usage: gov plan GP-N"],
+    [["proposal", "1", "create"], "gov: usage: gov proposal P-N"], [["allows", "revoke"], "gov: usage: gov allows revoke R-N (see gov allows)"],
+    [["runner", "codex", "--model", "x", "--effort", "extreme"], "gov: usage: gov runner PROVIDER --model M"],
+  ] as const) {
+    const r = await run(g.dir, [...args]).done;
+    assert.equal(r.code, 1, args.join(" "));
+    assert.ok(r.stderr.startsWith(said), `${args.join(" ")}: ${r.stderr}`);
+  }
+  assert.deepEqual(g.methods(), [], "nothing asked of govd");
+});
+
+test("a Runner or window GovernCode does not have is refused before anything is saved; removing a budget takes any name", async () => {
+  const settings = { reserves: {}, runners: {}, budgets: { antigravity: { unit: "turns", windows: { daily: 5 } } } };
+  const g = await withProject((m) => (m === "settings.get" ? { settings } : m === "crew.get" ? { crew: { runners: null, maxPercent: {} } } : undefined));
+  for (const [args, said] of [
+    [["runner", "antigravity", "--model", "x"], "gov: unknown Runner antigravity (Runners: agy, codex, grok, ollama)"],
+    [["reserve", "codex", "5h", "20"], "gov: unknown window 5h (windows: 5-hour, daily, weekly, monthly, period)"],
+    [["reserve", "gemini", "weekly", "20"], "gov: unknown Runner gemini"],
+    [["budget", "antigravity", "daily", "5", "turns"], "gov: unknown Runner antigravity"],
+    [["budget", "codex", "5h", "5", "turns"], "gov: unknown window 5h (windows: 5-hour, daily, weekly, monthly)"],
+    [["crew", "runners", "codex,antigravity"], "gov: unknown Runner antigravity"], [["crew", "max", "gemini", "10"], "gov: unknown Runner gemini"],
+  ] as const) {
+    const r = await run(g.dir, [...args], { cwd: g.path }).done;
+    assert.equal(r.code, 1, args.join(" "));
+    assert.ok(r.stderr.startsWith(said), `${args.join(" ")}: ${r.stderr}`);
+  }
+  assert.ok(!g.methods().some((m) => m === "settings.set" || m === "crew.set"), "nothing saved");
+  assert.equal((await run(g.dir, ["reserve", "grok", "period", "20"]).done).code, 0);
+  assert.deepEqual(g.calls.at(-1)!.params.reserves, { grok: { period: 20 } });
+  const off = await run(g.dir, ["budget", "antigravity", "off"]).done;
+  assert.equal(off.code, 0, off.stderr);
+  assert.deepEqual(g.calls.at(-1)!.params.budgets, {}, "a budget saved under a typo can go");
+});
+
+test("gov new says where the project is; gov specs shows the default model and leaves out an effort it does not have", async () => {
+  const g = await fakeGovd((m, p) => m === "project.new" ? { project: { name: p.name, path: p.path } } : m === "project.list" ? { projects: [] }
+    : m === "spec.list" ? { specs: [{ id: "S-0001", to: "codex", model: "", effort: null, status: "needs-review", files: ["a"], brief: "one" },
+      { id: "S-0002", to: "agy", model: "", effort: "medium", status: "accepted", files: [], brief: "two" },
+      { id: "S-0003", to: "codex", model: "gpt-5.5", effort: "high", status: "failed", files: [], brief: "three" }] } : undefined);
+  const made = await run(g.dir, ["new", "my-app", "--path", "/tmp/somewhere/my-app"]).done;
+  assert.equal(made.code, 0, made.stderr);
+  assert.equal(made.stdout, "created my-app at /tmp/somewhere/my-app (cd there to work in it)\n");
+  const specs = (await run(g.dir, ["specs"]).done).stdout.trimEnd().split("\n");
+  assert.doesNotMatch(specs.join("\n"), /n\/a/);
+  assert.match(specs[0], /^S-0001  codex    default model {10}needs-review /);
+  assert.match(specs[1], /^S-0002  agy      default model · medium accepted /);
+  assert.match(specs[2], /^S-0003  codex    gpt-5\.5 · high {9}failed /);
+  assert.equal(new Set(specs.map((l) => l.search(/(needs-review|accepted|failed) /))).size, 1, "the status column lines up");
+});
+
+test("gov connect grok: GovernCode's instruction once, then the link and the code", async () => {
+  const g = await fakeGovd((m, _p, notify) => {
+    if (m !== "connect.start") return undefined;
+    for (const e of [{ text: "To sign in, open this URL in your browser:" }, { url: "https://accounts.example/device" },
+      { text: "and enter the code ABCD-1234" }, { text: "error: open this URL: it failed" }]) notify({ kind: "connect", id: "C-1", ...e });
+    return { connected: true, note: "Grok is connected for GovernCode" };
+  });
+  const r = await run(g.dir, ["connect", "grok"]).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /To sign in, open this URL/, "the tool's own instruction is said once, by GovernCode");
+  assert.match(r.stdout, /\nOpen this link, enter the code shown here and sign in; .*:\nhttps:\/\/accounts\.example\/device\nand enter the code ABCD-1234\nerror: open this URL: it failed\nGrok is connected/);
+});
+
+test("gov trace --jsonl exports every event, oldest first, a page at a time; an older govd's single page ends it", async () => {
+  const all = Array.from({ length: 2500 }, (_, i) => ({ seq: i + 1, ts: "2026-09-30T00:00:00.000Z", project: null, kind: "turn.text", actor: "test", data: {} }));
+  const page = (p: any) => p.after === undefined ? all.slice(-p.limit) : all.filter((e) => e.seq > p.after).slice(0, p.limit);
+  const g = await fakeGovd((m, p) => (m === "project.list" ? { projects: [] } : m === "trace.list" ? { events: page(p) } : undefined));
+  // Read slowly, as a pipe into a busy program is: every line still arrives before gov exits.
+  const slow = run(g.dir, ["trace", "--jsonl"]);
+  slow.p.stdout!.pause();
+  setTimeout(() => slow.p.stdout!.resume(), 500);
+  const r = await slow.done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.stdout.trimEnd().split("\n").map((l) => JSON.parse(l).seq), all.map((e) => e.seq));
+  // An older govd ignores `after`: it answers its newest 1000 each time.
+  const old = await fakeGovd((m, p) => (m === "project.list" ? { projects: [] } : m === "trace.list" ? { events: all.slice(-p.limit) } : undefined));
+  const o = await run(old.dir, ["trace", "--jsonl"]).done;
+  assert.equal(o.code, 0, o.stderr);
+  assert.equal(o.stdout.trimEnd().split("\n").length, 1000);
+  assert.equal(old.methods().filter((m) => m === "trace.list").length, 2);
 });
 
 test("gov disconnect grok is accepted", async () => {
@@ -306,7 +398,7 @@ test("at Home a proposal's question stays after the turn; one answered elsewhere
   const res = await r.done;
   assert.equal(res.code, 0, res.stderr);
   assert.deepEqual(g.calls.find((c) => c.method === "proposal.answer")!.params, { id: "P-1", answer: "create" });
-  assert.match(res.stdout, /created reader · gov open \/tmp\/reader\n.*— done/);
+  assert.match(res.stdout, /created reader at \/tmp\/reader \(cd there to work in it\)\n.*— done/);
 
   // Created from another terminal after the turn: withdrawn here, and gov ends.
   const h = await home(async (notify) => {
@@ -352,7 +444,7 @@ test("gov plan and gov proposal answer from another terminal", async () => {
   for (const bad of [["reject", "1"], ["approve", "1", "3"]]) {
     assert.match((await run(g.dir, ["plan", "GP-3", ...bad]).done).stderr, /usage: gov plan GP-N approve \[1,3\]\|just-you\|reject/, bad.join(" "));
   }
-  assert.match((await run(g.dir, ["proposal", "P-2", "create"]).done).stdout, /created x at \/tmp\/x/);
+  assert.match((await run(g.dir, ["proposal", "P-2", "create"]).done).stdout, /created x at \/tmp\/x \(cd there to work in it\)/);
   assert.match((await run(g.dir, ["proposal", "P-2", "maybe"]).done).stderr, /usage: gov proposal P-N create\|cancel/);
   assert.deepEqual(g.calls.map((c) => [c.method, c.params]), [["plan.answer", { id: "GP-3", answer: "approve", items: [1, 3] }],
     ["plan.answer", { id: "GP-3", answer: "just-you" }], ["proposal.answer", { id: "P-2", answer: "create" }]]);
