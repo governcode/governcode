@@ -6,10 +6,10 @@ import assert from "node:assert/strict";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, setBudget, type BudgetValue } from "@governcode/protocol";
-import { CountedStore, LimitGate, reportedTokens, usageComplete, withBudget, type Measurement, type UsageSource } from "../src/limits.ts";
+import { CountedStore, LimitGate, REPORT_LAG_MS, reportedTokens, usageComplete, withBudget, type Measurement, type UsageSource } from "../src/limits.ts";
 import { scratch } from "./scratch.ts";
 
-const H = 3_600_000;
+const H = 3_600_000, MIN = 60_000;
 function clock(start = Date.parse("2026-01-05T08:00:00Z")) {
   let t = start;
   return { now: () => t, advance: (ms: number) => { t += ms; } };
@@ -21,6 +21,11 @@ function native(provider: string, reading: () => Measurement | null): UsageSourc
 async function measured(gate: LimitGate, src: UsageSource) {
   const m = await src.read();
   if (m) gate.record(m); else gate.forget(src.provider, src.why?.());
+}
+/** A fake cloud provider's own report, taken now: [window, used %, resets at]. */
+function report(c: { now: () => number }, ...windows: Array<[string, number, number | null]>): Measurement {
+  return { provider: "fakecloud", measuredAt: c.now(), readings: windows.map(([window, usedPercent, resets]) =>
+    ({ window, usedPercent, resetsAt: resets === null ? null : new Date(resets).toISOString() })) };
 }
 
 test("counted: reported tokens in the common shapes, null when a driver reports none", () => {
@@ -253,7 +258,7 @@ test("counted (review 4): a counted budget rising does not pay off what finished
   await measured(gate, src);
   assert.equal(gate.view("fakecloud").owedPercent, 20);
   const next = gate.check("fakecloud", 1);
-  assert.ok(!next.ok && /10% weekly Limit \(70% used, 20% reserved/.test(next.reason), "70 + 20 owed + 1 is past the 90% line");
+  assert.ok(!next.ok && /10% weekly Limit \(70% used, 20% held for finished Specs/.test(next.reason), "70 + 20 owed + 1 is past the 90% line");
 });
 
 test("counted (review 5): finished runs are in the count, so what they owe the provider's window is not added to it", async () => {
@@ -320,6 +325,90 @@ test("counted: labelled as counted by GovernCode only; a counted run over its ca
   await measured(gate, src);
   const v = gate.stillWithin("S-1");
   assert.ok(!v.ok && /crossed its daily budget \(150 of 100 tokens; counted by GovernCode only\)/.test(v.reason));
+});
+
+// Finished Specs hold what they reserved only until the provider's report has caught up (found
+// live: a Spec reserved 10% and used 1%, and 9% stayed held until govd restarted).
+test("limits: a finished Spec that used less than it reserved stops holding once a reading 15 minutes later is in", () => {
+  const c = clock(), week = c.now() + 72 * H;
+  const gate = new LimitGate({}, c.now);
+  gate.record(report(c, ["weekly", 60, week]));
+  assert.ok(gate.admit("S-1", "fakecloud", 10).ok);
+  c.advance(10 * MIN);
+  gate.release("S-1");                                   // it used 1% of the 10% it reserved
+  gate.record(report(c, ["weekly", 61, week]));
+  assert.equal(gate.view("fakecloud").owedPercent, 9);
+  assert.ok(gate.admit("S-2", "fakecloud", 10).ok, "61 + 9 + 10 = 80");
+  const v = gate.check("fakecloud", 11);
+  assert.ok(!v.ok && v.reason.includes("(61% used, 10% reserved by running Specs, 9% held for finished Specs until the usage report catches up)"),
+    "61 + 10 + 9 + 11 = 91, and each part is named for what it is");
+  c.advance(REPORT_LAG_MS);
+  gate.record(report(c, ["weekly", 61, week]));
+  assert.equal(gate.view("fakecloud").owedPercent, 0, "the report has caught up with S-1");
+  assert.ok(gate.check("fakecloud", 19).ok, "61 + 10 running + 19 = 90");
+});
+
+test("limits: inside the lag allowance a finished Spec holds all it reserved, whatever the reading says", () => {
+  const c = clock();
+  const gate = new LimitGate({}, c.now);
+  gate.record(report(c, ["weekly", 45, null]));
+  assert.ok(gate.admit("S-1", "fakecloud", 25).ok);
+  gate.release("S-1");
+  const released = c.now();
+  c.advance(REPORT_LAG_MS - 1);
+  gate.record(report(c, ["weekly", 45, null]));
+  assert.equal(gate.view("fakecloud").owedPercent, 25, "nothing shown yet: its use may still be on the way");
+  assert.equal(gate.check("fakecloud", 21).ok, false, "45 + 25 + 21 = 91");
+  gate.record(report(c, ["weekly", 0, null]));
+  assert.equal(gate.view("fakecloud").owedPercent, 25, "a reading that fell does not say when the window reset");
+  c.advance(H);
+  gate.record({ ...report(c, ["weekly", 45, null]), measuredAt: released + REPORT_LAG_MS - 1 });
+  assert.equal(gate.view("fakecloud").owedPercent, 25, "what counts is when a reading was taken, not when it arrived");
+  gate.record({ ...report(c, ["weekly", 45, null]), measuredAt: released + REPORT_LAG_MS });
+  assert.equal(gate.view("fakecloud").owedPercent, 0);
+});
+
+test("limits: a window that reset after a Spec finished stops holding it; one that reset while it ran holds until the lag passes", () => {
+  const c = clock(), reset = c.now() + 10 * MIN;
+  const gate = new LimitGate({}, c.now);
+  gate.record(report(c, ["weekly", 60, reset]));
+  assert.ok(gate.admit("S-1", "fakecloud", 10).ok);
+  assert.ok(gate.admit("S-2", "fakecloud", 10).ok);
+  c.advance(5 * MIN);
+  gate.release("S-1");                                   // finished in the old window
+  c.advance(7 * MIN);
+  gate.release("S-2");                                   // ran across the reset
+  gate.record(report(c, ["weekly", 1, reset + 168 * H]));
+  assert.equal(gate.view("fakecloud").owedPercent, 10, "S-1 is settled by the reset; S-2 may have used the new window");
+  c.advance(REPORT_LAG_MS);
+  gate.record(report(c, ["weekly", 1, reset + 168 * H]));
+  assert.equal(gate.view("fakecloud").owedPercent, 0);
+});
+
+test("limits: finished Specs across two windows: each claim ends on its own, each window is reconciled on its own", () => {
+  const c = clock(), reset = c.now() + 15 * MIN, week = c.now() + 120 * H;
+  const gate = new LimitGate({}, c.now);
+  gate.record(report(c, ["5-hour", 20, reset], ["weekly", 60, week]));
+  assert.ok(gate.admit("S-1", "fakecloud", 10).ok);
+  c.advance(5 * MIN);
+  gate.release("S-1");
+  c.advance(5 * MIN);
+  gate.record(report(c, ["5-hour", 20, reset], ["weekly", 60, week]));
+  assert.ok(gate.admit("S-2", "fakecloud", 10).ok);
+  c.advance(6 * MIN);
+  gate.release("S-2");                                   // it ran across the 5-hour reset
+  gate.record(report(c, ["5-hour", 3, reset + 5 * H], ["weekly", 72, week]));
+  assert.equal(gate.view("fakecloud").owedPercent, 10, "5-hour: S-1 finished before the reset, S-2 still holds its 10");
+  const a = gate.check("fakecloud", 25);
+  assert.ok(!a.ok && a.reason.includes("weekly Limit (72% used, 8% held for finished Specs"), "weekly: 20 held, 12 risen");
+  c.advance(4 * MIN);                                    // S-1 finished 15 minutes ago
+  gate.record(report(c, ["5-hour", 4, reset + 5 * H], ["weekly", 72, week]));
+  const b = gate.check("fakecloud", 25);
+  assert.ok(!b.ok && b.reason.includes("weekly Limit (72% used, 10% held for finished Specs"), "the rise may be S-1's own use: none of it pays S-2's 10");
+  c.advance(11 * MIN);                                   // S-2 finished 15 minutes ago
+  gate.record(report(c, ["5-hour", 4, reset + 5 * H], ["weekly", 72, week]));
+  assert.equal(gate.view("fakecloud").owedPercent, 0);
+  assert.ok(gate.check("fakecloud", 18).ok, "72 + 18 = 90");
 });
 
 test("unmetered stays an explicit opt-in, labelled as nothing counted", () => {

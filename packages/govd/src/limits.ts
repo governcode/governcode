@@ -39,16 +39,23 @@ export type LimitsConfig = {
 export const DEFAULTS: LimitsConfig = { reservePercent: {}, unmetered: [], ttlMs: 5 * 60_000, maxSpecPercent: 25,
   local: { providers: ["ollama"], maxRunning: 1, maxMinutes: 10 } };
 
+// Vendor usage reports lag behind use: a reading taken this long after a Spec finished includes it.
+export const REPORT_LAG_MS = 15 * 60_000;
+
+// Each of the provider's own windows (not counted ones) as it stood when a Spec was admitted.
+type Baselines = Record<string, { used: number; resetsAt: string | null }>;
+// at: when the Spec finished.
+type Debit = { provider: string; percent: number; at: number; baselines: Baselines };
+
 export class LimitGate {
   private config: LimitsConfig;
   private latest = new Map<string, Measurement>();
   private whyNot = new Map<string, string>();      // a failed reading's reason, shown when it holds
-  // baselines: each of the provider's own windows (not counted ones) as it stood at admission.
-  private inflight = new Map<string, { provider: string; percent: number; baselines: Record<string, number> }>();
-  // Finished Specs keep counting until the provider's own counter catches up: usage reports lag,
+  private inflight = new Map<string, { provider: string; percent: number; baselines: Baselines }>();
+  // Finished Specs keep counting until the provider's own report catches up: usage reports lag,
   // so without this, back-to-back Specs could each be admitted against the same reading. Only the
   // provider's own windows owe this: govd's own count already includes every finished Spec.
-  private debits: Array<{ provider: string; percent: number; baselines: Record<string, number> }> = [];
+  private debits: Debit[] = [];
   private now: () => number;
 
   constructor(config: Partial<LimitsConfig> = {}, now: () => number = Date.now) {
@@ -59,6 +66,16 @@ export class LimitGate {
   record(m: Measurement): void {
     this.latest.set(m.provider, m);
     this.whyNot.delete(m.provider);
+    // A finished Spec's claim on a window ends once the report has caught up with it. Claims still
+    // open there then count only the rise from here on: the rise so far may be the ended ones' use.
+    const mine = this.debits.filter((d) => d.provider === m.provider);
+    for (const w of new Set(mine.flatMap((d) => Object.keys(d.baselines)))) {
+      const ds = mine.filter((d) => w in d.baselines), open = ds.filter((d) => !this.settled(d, w, m));
+      if (open.length === ds.length) continue;
+      const now = m.readings.find((r) => !r.counted && r.window === w)?.usedPercent ?? 0;
+      for (const d of ds) if (open.includes(d)) d.baselines[w].used = Math.max(d.baselines[w].used, now); else delete d.baselines[w];
+    }
+    this.debits = this.debits.filter((d) => Object.keys(d.baselines).length);
     if (this.owedMax(m.provider) === 0) this.debits = this.debits.filter((d) => d.provider !== m.provider);
   }
 
@@ -117,7 +134,7 @@ export class LimitGate {
     return { measuredAt: own.length ? m.measuredAt : this.now(), readings: [...own, ...c.m.readings] };
   }
 
-  private decide(provider: string, requested: number): { verdict: Verdict; percent: number; baselines: Record<string, number> } {
+  private decide(provider: string, requested: number): { verdict: Verdict; percent: number; baselines: Baselines } {
     const percent = Math.min(Math.max(requested, 1), this.config.maxSpecPercent); // clamp: a request, not authority
     const no = (reason: string, resetsAt: string | null = null) => ({ verdict: { ok: false as const, provider, reason, resetsAt }, percent, baselines: {} });
     const local = this.localRule(provider);
@@ -152,14 +169,15 @@ export class LimitGate {
           return no(`inside its ${r.window} budget (${c.used} of ${c.cap} tokens used${reserved ? `, ${reserved}% reserved by running Specs` : ""}${keep ? `, ${keep}% kept back` : ""}; ${COUNTED_LABEL})`, r.resetsAt);
         }
       } else {
-        const pending = reserved + this.owed(provider, r.window);
-        if (r.usedPercent + pending + percent > 100 - keep) {
-          return no(`inside its ${keep}% ${r.window} Limit (${r.usedPercent}% used${pending ? `, ${pending}% reserved by running Specs` : ""})`, r.resetsAt);
+        const owed = this.owed(provider, r.window);
+        if (r.usedPercent + reserved + owed + percent > 100 - keep) {
+          return no(`inside its ${keep}% ${r.window} Limit (${r.usedPercent}% used${reserved ? `, ${reserved}% reserved by running Specs` : ""}${owed
+            ? `, ${Math.round(owed * 10) / 10}% held for finished Specs until the usage report catches up` : ""})`, r.resetsAt);
         }
       }
     }
     return { verdict: { ok: true, provider }, percent,
-      baselines: Object.fromEntries(m.readings.filter((r) => !r.counted).map((r) => [r.window, r.usedPercent])) };
+      baselines: Object.fromEntries(m.readings.filter((r) => !r.counted).map((r) => [r.window, { used: r.usedPercent, resetsAt: r.resetsAt }])) };
   }
 
   private reserved(provider: string): number {
@@ -175,7 +193,7 @@ export class LimitGate {
       reserves: Object.fromEntries(readings.filter((r) => !r.counted).map((r) => [r.window, r.reservePercent])),
       counted: readings.some((r) => r.counted) ? COUNTED_LABEL : null,
       measuredAt: m?.measuredAt ?? null, readings, reservedPercent: this.reserved(provider),
-      owedPercent: this.owedMax(provider), verdict: this.check(provider) };
+      owedPercent: Math.round(this.owedMax(provider) * 10) / 10, verdict: this.check(provider) };
   }
 
   /** While a Spec runs: has its provider crossed the line? Unknown now also means stop. */
@@ -197,14 +215,24 @@ export class LimitGate {
   }
 
   /** What finished Specs may still owe in one of the provider's own windows: their reservations,
-   *  minus the rise that window has shown since the earliest of them started. Each window is
+   *  minus the rise that window has shown since the earliest of them started (or since another
+   *  claim there ended: see record). Each window is
    *  reconciled on its own, never against another window or a counted budget. */
   private owed(provider: string, window: string): number {
     const ds = this.debits.filter((d) => d.provider === provider && window in d.baselines);
     if (!ds.length) return 0;
     const now = this.latest.get(provider)?.readings.find((r) => !r.counted && r.window === window)?.usedPercent ?? 0;
-    const risen = Math.max(0, now - Math.min(...ds.map((d) => d.baselines[window])));
+    const risen = Math.max(0, now - Math.min(...ds.map((d) => d.baselines[window].used)));
     return Math.max(0, ds.reduce((a, d) => a + d.percent, 0) - risen);
+  }
+
+  /** Has the report caught up with a finished Spec in one window? Once a reading taken
+   *  REPORT_LAG_MS after it finished is in, or one taken after the window it ran in reset, if it
+   *  finished before that (a Spec running across a reset may have used the new window). A reading
+   *  that only fell is not enough: it does not say when the window reset. */
+  private settled(d: Debit, window: string, m: Measurement): boolean {
+    const end = Date.parse(d.baselines[window].resetsAt ?? "");
+    return m.measuredAt >= d.at + REPORT_LAG_MS || (end >= d.at && m.measuredAt >= end);
   }
 
   private owedMax(provider: string): number {
@@ -215,7 +243,7 @@ export class LimitGate {
   release(spec: string): void {
     const f = this.inflight.get(spec);
     this.inflight.delete(spec);
-    if (f && f.percent > 0 && Object.keys(f.baselines).length) this.debits.push({ provider: f.provider, percent: f.percent, baselines: f.baselines });
+    if (f && f.percent > 0 && Object.keys(f.baselines).length) this.debits.push({ provider: f.provider, percent: f.percent, at: this.now(), baselines: f.baselines });
   }
 }
 

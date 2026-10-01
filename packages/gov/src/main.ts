@@ -480,7 +480,8 @@ async function main(argv: string[]): Promise<number> {
         if (!providers.length) console.log(dim("no measured Runners"));
         for (const x of providers) {
           const windows = x.readings.map((r: any) => `${r.window} ${r.counted ? `${r.counted.used}/${r.counted.cap} ${r.counted.unit}` : `${r.usedPercent}%`}${r.resetsAt ? ` (resets ${r.resetsAt})` : ""}`).join(", ") || "not measured";
-          const held = [x.reservedPercent ? `${x.reservedPercent}% reserved` : "", x.owedPercent ? `${x.owedPercent}% owed` : ""].filter(Boolean).join(", ");
+          const held = [x.reservedPercent ? `${x.reservedPercent}% reserved by running Specs` : "",
+            x.owedPercent ? `${x.owedPercent}% held for finished Specs until the usage report catches up` : ""].filter(Boolean).join(", ");
           const rule = x.local ? `local: at most ${x.local.maxRunning} at once, ${x.local.maxMinutes} min each` : `${windows}  · keeps ${x.reservePercent}% back`;
           console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${rule}${held ? ` · ${held}` : ""}${x.counted ? ` · ${x.counted}` : ""}${x.unmetered ? " · unmetered (your opt-in)" : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
         }

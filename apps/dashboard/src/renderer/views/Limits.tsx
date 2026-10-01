@@ -78,7 +78,7 @@ export function Limits() {
               <div className="dim small">
                 {p.measuredAt ? `${p.local ? "answered" : "measured"} ${ago(p.measuredAt)}` : p.local ? "not checked yet" : "never measured"}
                 {p.reservedPercent ? ` · ${p.reservedPercent}% reserved by running Specs` : ""}
-                {p.owedPercent ? ` · ${p.owedPercent}% still owed by finished Specs` : ""}
+                {p.owedPercent ? ` · ${p.owedPercent}% held for finished Specs until the usage report catches up` : ""}
                 {!p.verdict.ok && ` · ${p.verdict.reason}`}
               </div>
             </div>
