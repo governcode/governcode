@@ -244,7 +244,7 @@ export class Daemon {
   /** Home's Controller: the most recently chosen project Controller, else the default. */
   /** Home uses the Controller the user chose most recently (projects list by name, not by time). */
   private homeController() {
-    const last = this.ledger.events(undefined, 5000).filter((e) => e.kind === "controller.set").at(-1);
+    const last = this.ledger.lastOfKind("controller.set");
     const chosen = last ? this.ledger.project(String(last.project))?.controller : undefined;
     return chosen ?? { provider: "claude-code" as const, model: "opus", effort: "high" as const };
   }
@@ -286,10 +286,10 @@ export class Daemon {
     });
   }
 
-  /** The user's answer to a game plan. */
-  private answerPlan(id: string, answer: "approve" | "just-you" | "reject", items: number[] | undefined, by: string): boolean {
+  /** The user's answer to a game plan: the item numbers approved, or null when no such plan waits. */
+  private answerPlan(id: string, answer: "approve" | "just-you" | "reject", items: number[] | undefined, by: string): number[] | null {
     const pl = this.plans.get(id);
-    if (!pl) return false;
+    if (!pl) return null;
     this.plans.delete(id);
     // No selection: all items. A selection (even an empty one): only those.
     const approved = answer !== "approve" ? [] : items === undefined ? pl.items : pl.items.filter((_, i) => items.includes(i + 1));
@@ -297,9 +297,10 @@ export class Daemon {
     state.approved.push(...approved.map((x) => ({ ...x })));
     if (answer === "just-you") state.justYou = true;
     this.turnPlans.set(pl.turn, state);
-    this.ledger.append(pl.project, "plan.answered", "user", { plan: id, answer, by, approved: approved.map((x) => pl.items.indexOf(x) + 1) });
+    const numbers = approved.map((x) => pl.items.indexOf(x) + 1);
+    this.ledger.append(pl.project, "plan.answered", "user", { plan: id, answer, by, approved: numbers });
     pl.answer({ answer, approved });
-    return true;
+    return numbers;
   }
 
   private settle(id: string, answer: "allow" | "deny", by: string, remember?: AllowScope): boolean {
@@ -367,7 +368,7 @@ export class Daemon {
           throw new RpcError(Errors.refused, `${path} led somewhere else while being created; nothing was kept`);
         }
         if (prop.git) execFileSync("git", ["init", "-q", "-b", "main", path]);
-        return { id: p.id, created: L.addProject(prop.name, path, "project.created") };
+        return { id: p.id, created: L.addProject(prop.name, path, "project.created", { proposal: p.id }) };
       }
       case "project.open": {
         if (!existsSync(resolve(p.path)) || !statSync(resolve(p.path)).isDirectory()) throw new RpcError(Errors.notFound, `${resolve(p.path)} is not a folder`);
@@ -487,9 +488,14 @@ export class Daemon {
         return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, kinds, ...g }) => ({ ...g,
           covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
           suggest: this.settings().gates.level === "balanced" && g.scopes.includes("project") ? "project" : null })) };
-      case "plan.answer":
-        if (!this.answerPlan(p.id, p.answer, p.items, "user")) throw new RpcError(Errors.notFound, `no plan ${p.id} is waiting`);
-        return { ok: true };
+      case "plan.answer": {
+        // An item the plan does not have is refused (the plan keeps waiting), never approved as nothing.
+        const n = this.plans.get(p.id)?.items.length;
+        if (n !== undefined && p.items?.some((i: number) => i > n)) throw new RpcError(Errors.badParams, `${p.id} has ${n} item${n === 1 ? "" : "s"}`);
+        const approved = this.answerPlan(p.id, p.answer, p.items, "user");
+        if (!approved) throw new RpcError(Errors.notFound, `no plan ${p.id} is waiting`);
+        return { ok: true, approved };
+      }
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
