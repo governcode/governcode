@@ -3,7 +3,7 @@
 // projects, open Gates and the Terminal's conversations.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AskEvent, Status } from "../shared/contract.ts";
-import { api, call, controllerLabel, START_GOVD, useFallbackPoll, useWatch, type Gate, type Project } from "./api.ts";
+import { api, call, controllerLabel, personalKey, START_GOVD, useFallbackPoll, useWatch, type Controller, type Gate, type Project } from "./api.ts";
 import { Empty, Pill } from "./ui.tsx";
 import { PersonalDialog } from "./views/PersonalDialog.tsx";
 import { Terminal, type Entry, type Thread } from "./views/Terminal.tsx";
@@ -27,6 +27,7 @@ const HOME = "";
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [homeController, setHomeController] = useState<Controller | null>(null);   // what a turn at Home runs now
   const [project, setProject] = useState<string>(HOME);
   const [view, setView] = useState<View>("terminal");
   const [gates, setGates] = useState<Gate[]>([]);
@@ -45,7 +46,11 @@ export function App() {
   }, []);
 
   const loadProjects = useCallback(async () => {
-    try { setProjects((await call<{ projects: Project[] }>("project.list")).projects); } catch { /* status shows govd down */ }
+    try {
+      const r = await call<{ projects: Project[]; home?: { controller: Controller } }>("project.list");
+      setProjects(r.projects);
+      setHomeController(r.home?.controller ?? null);
+    } catch { /* status shows govd down */ }
   }, []);
 
   const refreshGates = useCallback(async () => {
@@ -87,14 +92,19 @@ export function App() {
     if (ev.kind === "gate" && !live) void refreshGates();
   }), [push, refreshGates, live]);
 
-  // The first message to a Controller asks once whether the user's own instructions come along.
-  const [personalAsk, setPersonalAsk] = useState<{ provider: "claude" | "codex"; prompt: string } | null>(null);
+  // The first message to a Controller asks once whether the user's own instructions come along:
+  // about the tool this turn runs (the project's Controller, or Home's), and only once that tool
+  // is connected (otherwise govd refuses the turn and says how to connect), as gov ask does.
+  const [personalAsk, setPersonalAsk] = useState<{ provider: "claude" | "codex"; prompt: string; home: boolean } | null>(null);
   const send = useCallback(async (prompt: string) => {
-    const provider = projects.find((p) => p.name === project)?.controller.provider === "codex" ? "codex" : "claude";
+    const provider = personalKey(project === HOME ? homeController : projects.find((p) => p.name === project)?.controller);
     const s = await call<{ settings: { personal?: Record<string, boolean | null> } }>("settings.get").catch(() => null);
-    if (s && s.settings.personal && s.settings.personal[provider] === null) { setPersonalAsk({ provider, prompt }); return; }
+    if (s?.settings.personal?.[provider] === null) {
+      const t = await call<{ tools: Array<{ tool: string; connected: boolean }> }>("tools.list", {}).catch(() => null);
+      if (t?.tools.some((x) => x.tool === provider && x.connected)) { setPersonalAsk({ provider, prompt, home: project === HOME }); return; }
+    }
     await sendNow(prompt);
-  }, [project, projects]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [project, projects, homeController]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const choosePersonal = useCallback(async (use: boolean) => {
     const ask = personalAsk;
@@ -191,7 +201,7 @@ export function App() {
 
       {up && dialog === "new" && <NewProject onClose={() => setDialog(null)} onDone={opened} />}
       {up && dialog === "open" && <OpenFolder onClose={() => setDialog(null)} onDone={opened} />}
-      {up && personalAsk && <PersonalDialog provider={personalAsk.provider} onChoose={(use) => void choosePersonal(use)} onClose={() => setPersonalAsk(null)} />}
+      {up && personalAsk && <PersonalDialog provider={personalAsk.provider} home={personalAsk.home} onChoose={(use) => void choosePersonal(use)} onClose={() => setPersonalAsk(null)} />}
       {up && dialog === "controller" && current && <ControllerPicker project={current} onClose={() => setDialog(null)}
         onDone={() => { setDialog(null); void loadProjects(); }} />}
 

@@ -18,3 +18,8 @@ export function modelLabel(model: string, effort: string | null | undefined): st
 export function controllerLabel(c: ControllerLike): string {
   return dotted(c.provider, modelLabel(c.model, c.effort));
 }
+
+/** Whose personal instructions a turn on this Controller would bring (gov ask decides the same way). */
+export function personalKey(c: ControllerLike | null | undefined): "claude" | "codex" {
+  return c?.provider === "codex" ? "codex" : "claude";
+}

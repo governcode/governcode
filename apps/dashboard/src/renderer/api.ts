@@ -39,7 +39,7 @@ export function clock(iso: string, now = new Date()): string {
   return sameDay ? time : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}`;
 }
 
-export { controllerLabel, dotted, modelLabel } from "../shared/labels.ts";
+export { controllerLabel, dotted, modelLabel, personalKey } from "../shared/labels.ts";
 
 export const START_GOVD = "node packages/gov/src/main.ts daemon start";
 
