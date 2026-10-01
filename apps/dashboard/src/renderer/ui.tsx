@@ -56,7 +56,7 @@ export function GateCard(props: { id: string; tool: string; canonical: string; p
       <div className="gate-label dim">Exactly this will run:</div>
       <pre className="code">{props.canonical}</pre>
       {props.state === "waiting" && (
-        <div className="row">
+        <div className="row wrap">
           {/* Balanced: the suggested answer first, so the next similar step does not ask again. */}
           {props.suggest && (props.scopes ?? []).includes(props.suggest) && (
             <button className="btn btn-accent" disabled={busy} onClick={() => answer("allow", props.suggest!)}>Allow for {SCOPE_LABEL[props.suggest] ?? props.suggest}</button>

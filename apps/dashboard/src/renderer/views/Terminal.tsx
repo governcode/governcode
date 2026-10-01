@@ -43,7 +43,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
     <section className="view terminal">
       <div className="view-head">
         <h1>Terminal</h1>
-        <span className="dim">{props.project ? `Controller for ${props.project.name}: ${controllerLabel(props.project.controller)}`
+        <span className="dim head-note">{props.project ? `Controller for ${props.project.name}: ${controllerLabel(props.project.controller)}`
           : "Home: the Controller can read and plan but cannot write anything."}</span>
         <span className="spacer" />
         {props.thread.busy && <Pill tone="accent">working</Pill>}
@@ -65,7 +65,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
               onAnswered={(a) => props.onGate(e.id, a)} />;
             case "spec": return (
               <div key={i} className="spec-card">
-                <div className="spec-head"><b className="mono">{e.id}</b> <span className="dim">→ Runner ·</span> <b>{e.to}</b> <span className="dim">{e.brief.slice(0, 160)}</span></div>
+                <div className="spec-head"><b className="mono">{e.id}</b> <span className="dim">→ Runner{e.to && " ·"}</span> {e.to && <b>{e.to}</b>} <span className="dim">{e.brief.slice(0, 160)}</span></div>
                 {e.lines.slice(-12).map((l, j) => <div key={j} className="spec-line mono dim">{l.slice(0, 300)}</div>)}
               </div>
             );
@@ -116,7 +116,7 @@ function PlanCard(p: { id: string; items: Array<{ who: string; what: string; sco
       {p.note && <div className="small">{p.note}</div>}
       <div className="dim small">{p.handoff === "plan" ? "Each approved handoff runs once without asking again; anything else still asks." : "Handoffs still ask at a Gate (Crew card: ask each time)."} Just you: the Controller does it all itself this turn.</div>
       {error && <div className="error small">{error}</div>}
-      <div className="row end">
+      <div className="row end wrap">
         {state === "approve" ? <span className="ok small">Approved.</span> : state === "just-you" ? <span className="small">Just the Controller.</span>
           : state === "reject" ? <span className="dim small">Rejected.</span>
           : <><button className="btn" disabled={state === "busy"} onClick={() => answer("reject")}>Reject</button>
@@ -146,7 +146,7 @@ function ProposalCard(p: { id: string; name: string; path: string; git: boolean;
       {p.reason && <div className="small">{p.reason}</div>}
       <div className="dim small">Created by govd after you confirm; the Controller cannot create folders itself.</div>
       {error && <div className="error small">{error}</div>}
-      <div className="row end">
+      <div className="row end wrap">
         {state === "created" ? <><span className="ok small">Created.</span>{p.onOpen && <button className="btn btn-accent" onClick={() => p.onOpen?.(p.name)}>Open {p.name}</button>}</>
           : state === "cancelled" ? <span className="dim small">Cancelled; nothing was created.</span>
           : <><button className="btn" disabled={state === "busy"} onClick={() => answer("cancel")}>Cancel</button>

@@ -15,7 +15,8 @@ Controller, asks, Gates, Specs, the Trace), nothing more. Electron shell, React 
   and the Dashboard shows why, if any of them changed since. The Terminal also shows a
   "Checkpoint T-n · k files · Undo" line after each such turn.
 - **Gates**: every Gate waiting, from any project, answerable here too.
-- **Trace**: the history, newest first, in local 24-hour time, with filter chips.
+- **Trace**: the history, newest first, in local 24-hour time, with filter chips. Each event
+  reads as a short label ("Gate allowed", "Spec discarded"); its raw kind is the tooltip.
 
 The top bar switches project, creates one (**New project**: name, location, git init),
 adds an existing folder (**Open folder**), and chooses the project's **Controller**

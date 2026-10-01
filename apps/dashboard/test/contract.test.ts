@@ -13,6 +13,7 @@ import { runInNewContext } from "node:vm";
 import { checkAsk, checkCall, checkConnect, connect, socketPath } from "../src/main/govd-client.ts";
 import { GovdLink } from "../src/main/link.ts";
 import { CALLABLE, Channel } from "../src/shared/contract.ts";
+import { personalKey } from "../src/shared/labels.ts";
 import { Daemon } from "../../../packages/govd/src/daemon.ts";
 import { markConnected } from "../../../packages/govd/test/scratch.ts";
 
@@ -153,6 +154,9 @@ test("against the real govd: hello reports the sandbox, and lists come back", as
     await link.call(ctl.method, ctl.params);
     for (let i = 0; i < 50 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
     assert.deepEqual(seen, ["project.created", "controller.set"]);
+    // Home runs the Controller chosen last, so the personal-instructions question at Home names Codex.
+    const listed = await link.call("project.list", {}) as { home: { controller: { provider: string; model: string; effort: string | null } } };
+    assert.equal(personalKey(listed.home.controller), "codex");
     // Asks are refused while the sandbox is unverified, and the refusal reaches the Dashboard.
     await assert.rejects(link.ask({ project: null, prompt: "hi" }, () => {}), /sandbox not verified/);
   } finally {
