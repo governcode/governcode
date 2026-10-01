@@ -388,10 +388,21 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
   if (/^(mcp__governcode__spec_discard|governcode spec_discard)$/.test(tool)) {
     return { ask: false, quiet: false, kinds: [runner({ key: "spec:discard", label: "throwing away a Spec it proposed (accepting is always yours)" })] };
   }
+  if (quietTool(tool, req.input)) return { ask: false, quiet: true, kinds: [] };
   const k = kindOf(req);
   return k ? { ask: false, quiet: false, kinds: [k] } : { ask: true, quiet: false, kinds: [] };
 }
 const LOCAL_RUNNERS = ["ollama"];
+
+// A Runner agent's own read-only tools (Grok's, seen live with 1.0.46), each with the ACP kind it
+// comes with: they read what the sandbox lets the Runner read, as a plain `cat`, `ls` or `grep`
+// does, so they are quiet reads too. Any other name or kind, or a special place, asks.
+const QUIET_TOOLS: Record<string, string> = { grok_ReadFile: "read", grok_ListDir: "other", grok_Grep: "search" };
+function quietTool(tool: string, input: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(QUIET_TOOLS, tool) || input.kind !== QUIET_TOOLS[tool]) return false;
+  const raw = input.input && typeof input.input === "object" ? input.input as Record<string, unknown> : {};
+  return ["file_path", "path", "target_directory"].every((k) => raw[k] === undefined || raw[k] === null || (typeof raw[k] === "string" && !SPECIAL.test(raw[k] as string)));
+}
 
 /** The scopes a Gate may offer: a Controller's steps per turn or project, a Runner's per Spec or
  *  project; Home (no project) per turn only. */

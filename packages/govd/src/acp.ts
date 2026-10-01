@@ -3,9 +3,11 @@
 // govern-sup, runs initialize, session/new and one session/prompt, and answers the agent's
 // `session/request_permission` from the user's Gate. Only two answers are ever given: the
 // agent's "allow once" option, or a rejection; "allow always" is never chosen, so every call asks
-// again. Token use comes from the agent's `turn_completed` update (an xAI extension; a plain ACP
-// agent reports none). A stop from outside sends `session/cancel` and then ends the process; an
-// agent that dies ends the turn with its last words on stderr.
+// again. Token use comes from the agent's `turn_completed` update (an xAI extension, which Grok
+// 1.0.46 sends on `_x.ai/session_notification`) and from the prompt's own answer (ACP's `usage`,
+// or the totals in xAI's `_meta`); a plain ACP agent may report none. A stop from outside sends
+// `session/cancel` and then ends the process; an agent that dies ends the turn with its last
+// words on stderr.
 import { spawn } from "node:child_process";
 import { canonical, type GateRequest, type TurnHooks } from "./claude.ts";
 import { MAX_RUN_TOKENS } from "./codex.ts";
@@ -140,8 +142,10 @@ export function pickOption(options: unknown, answer: "allow" | "deny"): Permissi
 /** The Gate for one ACP permission request: what the agent is about to do, shown as it sent it.
  *  An `execute` is a command (the same command analysis as every other Runner's: only the
  *  command field itself is analysed, never the agent's title for it, so a command GovernCode
- *  cannot read always asks); `edit`, `delete` and `move` are file changes; any other kind is a
- *  step of its own kind. */
+ *  cannot read always asks); `edit`, `delete` and `move` are file changes; any other call is a
+ *  step named after the agent's own name for its tool (Grok's `variant`), else after its kind, so
+ *  allowing one tool never covers another. A call of kind `other` with no name of its own is
+ *  something GovernCode cannot name: it always asks. */
 export function permissionGate(agent: string, params: any, id: string): GateRequest {
   let tc = params?.toolCall && typeof params.toolCall === "object" ? params.toolCall : null;
   // No tool call at all is not a call of kind "other": it is something GovernCode cannot show.
@@ -159,33 +163,53 @@ export function permissionGate(agent: string, params: any, id: string): GateRequ
     tool = `${agent} fileChange`;
     input = { kind, ...(title ? { title } : {}), locations, input: raw };
   } else {
-    tool = /^[a-z_]{1,40}$/.test(kind) ? `${agent}_${kind}` : `${agent} unknown tool`;
-    input = { ...(title ? { title } : {}), locations, input: raw };
+    const variant = typeof raw.variant === "string" && /^[A-Za-z][A-Za-z0-9]{0,29}$/.test(raw.variant) ? raw.variant : null;
+    tool = variant ? `${agent}_${variant}` : kind !== "other" && /^[a-z_]{1,30}$/.test(kind) ? `${agent}_${kind}` : `${agent} unknown tool`;
+    input = { kind, ...(title ? { title } : {}), locations, input: raw };
   }
   return { id, tool, input, canonical: canonical({ tool, input }) };
 }
 
 /**
  * A run's token use from `turn_completed` updates ({ usage: { inputTokens, outputTokens,
- * totalTokens, ... } }), summed over the run's turns (a subagent's turn is one more). A run with
- * no update reports null; a run that did not end normally, or sent an update that could not be
- * read, reports what it saw with `complete: false` (a floor: a token budget holds on it).
+ * totalTokens, ... } }), summed over the run's turns (a subagent's turn is one more; an update
+ * with a `prompt_id` already counted is the same turn sent twice). The prompt's own answer may
+ * carry the run's totals too (`prompt`): each figure is then the larger of the two, never their
+ * sum. A run with no report reports null; a run that did not end normally, or sent a report that
+ * could not be read, reports what it saw with `complete: false` (a floor: a token budget holds on it).
  */
 export function acpTokenTally() {
   let totalTokens = 0, inputTokens = 0, outputTokens = 0, turns = 0, malformed = false, empty = false;
+  let answer: { totalTokens: number; inputTokens: number; outputTokens: number } | null = null;
+  const counted = new Set<string>();
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(v, MAX_RUN_TOKENS) : null);
+  const read = (u: any) => {
+    const inp = n(u?.inputTokens), out = n(u?.outputTokens);
+    const total = n(u?.totalTokens) ?? (inp !== null && out !== null ? inp + out : null);
+    return total === null || inp === null || out === null ? null : { totalTokens: total, inputTokens: inp, outputTokens: out };
+  };
   return {
     add(update: any): void {
-      const u = update?.usage;
-      const inp = n(u?.inputTokens), out = n(u?.outputTokens);
-      const total = n(u?.totalTokens) ?? (inp !== null && out !== null ? inp + out : null);
-      if (total === null || inp === null || out === null) { malformed = true; return; }
-      if (total === 0) empty = true;   // a turn that reports nothing used is not believed
+      if (typeof update?.prompt_id === "string") { if (counted.has(update.prompt_id)) return; counted.add(update.prompt_id); }
+      const u = read(update?.usage);
+      if (!u) { malformed = true; return; }
+      if (u.totalTokens === 0) empty = true;   // a turn that reports nothing used is not believed
       turns++;
-      totalTokens = Math.min(totalTokens + total, MAX_RUN_TOKENS); inputTokens = Math.min(inputTokens + inp, MAX_RUN_TOKENS); outputTokens = Math.min(outputTokens + out, MAX_RUN_TOKENS);
+      totalTokens = Math.min(totalTokens + u.totalTokens, MAX_RUN_TOKENS); inputTokens = Math.min(inputTokens + u.inputTokens, MAX_RUN_TOKENS); outputTokens = Math.min(outputTokens + u.outputTokens, MAX_RUN_TOKENS);
+    },
+    /** The prompt's answer: ACP's `usage`, else xAI's totals in `_meta`. Neither is no report. */
+    prompt(result: any): void {
+      const u = result?.usage ?? (result?._meta && typeof result._meta === "object" && "totalTokens" in result._meta ? result._meta : undefined);
+      if (u === undefined) return;
+      answer = read(u);
+      if (!answer) malformed = true;
+      else if (answer.totalTokens === 0) empty = true;
     },
     usage(endedNormally: boolean) {
-      return turns || malformed ? { totalTokens, inputTokens, outputTokens, complete: endedNormally && !malformed && !empty } : null;
+      if (!turns && !answer && !malformed) return null;
+      const a = answer ?? { totalTokens: 0, inputTokens: 0, outputTokens: 0 };
+      return { totalTokens: Math.max(totalTokens, a.totalTokens), inputTokens: Math.max(inputTokens, a.inputTokens), outputTokens: Math.max(outputTokens, a.outputTokens),
+        complete: endedNormally && !malformed && !empty };
     },
   };
 }
@@ -213,10 +237,17 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
   const gateTimeout = o.gateTimeoutMs ?? 60 * 60_000;   // ponytail: a backstop; the turn's end stops a Runner's Gates before this
   const pending = new Set<() => void>();
   const drain = () => { for (const p of pending) p(); };
+  let said = 0;   // a Runner's words and steps reach the hooks up to a budget of bytes; a flood does not fill govd
+  const within = (s: string) => (said += Buffer.byteLength(s)) <= 1_000_000;
+  // The agent streams its words in pieces of a few characters; they reach the hooks whole, before
+  // its next step or Gate, at the end of the turn, or every few thousand characters.
+  let words = "";
+  const flush = () => { const w = words; words = ""; if (w && within(w)) o.hooks.text(w); };
   rpc.onRequest(async (method, params) => {
     if (method !== "session/request_permission") throw new Error(`GovernCode does not answer ${method}`);
     const mine = prompting && stopped === null && typeof params?.sessionId === "string" && params.sessionId === sessionId;
     if (!mine) return pickOption(params?.options, "deny");
+    flush();
     const req = permissionGate(o.agent, params, `${o.agent}-${Date.now()}-${asked}`);
     if (++asked > (o.maxGates ?? 200)) return pickOption(params?.options, "deny");
     // The user's answer, unless the run is stopped, the prompt has ended or the Gate has waited
@@ -231,19 +262,26 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
     });
     return pickOption(params?.options, answer === "allow" && prompting && stopped === null ? "allow" : "deny");
   });
-  let said = 0;   // a Runner's words and steps reach the hooks up to a budget of bytes; a flood does not fill govd
-  const within = (s: string) => (said += Buffer.byteLength(s)) <= 1_000_000;
   rpc.onNotify((method, params) => {
-    if (method !== "session/update" && method !== "_x.ai/session/update") return;
-    if (!sessionId || params?.sessionId !== sessionId || ended) return;   // another session's, or after the turn: not this run's
+    // xAI's own channel carries only token use here; it may leave the session out, and a turn
+    // counted that should not have been can only make a budget stricter.
+    const xai = method === "_x.ai/session_notification";
+    if (method !== "session/update" && method !== "_x.ai/session/update" && !xai) return;
+    if (!sessionId || ended) return;   // after the turn: not this run's
+    if (params?.sessionId !== sessionId && !(xai && params?.sessionId === undefined)) return;   // another session's
     const u = params?.update;
     if (!u || typeof u !== "object") return;
-    if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && typeof u.content.text === "string" && within(u.content.text)) o.hooks.text(u.content.text);
+    if (u.sessionUpdate === "turn_completed") tokens.add(u);
+    if (xai) return;
+    if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && typeof u.content.text === "string") {
+      words += u.content.text;
+      if (words.length >= 4000) flush();
+    }
     if (u.sessionUpdate === "tool_call") {
+      flush();
       const step = `${o.agent} ${typeof u.kind === "string" ? u.kind : "tool"}${typeof u.title === "string" ? `: ${u.title.slice(0, 60)}` : ""}`;
       if (within(step)) o.hooks.tool(step, {});
     }
-    if (u.sessionUpdate === "turn_completed") tokens.add(u);
   });
   let closer: NodeJS.Timeout | undefined;
   const onAbort = () => {
@@ -266,6 +304,7 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
     // The prompt has a deadline (a Runner is one job, not a service); past it the agent is ended.
     const r = await rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text: o.prompt }] }, o.promptTimeoutMs ?? 2 * 60 * 60_000);
     prompting = false;
+    tokens.prompt(r);
     drain();
     const reason = typeof r?.stopReason === "string" ? r.stopReason : "unknown";
     if (stopped !== null) return stoppedResult();
@@ -277,6 +316,7 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
     return { ok: false, summary: `${o.agent}: ${e instanceof Error ? e.message : e}`, usage: tokens.usage(false) };
   } finally {
     prompting = false;
+    flush();
     ended = true;
     drain();
     clearTimeout(closer);

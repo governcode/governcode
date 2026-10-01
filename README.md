@@ -236,15 +236,16 @@ never used, and GovernCode never reads the login Grok keeps in its home. Only a 
 sign-in counts, never an API key. `gov disconnect grok` removes it.
 
 Then `grok` is a Runner like `codex`, driven over the Agent Client Protocol (ACP). Every run gets
-a fresh home with a config GovernCode writes: every call asks, reads, searches and directory
-listings included (Grok's `ask` mode with an `ask` rule for every tool, which outranks any `allow`
-rule a project could carry), and no hooks, no plugins, no subagents, no background workflows, no
-memory, no Claude, Cursor or Codex compatibility, no updater, no `.envrc`, folder trust on. In
-that home the run may write only where Grok keeps its sessions, logs and a few startup files: its config
-and its login are read-only to it. A run has two hours; then it is ended.
-Each permission request Grok makes is a Gate: commands get the same checks as any other command,
-file changes show the request as Grok sent it, and any other kind of call is a step of its own
-kind. GovernCode answers
+a fresh home with a config GovernCode writes: every call asks GovernCode first, reads, searches and
+directory listings included (Grok's `ask` mode with an `ask` rule for every tool, which outranks
+any `allow` rule a project could carry), and no hooks, no plugins, no subagents, no background
+workflows, no memory, no Claude, Cursor or Codex compatibility, no updater, no `.envrc`, folder
+trust on. In that home the run may write only where Grok keeps its sessions, logs and a few startup
+files: its config and its login are read-only to it. A run has two hours; then it is ended.
+GovernCode judges each request Grok makes: reading a file, searching and listing a folder are quiet
+reads, like a plain `cat` or `ls` (the sandbox bounds what they can read); commands get the same
+checks as any other command; file changes show the request as Grok sent it; and any other call is
+a step named after Grok's own tool (a call Grok does not name always asks). GovernCode answers
 "allow once" or rejects; it never picks "allow always", so every call asks again. Its Limit comes
 from Grok's own usage report (the credits used this period, the same figure Grok's `/usage`
 shows, and when the period ends), so Grok is a measured Runner like Codex; each run's token use
