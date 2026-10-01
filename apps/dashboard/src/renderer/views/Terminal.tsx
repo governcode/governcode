@@ -65,7 +65,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
               onAnswered={(a) => props.onGate(e.id, a)} />;
             case "spec": return (
               <div key={i} className="spec-card">
-                <div className="spec-head"><b className="mono">{e.id}</b> <span className="dim">→ Runner ·</span> <b>{e.to}</b> <span className="dim">{e.brief.slice(0, 160)}</span></div>
+                <div className="spec-head"><b className="mono">{e.id}</b> <span className="dim">→ Runner{e.to && " ·"}</span> {e.to && <b>{e.to}</b>} <span className="dim">{e.brief.slice(0, 160)}</span></div>
                 {e.lines.slice(-12).map((l, j) => <div key={j} className="spec-line mono dim">{l.slice(0, 300)}</div>)}
               </div>
             );

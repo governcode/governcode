@@ -224,7 +224,7 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
       const line = ev.kind === "spec.text" ? String(e.text) : `· ${String(e.name)}`;
       let found = false;
       const next = entries.map((x) => x.t === "spec" && x.id === e.id ? (found = true, { ...x, lines: [...x.lines, line] }) : x);
-      return found ? next : [...entries, { t: "spec", id: String(e.id), to: "?", brief: "", lines: [line] }];
+      return found ? next : [...entries, { t: "spec", id: String(e.id), to: "", brief: "", lines: [line] }];
     }
     default: return entries;
   }

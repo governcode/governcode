@@ -165,7 +165,7 @@ export function ControllerPicker({ project, onClose, onDone }: { project: Projec
         <label className="field">
           <span>Effort</span>
           <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-            <option value="">n/a</option>
+            <option value="">default</option>
             {EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}
           </select>
         </label>

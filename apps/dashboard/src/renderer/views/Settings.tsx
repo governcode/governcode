@@ -124,7 +124,7 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
                   <span className="dim small">effort</span>
                   <select value={draft.runners[p.provider]?.effort ?? ""} disabled={!draft.runners[p.provider]} aria-label={`${p.provider} default effort`}
                     onChange={(e) => setDefault(p.provider, draft.runners[p.provider]?.model ?? "", (e.target.value || null) as Effort)}>
-                    <option value="">n/a</option>{["low", "medium", "high", "max"].map((x) => <option key={x} value={x}>{x}</option>)}
+                    <option value="">default</option>{["low", "medium", "high", "max"].map((x) => <option key={x} value={x}>{x}</option>)}
                   </select>
                 </label>}
               </div>
