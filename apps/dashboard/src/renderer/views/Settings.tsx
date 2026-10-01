@@ -53,7 +53,13 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
       setProviders(l.providers); setSaved(s.settings); setDraft(s.settings);
     } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    // Shown at once; then measured once, as the Limits view does: right after govd starts nothing is
+    // measured yet, and every Runner would read "held" until something measured it.
+    void load().then(async () => {
+      try { setProviders((await call<{ providers: ProviderLimit[] }>("limits.list", { measure: true })).providers); } catch { /* the first reading stays */ }
+    });
+  }, [load]);
 
   const value = (provider: string, window: string) => draft.reserves[provider]?.[window] ?? 10;
   const set = (provider: string, window: string, n: number) =>
