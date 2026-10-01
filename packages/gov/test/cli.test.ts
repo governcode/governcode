@@ -109,7 +109,6 @@ test("a Runner or window GovernCode does not have is refused before anything is 
   const g = await withProject((m) => (m === "settings.get" ? { settings } : m === "crew.get" ? { crew: { runners: null, maxPercent: {} } } : undefined));
   for (const [args, said] of [
     [["runner", "antigravity", "--model", "x"], "gov: unknown Runner antigravity (Runners: agy, codex, grok, ollama)"],
-    [["reserve", "codex", "5h", "20"], "gov: unknown window 5h (windows: 5-hour, daily, weekly, monthly, period)"],
     [["reserve", "gemini", "weekly", "20"], "gov: unknown Runner gemini"],
     [["budget", "antigravity", "daily", "5", "turns"], "gov: unknown Runner antigravity"],
     [["budget", "codex", "5h", "5", "turns"], "gov: unknown window 5h (windows: 5-hour, daily, weekly, monthly)"],
@@ -120,6 +119,9 @@ test("a Runner or window GovernCode does not have is refused before anything is 
     assert.ok(r.stderr.startsWith(said), `${args.join(" ")}: ${r.stderr}`);
   }
   assert.ok(!g.methods().some((m) => m === "settings.set" || m === "crew.set"), "nothing saved");
+  // A reserve's window is govd's to check (it knows the windows each Runner reports right now).
+  assert.equal((await run(g.dir, ["reserve", "codex", "primary", "20"]).done).code, 0);
+  assert.deepEqual(g.calls.at(-1)!.params.reserves, { codex: { primary: 20 } });
   assert.equal((await run(g.dir, ["reserve", "grok", "period", "20"]).done).code, 0);
   assert.deepEqual(g.calls.at(-1)!.params.reserves, { grok: { period: 20 } });
   const off = await run(g.dir, ["budget", "antigravity", "off"]).done;

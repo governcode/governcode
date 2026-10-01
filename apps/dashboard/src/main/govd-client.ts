@@ -5,7 +5,7 @@ import { connect as netConnect, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Params } from "@governcode/protocol";
+import { Params, issues } from "@governcode/protocol";
 import { ASK_ID, isCallable, type Callable } from "../shared/contract.ts";
 
 /** Where govd listens: the same resolution as packages/gov and packages/govd. */
@@ -89,20 +89,20 @@ export function connect(path: string, timeoutMs = 3000): Promise<Connection> {
 export function checkCall(method: unknown, params: unknown): { method: Callable; params: unknown } {
   if (!isCallable(method)) throw new GovdError(`the Dashboard does not call ${String(method)}`);
   const parsed = Params[method].safeParse(params ?? {});
-  if (!parsed.success) throw new GovdError(parsed.error.issues.map((i) => i.message).join("; "));
+  if (!parsed.success) throw new GovdError(issues(parsed.error));
   return { method, params: parsed.data };
 }
 
 export function checkConnect(streamId: unknown, tool: unknown): { streamId: string; params: { tool: "agy" | "claude" | "codex" | "grok" } } {
   if (typeof streamId !== "string" || !ASK_ID.test(streamId)) throw new GovdError("bad stream id");
   const parsed = Params["connect.start"].safeParse({ tool });
-  if (!parsed.success) throw new GovdError(parsed.error.issues.map((i) => i.message).join("; "));
+  if (!parsed.success) throw new GovdError(issues(parsed.error));
   return { streamId, params: parsed.data };
 }
 
 export function checkAsk(askId: unknown, project: unknown, prompt: unknown): { askId: string; params: { project: string | null; prompt: string } } {
   if (typeof askId !== "string" || !ASK_ID.test(askId)) throw new GovdError("bad ask id");
   const parsed = Params.ask.safeParse({ project, prompt });
-  if (!parsed.success) throw new GovdError(parsed.error.issues.map((i) => i.message).join("; "));
+  if (!parsed.success) throw new GovdError(issues(parsed.error));
   return { askId, params: parsed.data };
 }

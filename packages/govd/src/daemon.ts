@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, existsSync, sta
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import { Errors, FEATURES, PROTOCOL, Params, ProjectName, ProjectProposal, Request, RESERVE_WINDOWS, RUNNERS, RpcError, Settings, type CrewValue, type SettingsValue, type Method, type WatchEvent, type TraceEvent } from "@governcode/protocol";
+import { Errors, FEATURES, PROTOCOL, Params, issues, ProjectName, ProjectProposal, Request, RESERVE_WINDOWS, RUNNERS, RpcError, Settings, type CrewValue, type SettingsValue, type Method, type WatchEvent, type TraceEvent } from "@governcode/protocol";
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
@@ -282,7 +282,7 @@ export class Daemon {
         const method = req.method as Method;
         const parsed = Params[method].safeParse(req.params ?? {});
         // Each problem names its field (id: ..., reserves.codex.weekly: ...), for the CLI and the Dashboard alike.
-        if (!parsed.success) throw new RpcError(Errors.badParams, parsed.error.issues.map((i) => i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message).join("; "));
+        if (!parsed.success) throw new RpcError(Errors.badParams, issues(parsed.error));
         const result = await this.call(method, parsed.data as never, (n) => write({ jsonrpc: "2.0", method: "event", params: n }), sock);
         write({ jsonrpc: "2.0", id, result });
       } catch (err) {
@@ -418,6 +418,7 @@ export class Daemon {
         L.append(p.project, "context.shared", "user", { provider: p.provider, share: p.share });
         return { ok: true };
       case "trace.list":
+        if (p.kinds && p.project && p.after !== undefined) throw new RpcError(Errors.badParams, "after: pages by kind are not offered; page without kinds");
         return { events: p.kinds && p.project ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit, p.after) };
       case "ask":
         return this.ask(p.project, p.prompt, notify, sock);

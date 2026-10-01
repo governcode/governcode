@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, ProjectName, RESERVE_WINDOWS, RUNNERS, setBudget, type CountedWindow } from "@governcode/protocol";
+import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, ProjectName, RUNNERS, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
@@ -622,7 +622,7 @@ async function main(argv: string[]): Promise<number> {
         const n = Number(value);
         if (!provider || !window || !value || !Number.isInteger(n) || n < 0 || n > 90) throw new Error("usage: gov reserve PROVIDER WINDOW PERCENT   (0-90, e.g. gov reserve codex weekly 15)");
         runner(provider);
-        if (!(RESERVE_WINDOWS as readonly string[]).includes(window)) throw new Error(`unknown window ${window} (windows: ${RESERVE_WINDOWS.join(", ")})`);
+        // (the window is govd's to check: it also knows the windows each Runner reports right now)
         const { settings } = await api.call("settings.get", {});
         const reserves = { ...settings.reserves, [provider]: { ...(settings.reserves[provider] ?? {}), [window]: n } };
         await api.call("settings.set", { ...settings, reserves });   // the whole object: set replaces it
@@ -675,12 +675,20 @@ async function main(argv: string[]): Promise<number> {
         // line, for export. Read a page at a time; an older govd ignores `after` and repeats its newest
         // page, which ends it rather than looping.
         if (rest.includes("--jsonl")) {
-          for (let after = 0; ;) {
+          // A page is written only as fast as the reader takes it, and a reader that has gone (| head)
+          // ends the export: the whole Trace is never queued in memory.
+          let gone = false;
+          process.stdout.on("error", () => { gone = true; });
+          for (let after = 0; !gone;) {
             const page = (await api.call("trace.list", { project: project ?? undefined, limit: 1000, after })).events.filter((e: any) => e.seq > after);
-            for (const e of page) console.log(JSON.stringify(e));
+            for (const e of page) {
+              if (gone) break;
+              if (!process.stdout.write(JSON.stringify(e) + "\n")) await new Promise((ok) => { process.stdout.once("drain", ok); process.stdout.once("error", ok); });
+            }
             if (page.length < 1000) return 0;
             after = page.at(-1).seq;
           }
+          return 0;
         }
         const { events } = await api.call("trace.list", { project: project ?? undefined, limit: 50 });
         for (const e of events) console.log(`${new Date(e.ts).toTimeString().slice(0, 8)}  ${e.kind.padEnd(16)} ${(e.project ?? "-").padEnd(12)} ${dim(e.actor)}`);

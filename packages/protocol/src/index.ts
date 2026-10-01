@@ -185,6 +185,10 @@ export const Params = {
 } as const;
 export type Method = keyof typeof Params;
 
+/** A validation failure in plain words, naming the field: `reserves.codex.weekly: Too big...`. */
+export const issues = (e: { issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }> }): string =>
+  e.issues.map((i) => (i.path.length ? `${i.path.map(String).join(".")}: ${i.message}` : i.message)).join("; ");
+
 export const Request = z.object({
   jsonrpc: z.literal("2.0"),
   id: z.union([z.number(), z.string()]),
