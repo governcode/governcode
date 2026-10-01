@@ -63,6 +63,12 @@ export class Ledger {
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
+  /** The newest event of a kind in any project (all of history). */
+  lastOfKind(kind: TraceEvent["kind"]): TraceEvent | undefined {
+    const r = this.db.prepare("SELECT * FROM events WHERE kind = ? ORDER BY seq DESC LIMIT 1").get(kind) as Record<string, unknown> | undefined;
+    return r && { ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) };
+  }
+
   /** Every Controller provider that has had a turn in the project (all of history). */
   turnProviders(project: string): string[] {
     const rows = this.db.prepare(`SELECT DISTINCT json_extract(data, '$.controller.provider') AS p FROM events
@@ -87,14 +93,14 @@ export class Ledger {
   }
 
   // --- projects (a projection kept in step with project.* events, in one transaction)
-  addProject(name: string, path: string, kind: "project.created" | "project.opened"): Project {
+  addProject(name: string, path: string, kind: "project.created" | "project.opened", data: Record<string, unknown> = {}): Project {
     const created = new Date().toISOString();
     const project: Project = { name, path, created, controller: DEFAULT_CONTROLLER };
     this.db.exec("BEGIN");
     try {
       this.db.prepare("INSERT INTO projects (name, path, created, controller) VALUES (?, ?, ?, ?)")
         .run(name, path, created, JSON.stringify(project.controller));
-      this.append(name, kind, "user", { path });
+      this.append(name, kind, "user", { path, ...data });
       this.db.exec("COMMIT");
     } catch (err) {
       this.db.exec("ROLLBACK");

@@ -37,10 +37,13 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
       waiting.get(msg.id)?.(msg);
       waiting.delete(msg.id);
     });
+    // govd going away (a restart, a crash) fails every call still waiting: gov never hangs or exits quietly.
+    sock.on("close", () => { for (const w of waiting.values()) w({ error: { code: -1, message: "govd closed the connection" } }); waiting.clear(); });
     sock.once("connect", () => ok({
       sock,
       onEvent: (f) => (listener = f),
       call: (method, params = {}) => new Promise((res, rej) => {
+        if (sock.destroyed) return rej(new Error("govd closed the connection"));
         const id = next++;
         waiting.set(id, (r) => (r.error ? rej(new Error(r.error.message)) : res(r.result)));
         sock.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
@@ -49,29 +52,58 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
   });
 }
 
-/** Answers typed (or piped) by the user, one line each. null: no answer, so none is sent. Either
- *  nobody can answer here (end of input), or the question was withdrawn (answered elsewhere). */
-function answers(): { next(prompt: string, withdrawn?: AbortSignal): Promise<string | null>; close(): void } {
-  const lines: string[] = [];
-  const waiting: Array<(l: string | null) => void> = [];
-  let ended = false;
+// A line answers only the question on screen when it was typed. One typed with no question
+// waiting, or in the first second a question is shown (it was meant for what was there before: a
+// question since answered elsewhere, or none), is dropped and said so, never kept for the next
+// question. Piped input is held to the same rule: it cannot see which question it would answer.
+const SETTLE_MS = 1000;
+
+/** Answers typed by the user, one line each, one question on screen at a time. null: no answer,
+ *  so none is sent: nobody can answer here (end of input), or the question was withdrawn. */
+function answers(): { next(prompt: string, withdrawn?: AbortSignal): Promise<string | null>; reshow(): void; close(): void } {
+  type Question = { prompt: string; ok: (l: string | null) => void };
+  const waiting: Question[] = [];
+  let ended = false, onScreen = false, current: Question | null = null, shown = 0;
+  // The first question waiting gets the prompt; a different one than before starts the clock again.
+  const show = () => {
+    if (onScreen || !waiting.length) return;
+    if (waiting[0] !== current) { current = waiting[0]; shown = Date.now(); }
+    process.stdout.write(current.prompt);
+    onScreen = true;
+  };
   const rl = createInterface({ input: process.stdin });
-  rl.on("line", (l) => (waiting.length ? waiting.shift()!(l) : lines.push(l)));
+  rl.on("line", (l) => {
+    if (!waiting.length) { if (l.trim()) console.log(dim("ignored: no question was waiting")); return; }
+    onScreen = false;
+    if (Date.now() - shown < SETTLE_MS) { console.log(dim("ignored: typed before this question was shown; answer again")); return show(); }
+    waiting.shift()!.ok(l);
+    show();
+  });
   // A prompt still on screen gets its line ended, so what follows starts on a new one.
-  rl.on("close", () => { ended = true; if (waiting.length) process.stdout.write("\n"); while (waiting.length) waiting.shift()!(null); });
+  rl.on("close", () => { ended = true; if (onScreen) process.stdout.write("\n"); onScreen = false; while (waiting.length) waiting.shift()!.ok(null); });
   return {
     next: (prompt, withdrawn) => {
-      if (lines.length) { process.stdout.write(prompt); return Promise.resolve(lines.shift()!); }
       if (ended) return Promise.resolve(null);
-      process.stdout.write(prompt);
       return new Promise((ok) => {
-        waiting.push(ok);
+        const q = { prompt, ok };
+        waiting.push(q);
+        show();
+        // Withdrawn (answered elsewhere): its prompt goes, the reason (a string) is said, and the
+        // question now first is shown.
         withdrawn?.addEventListener("abort", () => {
-          const i = waiting.indexOf(ok);
-          if (i >= 0) { waiting.splice(i, 1); process.stdout.write("\n"); ok(null); }
+          const i = waiting.indexOf(q);
+          if (i < 0) return;
+          waiting.splice(i, 1);
+          if (onScreen) process.stdout.write("\n");
+          onScreen = false;
+          if (typeof withdrawn.reason === "string") console.log(withdrawn.reason);
+          show();
+          ok(null);
         }, { once: true });
       });
     },
+    /** The waiting question's prompt again, below whatever buried it; its clock starts again. */
+    reshow: () => { if (!waiting.length) return; if (onScreen) process.stdout.write("\n"); onScreen = false; current = null; show(); },
     close: () => rl.close(),
   };
 }
@@ -107,20 +139,29 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
   const provider = (project ? projects.find((p: any) => p.name === project)?.controller : home?.controller)?.provider === "codex" ? "codex" : "claude";
   const { tools } = await api.call("tools.list", {});
   if (tools.some((t: any) => t.tool === provider && t.connected)) await askPersonal(api, provider, tty);
-  // Questions shown here and not answered yet, by id. With no input here they stay open, to be
-  // answered from another terminal (a Gate in the Dashboard too): gov never sends an answer the
-  // user did not give. One answered elsewhere is withdrawn, so the next line typed goes to the next question.
-  const open = new Map<string, AbortController>();
+  // Questions shown here and not answered yet, by id: the prompt's withdrawal, or null once left
+  // open (no input here) for another terminal (a Gate in the Dashboard too). gov never sends an
+  // answer the user did not give; one answered elsewhere is withdrawn and named.
+  const open = new Map<string, AbortController | null>();
   const question = async (id: string, prompt: string, elsewhere: string): Promise<string | undefined> => {
     const withdraw = new AbortController();
     open.set(id, withdraw);
     const a = await tty.next(prompt, withdraw.signal);
     if (a !== null) open.delete(id);
-    else if (open.has(id)) console.log(dim(`no input here: answer from another terminal with ${elsewhere}`));
+    else if (open.get(id) === withdraw) { open.set(id, null); console.log(dim(`no input here: answer from another terminal with ${elsewhere}`)); }
     return a?.trim().toLowerCase();
   };
   const failed = (id: string) => (e: Error) => console.log(dim(`${id}: ${e.message}`));
   const PLAN_ANSWERS: Record<string, string> = { approve: "approved", "just-you": "answered just you", reject: "rejected" };
+  const proposals: Promise<void>[] = [];   // a proposal outlives the turn (govd keeps it until answered)
+  const proposal = async (ev: any) => {
+    console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
+    if (ev.reason) console.log(dim(ev.reason));
+    const a = await question(ev.id, `Create ${ev.name}? [y/N] `, `gov proposal ${ev.id} create|cancel`);
+    if (a === undefined) return;
+    await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" })
+      .then((r) => console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created")), failed(ev.id));
+  };
   api.onEvent(async (ev) => {
     if (ev.kind === "text") process.stdout.write(ev.text + "\n");
     else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
@@ -139,7 +180,7 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
         " That only skips this question; the sandbox still applies to every step."));
       if (ev.suggest) console.log(dim(`  Suggested: [${keys[ev.suggest]}], so this kind of step stops asking in this ${ev.suggest}.`));
       const choices = ["y", ...scopes.map((s) => keys[s])].join("/");
-      const a = await question(ev.id, `Allow? [${choices}/N] `, `gov gate ${ev.id} allow|deny`);
+      const a = await question(ev.id, `Allow ${ev.id}? [${choices}/N] `, `gov gate ${ev.id} allow|deny`);
       if (a === undefined) return;
       if (!a) console.log("");
       const remember = scopes.find((s) => keys[s] === a);
@@ -151,32 +192,40 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
       ev.items.forEach((it: any, i: number) => console.log(`  ${i + 1}. ${it.who === "me" ? "Controller" : it.who}: ${it.what}${it.scope?.length ? dim(` (${it.scope.join(", ")})`) : ""}`));
       if (ev.note) console.log(dim(`  ${ev.note}`));
       console.log(dim(ev.handoff === "plan" ? "  Each approved handoff runs once without asking again; anything else still asks." : "  Handoffs still ask at a Gate (Crew card: ask each time)."));
-      const a = await question(ev.id, "Approve? [y = all / 1,3 = only those / j = just you / N] ", `gov plan ${ev.id} approve [1,3]|just-you|reject`);
-      if (a === undefined) return;
-      const nums = /^\d+(\s*,\s*\d+)*$/.test(a) ? a.split(",").map((x) => Number(x.trim())) : null;
+      // Items outside the plan would be refused, leaving it waiting with no question here: asked again.
+      let a: string | undefined, nums: number[] | null;
+      for (;;) {
+        a = await question(ev.id, `Approve ${ev.id}? [y = all / 1,3 = only those / j = just you / N] `, `gov plan ${ev.id} approve [1,3]|just-you|reject`);
+        if (a === undefined) return;
+        nums = /^\d+(\s*,\s*\d+)*$/.test(a) ? a.split(",").map((x) => Number(x.trim())) : null;
+        if (!nums || nums.every((n) => n >= 1 && n <= ev.items.length)) break;
+        console.log(dim(`the items are 1 to ${ev.items.length}`));
+      }
       await api.call("plan.answer", { id: ev.id, ...(a === "y" || a === "yes" ? { answer: "approve" } : nums ? { answer: "approve", items: nums } : a === "j" ? { answer: "just-you" } : { answer: "reject" }) })
         .catch(failed(ev.id));
     } else if (ev.kind === "proposal") {
-      console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
-      if (ev.reason) console.log(dim(ev.reason));
-      const a = await question(ev.id, "Create it? [y/N] ", `gov proposal ${ev.id} create|cancel`);
-      if (a === undefined) return;
-      await api.call("proposal.answer", { id: ev.id, answer: a === "y" || a === "yes" ? "create" : "cancel" })
-        .then((r) => console.log(dim(r.created ? `created ${r.created.name} · gov open ${r.created.path}` : "not created")), failed(ev.id));
-    } else if (ev.kind === "trace" && (ev.event.kind === "gate.allowed" || ev.event.kind === "gate.denied" || ev.event.kind === "plan.answered")) {
+      proposals.push(proposal(ev));
+    } else if (ev.kind === "trace") {
       // A question shown here was answered elsewhere (another terminal, the Dashboard) or ended with the turn.
-      const e = ev.event, id = e.data.gate ?? e.data.plan;
-      if (!open.has(id)) return;
-      const w = open.get(id)!;
+      const e = ev.event, d = e.data, id = d.gate ?? d.plan ?? d.proposal;
+      const what = e.kind === "gate.allowed" ? "allowed" : e.kind === "gate.denied" ? "denied" : e.kind === "plan.answered" ? PLAN_ANSWERS[d.answer] ?? d.answer
+        : e.kind === "project.created" ? "created" : e.kind === "project.declined" ? "not created" : null;
+      if (!what || !open.has(id)) return;
+      const w = open.get(id);
       open.delete(id);
-      w.abort();
-      const what = e.kind === "gate.allowed" ? "allowed" : e.kind === "gate.denied" ? "denied" : PLAN_ANSWERS[e.data.answer] ?? e.data.answer;
-      console.log(dim(`${id}: ${what} ${e.data.by === "user" ? "from elsewhere" : `(${e.data.by})`}`));
+      const note = dim(`${id}: ${what} ${d.by === undefined || d.by === "user" ? "from elsewhere" : `(${d.by})`}`);
+      if (w) w.abort(note); else console.log(note);
     }
   });
   // Every Trace event from here on, for the answers given elsewhere (an older govd: none are seen).
   await api.call("watch", {}).catch(() => {});
-  try { return await api.call("ask", { project, prompt }); } finally { open.clear(); }
+  let r;
+  try { r = await api.call("ask", { project, prompt }); }
+  finally { for (const [id, w] of open) if (!id.startsWith("P-")) { open.delete(id); w?.abort(); } }   // the turn's Gates and plans end with it
+  // A proposal's question stays after the turn, shown again below the Controller's last words.
+  tty.reshow();
+  await Promise.all(proposals);
+  return r;
 }
 
 async function currentProject(api: Awaited<ReturnType<typeof open>>): Promise<string | null> {
@@ -344,11 +393,13 @@ async function main(argv: string[]): Promise<number> {
       case "plan": {
         // gov plan GP-N approve [1,3]|just-you|reject: a game plan gov ask could not ask about.
         const [id, answer, items] = rest;
-        if (!id || !["approve", "just-you", "reject"].includes(answer) || (items !== undefined && (answer !== "approve" || !/^\d+(,\d+)*$/.test(items)))) {
+        if (!id || rest.length > 3 || !["approve", "just-you", "reject"].includes(answer) || (items !== undefined && (answer !== "approve" || !/^\d+(,\d+)*$/.test(items)))) {
           throw new Error("usage: gov plan GP-N approve [1,3]|just-you|reject");
         }
-        await api.call("plan.answer", { id, answer, ...(items ? { items: items.split(",").map(Number) } : {}) });
-        console.log(`${id}: ${answer === "approve" ? `approved${items ? ` (items ${items})` : ""}` : answer === "just-you" ? "just you (the Controller does it all itself this turn)" : "rejected"}`);
+        const r = await api.call("plan.answer", { id, answer, ...(items ? { items: items.split(",").map(Number) } : {}) });
+        // What govd approved, not what was typed.
+        const approved = r.approved ? `approved: ${r.approved.length ? `item${r.approved.length === 1 ? "" : "s"} ${r.approved.join(", ")}` : "nothing"}` : "approved";
+        console.log(`${id}: ${answer === "approve" ? approved : answer === "just-you" ? "just you (the Controller does it all itself this turn)" : "rejected"}`);
         return 0;
       }
       case "proposal": {

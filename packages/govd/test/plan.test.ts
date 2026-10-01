@@ -124,3 +124,14 @@ test("review 2: a Crew card changed to 'ask' during the turn stops approved item
   assert.equal(r.summary, "plan:approve|declined");
   assert.equal(r.gates.length, 1);
 });
+
+test("review 3: an item the plan does not have is refused and the plan keeps waiting; the answer says what was approved", async () => {
+  let refused = "", approved: unknown;
+  const r = await run({ handoff: "plan" }, { answer: "approve", items: [1] }, ["codex"], async (call) => {
+    refused = (await call("plan.answer", { id: "GP-1", answer: "approve", items: [1, 3] })).error?.message ?? "";
+    approved = (await call("plan.answer", { id: "GP-1", answer: "approve", items: [1] })).result?.approved;
+  });
+  assert.equal(refused, "GP-1 has 2 items");
+  assert.deepEqual(approved, [1]);
+  assert.equal(r.summary, "plan:approve|ok");
+});

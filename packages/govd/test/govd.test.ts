@@ -288,6 +288,8 @@ test("Home: the Controller may only propose a project; govd creates it on the us
   const made = await c.call("proposal.answer", { id: "P-1", answer: "create" });
   assert.equal(made.result.created.name, "harbor");
   assert.ok(existsSync(join(target, ".git")));
+  // The record says which proposal it was, so a client still asking about P-1 can let it go.
+  assert.equal(d.ledger.events("harbor", 5).find((e) => e.kind === "project.created")?.data.proposal, "P-1");
   assert.match((await c.call("proposal.answer", { id: "P-1", answer: "create" })).error.message, /no proposal P-1/);
   // A folder on the way turned into a symlink after the card was shown: Create refuses.
   const parent = join(root, "proposed2"), elsewhere = join(root, "elsewhere");
@@ -311,6 +313,9 @@ test("Home uses the Controller chosen most recently, not the alphabetically last
   assert.deepEqual((d as any).homeController(), { provider: "codex", model: "gpt-5.5", effort: "low" });
   // Clients see it too (gov asks about the right tool's instructions at Home).
   assert.deepEqual((await c.call("project.list")).result.home, { controller: { provider: "codex", model: "gpt-5.5", effort: "low" } });
+  // However long ago it was chosen: not only within the latest few thousand events.
+  for (let i = 0; i < 6000; i++) d.ledger.append("zulu", "turn.text", "controller · claude-code", { text: "x" });
+  assert.deepEqual((d as any).homeController(), { provider: "codex", model: "gpt-5.5", effort: "low" });
   c.end(); d.close();
 });
 
