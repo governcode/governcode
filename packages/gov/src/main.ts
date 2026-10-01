@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { COUNTED_LABEL, COUNTED_WINDOWS, setBudget, type CountedWindow } from "@governcode/protocol";
+import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
@@ -69,6 +69,8 @@ function answers(): { next(prompt: string): Promise<string>; close(): void } {
 }
 
 const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (Anthropic)", codex: "Codex (OpenAI)" };
+// What gov controller sets without --model or --effort (the models the Dashboard suggests first).
+const CONTROLLER_DEFAULTS: Record<string, { model: string; effort: string }> = { "claude-code": { model: "opus", effort: "high" }, codex: { model: "gpt-5.5", effort: "medium" } };
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
@@ -195,10 +197,14 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "controller": {
+        // Checked before anything is asked or recorded. "claude" is the name connect and personal use.
+        const provider = rest[0] === "claude" ? "claude-code" : rest[0];
+        const flag = (f: string) => { const i = rest.indexOf(f); return i >= 0 ? rest[i + 1] ?? "" : undefined; };
+        const d = provider && Object.hasOwn(CONTROLLER_DEFAULTS, provider) ? CONTROLLER_DEFAULTS[provider] : null;
+        const model = flag("--model") ?? d?.model, effort = flag("--effort") ?? d?.effort;
+        if (!d || !model || !Effort.safeParse(effort).success) throw new Error("usage: gov controller claude-code|codex [--model M] [--effort low|medium|high|max]");
         const project = await currentProject(api);
         if (!project) throw new Error("run this inside a project folder");
-        const m = rest.indexOf("--model"), e = rest.indexOf("--effort");
-        const provider = rest[0] ?? "claude-code";
         // Project memory goes to another provider only if the user says so, once per project.
         const ctx = await api.call("context.state", { project });
         if (ctx.providers.some((x: string) => x !== provider) && ctx.shared[provider] === undefined) {
@@ -211,9 +217,8 @@ async function main(argv: string[]): Promise<number> {
           tty.close();
           await api.call("context.share", { project, provider, share: a === "y" || a === "yes" });
         }
-        await api.call("controller.set", { project, controller: { provider,
-          model: m >= 0 ? rest[m + 1] : "opus", effort: e >= 0 ? rest[e + 1] : "high" } });
-        console.log(`Controller for ${project}: ${rest[0] ?? "claude-code"}`);
+        await api.call("controller.set", { project, controller: { provider, model, effort } });
+        console.log(`Controller for ${project}: ${provider} · ${model} · ${effort}`);
         return 0;
       }
       case "crew": {

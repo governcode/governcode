@@ -76,3 +76,38 @@ test("gov disconnect grok is accepted", async () => {
   assert.match(r.stdout, /grok is disconnected/);
   assert.match((await run(g.dir, ["disconnect", "gemini"]).done).stderr, /usage: gov disconnect agy\|claude\|codex\|grok/);
 });
+
+/** A govd with one project, p, in a fresh folder (gov runs inside it). */
+async function withProject(handle: (method: string, params: any, notify: Notify) => unknown = () => undefined,
+    controller = { provider: "claude-code", model: "opus", effort: "high" }) {
+  const path = mkdtempSync(join(root, "proj-"));
+  const g = await fakeGovd((m, p, n) => handle(m, p, n) ?? (m === "project.list" ? { projects: [{ name: "p", path, controller }] } : {}));
+  return { ...g, path };
+}
+
+test("gov controller checks the provider before anything is asked or recorded; claude means claude-code; each provider has its own defaults", async () => {
+  let providers = ["claude-code"];
+  const g = await withProject((m) => (m === "context.state" ? { providers, shared: {}, notes: "", specs: 0, checkpoints: 0 } : undefined));
+  for (const bad of [["grok"], [], ["codex", "--effort", "extreme"], ["codex", "--model"]]) {
+    const r = await run(g.dir, ["controller", ...bad], { cwd: g.path }).done;
+    assert.equal(r.code, 1, bad.join(" "));
+    assert.match(r.stderr, /usage: gov controller claude-code\|codex \[--model M\] \[--effort low\|medium\|high\|max\]/);
+  }
+  assert.deepEqual(g.methods(), [], "no question, no share answer, no change");
+
+  const claude = await run(g.dir, ["controller", "claude"], { cwd: g.path }).done;
+  assert.equal(claude.code, 0, claude.stderr);
+  assert.deepEqual(g.calls.at(-1)!.params.controller, { provider: "claude-code", model: "opus", effort: "high" });
+  assert.match(claude.stdout, /Controller for p: claude-code · opus · high/);
+
+  const codex = await run(g.dir, ["controller", "codex"], { cwd: g.path, input: "y\n" }).done;
+  assert.equal(codex.code, 0, codex.stderr);
+  assert.match(codex.stdout, /Codex \(OpenAI\) will see this project's conversation/);
+  assert.deepEqual(g.calls.find((c) => c.method === "context.share")!.params, { project: "p", provider: "codex", share: true });
+  assert.deepEqual(g.calls.at(-1)!.params.controller, { provider: "codex", model: "gpt-5.5", effort: "medium" });
+  assert.match(codex.stdout, /Controller for p: codex · gpt-5\.5 · medium/);
+
+  providers = ["codex"];
+  await run(g.dir, ["controller", "codex", "--model", "gpt-5.4", "--effort", "max"], { cwd: g.path }).done;
+  assert.deepEqual(g.calls.at(-1)!.params.controller, { provider: "codex", model: "gpt-5.4", effort: "max" });
+});
