@@ -6,6 +6,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { Daemon } from "../src/daemon.ts";
 import { canonical } from "../src/claude.ts";
 import { scratch, markConnected } from "./scratch.ts";
@@ -171,6 +173,32 @@ test("a Gate denied or abandoned is a deny", async () => {
   const r = await c.call("ask", { project: "x", prompt: "go" });
   assert.equal(r.result.summary, "gate:deny:null");
   assert.ok(d.ledger.events("x", 20).some((e) => e.kind === "gate.denied"));
+  c.end(); d.close();
+});
+
+test("gov ask with no input leaves its Gate open; answered from another connection, the turn goes on", async () => {
+  const d = daemon("noinput");
+  d.selftest();
+  await d.listen();
+  const c = client(join(root, "noinput", "govd.sock"));
+  await c.call("project.new", { name: "ni", path: join(root, "noinput-p"), git: false });
+  // stdin is /dev/null, as when gov ask runs from a script: end of input at once.
+  const gov = spawn(process.execPath, [fileURLToPath(new URL("../../gov/src/main.ts", import.meta.url)), "ask", "clean up"],
+    { cwd: join(root, "noinput-p"), env: { ...process.env, GOVERNCODE_RUNTIME_DIR: join(root, "noinput") }, stdio: ["ignore", "pipe", "pipe"] });
+  opened.push(() => gov.kill());
+  let out = "";
+  gov.stdout.on("data", (b) => (out += b));
+  gov.stderr.on("data", (b) => (out += b));
+  const exited = new Promise<number | null>((ok) => gov.on("close", ok));
+  const left = /no input here: answer from another terminal with gov gate G-1 allow\|deny/;
+  for (let i = 0; i < 500 && !left.test(out); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.match(out, left);
+  assert.ok(!d.ledger.events("ni", 50).some((e) => e.kind === "gate.denied"), "no deny the user did not give");
+  assert.equal((await c.call("gate.list")).result.gates[0]?.id, "G-1");
+  await c.call("gate.answer", { id: "G-1", answer: "allow" });
+  assert.equal(await exited, 0, out);
+  assert.match(out, /G-1: allowed from elsewhere/);
+  assert.equal(d.ledger.events("ni", 50).filter((e) => e.kind === "turn.completed").length, 1);
   c.end(); d.close();
 });
 

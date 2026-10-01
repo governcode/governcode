@@ -35,18 +35,23 @@ async function fakeGovd(handle: (method: string, params: any, notify: Notify) =>
   return { dir, calls, methods: () => calls.map((c) => c.method) };
 }
 
-/** gov with stdin closed (or fed `input`), against the govd whose runtime folder is `dir`. The
- *  user's git config stays out of it (gov demo commits). */
-function run(dir: string, args: string[], o: { cwd?: string; input?: string } = {}) {
+/** gov with stdin closed (or fed `input`, or left open for the test to type into: `live`), against
+ *  the govd whose runtime folder is `dir`. The user's git config stays out of it (gov demo commits). */
+function run(dir: string, args: string[], o: { cwd?: string; input?: string; live?: boolean } = {}) {
   const p = spawn(process.execPath, [gov, ...args], { cwd: o.cwd ?? root,
     env: { ...process.env, GOVERNCODE_RUNTIME_DIR: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
-    stdio: [o.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    stdio: [o.input === undefined && !o.live ? "ignore" : "pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   p.stdout!.on("data", (d) => (stdout += d));
   p.stderr!.on("data", (d) => (stderr += d));
   if (o.input !== undefined) p.stdin!.end(o.input);
-  return { out: () => plain(stdout),
+  return { p, out: () => plain(stdout),
     done: new Promise<{ code: number | null; stdout: string; stderr: string }>((ok) => p.on("close", (code) => ok({ code, stdout: plain(stdout), stderr: plain(stderr) }))) };
+}
+
+async function until(f: () => boolean, ms = 10_000) {
+  for (let i = 0; i < ms / 20 && !f(); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(f(), "timed out");
 }
 
 test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets it on stderr", async () => {
@@ -161,4 +166,80 @@ test("gov demo makes nothing until Claude Code is connected, and says plainly wh
   assert.doesNotMatch(held.stdout, /the Limit working/);
   now.reason = "inside its 10% weekly Limit (95% used)";
   assert.match((await run(g.dir, ["demo", "--path", join(root, "demo-3")]).done).stdout, /Codex is held \(inside its 10% weekly Limit .*\n.*the Limit working/);
+});
+
+const ANSWERS = ["gate.answer", "plan.answer", "proposal.answer", "settings.set", "context.share"];
+
+test("with no input, gov ask leaves Gates, game plans and proposals open for another terminal, and says when one is answered there", async () => {
+  let r!: ReturnType<typeof run>;
+  const g = await withProject((m, _p, notify) => {
+    if (m === "tools.list") return tools(true, true);
+    if (m === "settings.get") return NOT_ASKED;
+    if (m !== "ask") return undefined;
+    return (async () => {
+      notify({ kind: "gate", id: "G-1", tool: "Bash", canonical: "rm -rf dist", scopes: [] });
+      notify({ kind: "plan", id: "GP-1", items: [{ who: "codex", what: "write tests" }], note: "", handoff: "ask" });
+      notify({ kind: "proposal", id: "P-1", name: "x", path: "/tmp/x", git: true, reason: "" });
+      // gov used to answer each at once (deny, reject, cancel); it must say where to answer instead.
+      await until(() => (r.out().match(/no input here: answer from another terminal/g) ?? []).length === 3 || g.methods().some((x) => ANSWERS.includes(x)));
+      notify({ kind: "trace", event: { kind: "gate.allowed", data: { gate: "G-1", tool: "Bash", by: "user" } } });
+      notify({ kind: "trace", event: { kind: "plan.answered", data: { plan: "GP-1", answer: "reject", by: "turn ended" } } });
+      await until(() => /GP-1: rejected/.test(r.out()));
+      return { ok: true, summary: "done" };
+    })();
+  });
+  r = run(g.dir, ["ask", "go"], { cwd: g.path });
+  const res = await r.done;
+  assert.equal(res.code, 0, res.stderr);
+  assert.deepEqual(g.methods().filter((x) => ANSWERS.includes(x)), [], "no answer the user did not give");
+  for (const line of ["no input here: off for now, and asked again next time (gov personal claude on|off sets it)",
+    "no input here: answer from another terminal with gov gate G-1 allow|deny",
+    "no input here: answer from another terminal with gov plan GP-1 approve [1,3]|just-you|reject",
+    "no input here: answer from another terminal with gov proposal P-1 create|cancel",
+    "G-1: allowed from elsewhere", "GP-1: rejected (turn ended)", "— done"]) assert.ok(res.stdout.includes(line), line);
+  assert.doesNotMatch(res.stdout, /Allow\?|Approve\?|Create it\?/, "no prompt with nobody to answer it");
+});
+
+test("a question answered elsewhere is withdrawn here: the next line typed goes to the next question", async () => {
+  let r!: ReturnType<typeof run>;
+  const g = await withProject((m, _p, notify) => {
+    if (m === "tools.list") return tools(true, true);
+    if (m === "settings.get") return { settings: { personal: { claude: false, codex: null } } };
+    if (m !== "ask") return undefined;
+    return (async () => {
+      notify({ kind: "gate", id: "G-1", tool: "Bash", canonical: "npm test", scopes: [] });
+      await until(() => r.out().endsWith("Allow? [y/N] "));
+      notify({ kind: "trace", event: { kind: "gate.denied", data: { gate: "G-1", tool: "Bash", by: "user" } } });
+      await until(() => r.out().includes("G-1: denied from elsewhere"));
+      notify({ kind: "gate", id: "G-2", tool: "Bash", canonical: "ls", scopes: [] });
+      await until(() => r.out().endsWith("Allow? [y/N] "));
+      r.p.stdin!.write("y\n");
+      await until(() => g.methods().includes("gate.answer"));
+      return { ok: true, summary: "done" };
+    })();
+  });
+  r = run(g.dir, ["ask", "go"], { cwd: g.path, live: true });
+  const res = await r.done;
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /Allow\? \[y\/N\] \nG-1: denied from elsewhere\n/);
+  assert.deepEqual(g.calls.filter((c) => c.method === "gate.answer").map((c) => c.params), [{ id: "G-2", answer: "allow" }]);
+});
+
+test("gov plan and gov proposal answer from another terminal", async () => {
+  const g = await fakeGovd((m, p) => (m === "proposal.answer" ? { created: p.answer === "create" ? { name: "x", path: "/tmp/x" } : null } : {}));
+  assert.equal((await run(g.dir, ["plan", "GP-3", "approve", "1,3"]).done).code, 0);
+  assert.match((await run(g.dir, ["plan", "GP-3", "just-you"]).done).stdout, /GP-3: just you/);
+  assert.match((await run(g.dir, ["plan", "GP-3", "reject", "1"]).done).stderr, /usage: gov plan GP-N approve \[1,3\]\|just-you\|reject/);
+  assert.match((await run(g.dir, ["proposal", "P-2", "create"]).done).stdout, /created x at \/tmp\/x/);
+  assert.match((await run(g.dir, ["proposal", "P-2", "maybe"]).done).stderr, /usage: gov proposal P-N create\|cancel/);
+  assert.deepEqual(g.calls.map((c) => [c.method, c.params]), [["plan.answer", { id: "GP-3", answer: "approve", items: [1, 3] }],
+    ["plan.answer", { id: "GP-3", answer: "just-you" }], ["proposal.answer", { id: "P-2", answer: "create" }]]);
+});
+
+test("with no input, gov controller records no share answer: the new Controller starts fresh", async () => {
+  const g = await withProject((m) => (m === "context.state" ? { providers: ["claude-code"], shared: {}, notes: "", specs: 0, checkpoints: 0 } : undefined));
+  const r = await run(g.dir, ["controller", "codex"], { cwd: g.path }).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /no input here: nothing is shared, so it starts fresh/);
+  assert.deepEqual(g.methods(), ["project.list", "context.state", "controller.set"]);
 });
