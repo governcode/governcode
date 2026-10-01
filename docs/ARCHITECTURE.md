@@ -41,8 +41,10 @@ only a socket `govd` opens for that one turn. That socket offers no Gate answers
 undo. Each call is a Gate the user answers; for Codex, govd answers only the approval for
 the GovernCode tool call Codex just announced, and declines any other server's.
 
-`delegate` measures the Runner's usage and checks the Limit (unknown means held; finished
-Specs keep counting until the provider's counter catches up), then builds the Runner's
+`delegate` measures the Runner's usage and checks the Limit (unknown means held; a finished
+Spec keeps counting until the provider's report has caught up with it: a reading taken 15
+minutes after it finished that shows its window has moved, or the vendor confirming that the
+window it ran in has reset; 2 hours at most), then builds the Runner's
 workspace **in govd's own state directory**, out of every AI tool's reach: the project as the
 user has it now (what git tracks, uncommitted changes included, plus new files it does not
 ignore, except ones that look like secrets such as `.env` or a key), read without following any

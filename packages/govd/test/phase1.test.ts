@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as cp from "../src/checkpoint.ts";
-import { LimitGate } from "../src/limits.ts";
+import { LimitGate, REPORT_LAG_MS } from "../src/limits.ts";
 import { Ledger } from "../src/ledger.ts";
 import { scratch } from "./scratch.ts";
 
@@ -74,7 +74,10 @@ test("limits: unknown and stale hold; a measured window admits and reserves", ()
   assert.equal(gate.admit("S-3", "codex", 5).ok, false, "75 + S-2's 15 + 5 = 95: still held");
   gate.release("S-2");
   gate.record({ provider: "codex", measuredAt: now, readings: [{ window: "weekly", usedPercent: 84, resetsAt: "Tue 06:10" }] });
-  assert.equal(gate.admit("S-3", "codex", 5).ok, true, "the counter absorbed both: 84 + 1 + 5 <= 90");
+  assert.equal(gate.admit("S-3", "codex", 5).ok, false, "risen 24, but either Spec may have used it all: 84 + 15 + 5 = 104");
+  now += REPORT_LAG_MS;
+  gate.record({ provider: "codex", measuredAt: now, readings: [{ window: "weekly", usedPercent: 84, resetsAt: "Tue 06:10" }] });
+  assert.equal(gate.admit("S-3", "codex", 5).ok, true, "15 minutes on, and moved: the counter has absorbed both: 84 + 5 <= 90");
   now += 10 * 60_000;
   const stale = gate.admit("S-4", "codex", 1);
   assert.ok(!stale.ok && /stale/.test(stale.reason));

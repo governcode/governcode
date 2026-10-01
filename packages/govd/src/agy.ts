@@ -174,11 +174,12 @@ export function agyEnv(tmp: string, home: string, extra: Record<string, string> 
 }
 
 /** Antigravity's usage for the model group GovernCode runs (Gemini unless a Claude or GPT
- *  model is named): weekly and 5-hour windows. Null when it cannot be read (= held). */
-export function parseQuota(out: string, model = ""): Measurement | null {
-  try { return parseQuotaUnsafe(out, model); } catch { return null; }   // vendor output never crashes govd
+ *  model is named): weekly and 5-hour windows. Null when it cannot be read (= held). at: when
+ *  it was asked for. */
+export function parseQuota(out: string, model = "", at = Date.now()): Measurement | null {
+  try { return parseQuotaUnsafe(out, model, at); } catch { return null; }   // vendor output never crashes govd
 }
-function parseQuotaUnsafe(out: string, model: string): Measurement | null {
+function parseQuotaUnsafe(out: string, model: string, at: number): Measurement | null {
   let d: any;
   try { d = JSON.parse(out); } catch { return null; }
   const groups: unknown = d?.command?.data?.groups;
@@ -190,8 +191,9 @@ function parseQuotaUnsafe(out: string, model: string): Measurement | null {
     .filter((b: any) => typeof b.window === "string" && /^[a-z0-9-]{1,20}$/i.test(b.window))
     .map((b: any) => ({ window: b.window === "5h" ? "5-hour" : b.window,
       usedPercent: Math.round(Math.min(100, Math.max(0, (1 - b.remaining_fraction) * 100)) * 10) / 10,
+      // Always seen as UTC ISO time (ending in Z), so passed as is; one the Limit cannot read never confirms a reset.
       resetsAt: typeof b.reset_time === "string" ? b.reset_time : null }));
-  return readings.length ? { provider: "agy", measuredAt: Date.now(), readings } : null;
+  return readings.length ? { provider: "agy", measuredAt: at, readings } : null;
 }
 
 /** The usage source: `agy -p /quota` in the private home, sandboxed, no agent turn. */
@@ -208,8 +210,9 @@ export async function quotaIn(o: { supervisor: string; policyDir: string }, home
     mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
     const policy = agyPolicy({ work: scratch, tmp, home, bin, writePaths: [], node: process.execPath, socket: "/nonexistent", ...shared });
     writeFileSync(policyFile, JSON.stringify({ ...policy, unix_connect: policy.unix_connect.filter((s) => s !== "/nonexistent") }), { mode: 0o600 });
+    const sent = Date.now();
     const out = await run(o.supervisor, policyFile, bin, ["-p", "/quota", "--output-format", "json"], agyEnv(tmp, home), scratch, 40_000);
-    const m = out.code === 0 ? parseQuota(out.stdout) : null;   // a reading counts only from a clean run
+    const m = out.code === 0 ? parseQuota(out.stdout, "", sent) : null;   // a reading counts only from a clean run
     return { m, why: m ? null : /not logged in|Authentication required|controlling terminal/i.test(out.stdout + out.stderr)
       ? "Antigravity needs signing in again (gov connect agy)" : "Antigravity did not report its quota" };
   } catch {
