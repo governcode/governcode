@@ -126,8 +126,9 @@ export const Params = {
   "project.open": z.object({ path: z.string().min(1), name: ProjectName.optional() }),
   "controller.set": z.object({ project: ProjectName, controller: ControllerChoice }),
   // kinds: only events of these kinds (e.g. the latest turn boundaries, however long the turn).
+  // after: the events after that seq, oldest first, instead of the newest (an export pages with it).
   "trace.list": z.object({ project: ProjectName.optional(), limit: z.number().int().min(1).max(1000).default(50),
-    kinds: z.array(z.string().regex(/^[a-z.]{1,40}$/)).max(20).optional() }),
+    kinds: z.array(z.string().regex(/^[a-z.]{1,40}$/)).max(20).optional(), after: z.number().int().min(0).optional() }),
   ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000) }),
   "gate.list": z.object({}),
   "spec.list": z.object({ project: ProjectName.optional() }),

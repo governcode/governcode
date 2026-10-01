@@ -357,6 +357,27 @@ test("settings: counted budgets are validated and survive a restart", async () =
   c.end(); d.close();
 });
 
+test("trace.list pages through every event with after, oldest first", async () => {
+  const d = daemon("paging");
+  await d.listen();
+  const c = client(join(root, "paging", "govd.sock"));
+  for (let i = 0; i < 2100; i++) d.ledger.append(i % 2 ? null : "q", "turn.text", "test", { i });
+  const all: any[] = [];
+  for (let after = 0; ;) {
+    const { events } = (await c.call("trace.list", { limit: 1000, after })).result;
+    all.push(...events);
+    if (events.length < 1000) break;
+    after = events.at(-1).seq;
+  }
+  assert.equal(all.length, 2100);
+  assert.ok(all.every((e, i) => i === 0 || e.seq > all[i - 1].seq), "oldest first, none twice");
+  assert.equal((await c.call("trace.list", { project: "q", limit: 1000, after: 0 })).result.events.length, 1000);
+  assert.equal((await c.call("trace.list", { project: "q", limit: 1000, after: all.at(-2).seq })).result.events.length, 0, "only q's events");
+  const newest = (await c.call("trace.list", { limit: 2 })).result.events;
+  assert.deepEqual(newest.map((e: any) => e.data.i), [2098, 2099], "without after: the newest, newest last");
+  c.end(); d.close();
+});
+
 test("standing allows: a turn rule covers the same kind for this turn only; quiet reads never ask; a project rule stays", async () => {
   const d = daemon("allows");
   d.selftest();

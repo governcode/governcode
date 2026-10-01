@@ -83,6 +83,25 @@ test("gov help, --help and -h print the usage on stdout and need no govd; an unk
   assert.match(bad.stderr, /^usage: gov /);
 });
 
+test("gov trace --jsonl exports every event, oldest first, a page at a time; an older govd's single page ends it", async () => {
+  const all = Array.from({ length: 2500 }, (_, i) => ({ seq: i + 1, ts: "2026-09-30T00:00:00.000Z", project: null, kind: "turn.text", actor: "test", data: {} }));
+  const page = (p: any) => p.after === undefined ? all.slice(-p.limit) : all.filter((e) => e.seq > p.after).slice(0, p.limit);
+  const g = await fakeGovd((m, p) => (m === "project.list" ? { projects: [] } : m === "trace.list" ? { events: page(p) } : undefined));
+  // Read slowly, as a pipe into a busy program is: every line still arrives before gov exits.
+  const slow = run(g.dir, ["trace", "--jsonl"]);
+  slow.p.stdout!.pause();
+  setTimeout(() => slow.p.stdout!.resume(), 500);
+  const r = await slow.done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.stdout.trimEnd().split("\n").map((l) => JSON.parse(l).seq), all.map((e) => e.seq));
+  // An older govd ignores `after`: it answers its newest 1000 each time.
+  const old = await fakeGovd((m, p) => (m === "project.list" ? { projects: [] } : m === "trace.list" ? { events: all.slice(-p.limit) } : undefined));
+  const o = await run(old.dir, ["trace", "--jsonl"]).done;
+  assert.equal(o.code, 0, o.stderr);
+  assert.equal(o.stdout.trimEnd().split("\n").length, 1000);
+  assert.equal(old.methods().filter((m) => m === "trace.list").length, 2);
+});
+
 test("gov disconnect grok is accepted", async () => {
   const g = await fakeGovd((m, p) => (m === "tools.disconnect" ? { note: `${p.tool} is disconnected` } : {}));
   const r = await run(g.dir, ["disconnect", "grok"]).done;

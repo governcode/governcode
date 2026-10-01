@@ -51,11 +51,14 @@ export class Ledger {
     return () => this.listeners.delete(listen);
   }
 
-  events(project: string | undefined, limit: number): TraceEvent[] {
-    const rows = (project
-      ? this.db.prepare("SELECT * FROM events WHERE project = ? ORDER BY seq DESC LIMIT ?").all(project, limit)
-      : this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT ?").all(limit)) as Array<Record<string, unknown>>;
-    return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
+  /** The newest events, newest last; with `after`, the first ones after that seq (an export pages with it). */
+  events(project: string | undefined, limit: number, after?: number): TraceEvent[] {
+    const rows = (after !== undefined
+      ? (project ? this.db.prepare("SELECT * FROM events WHERE project = ? AND seq > ? ORDER BY seq LIMIT ?").all(project, after, limit)
+        : this.db.prepare("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?").all(after, limit))
+      : (project ? this.db.prepare("SELECT * FROM events WHERE project = ? ORDER BY seq DESC LIMIT ?").all(project, limit)
+        : this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT ?").all(limit)).reverse()) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
   /** A project's events of some kinds, newest last (all of its history, not a recent window). */

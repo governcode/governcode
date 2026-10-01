@@ -630,10 +630,18 @@ async function main(argv: string[]): Promise<number> {
       }
       case "trace": {
         const project = await currentProject(api);
-        // gov trace --jsonl: every event of this project (or all), one JSON object per line, for export.
-        const jsonl = rest.includes("--jsonl");
-        const { events } = await api.call("trace.list", { project: project ?? undefined, limit: jsonl ? 1000 : 50 });
-        if (jsonl) { for (const e of events) console.log(JSON.stringify(e)); return 0; }
+        // gov trace --jsonl: every event of this project (or all), oldest first, one JSON object per
+        // line, for export. Read a page at a time; an older govd ignores `after` and repeats its newest
+        // page, which ends it rather than looping.
+        if (rest.includes("--jsonl")) {
+          for (let after = 0; ;) {
+            const page = (await api.call("trace.list", { project: project ?? undefined, limit: 1000, after })).events.filter((e: any) => e.seq > after);
+            for (const e of page) console.log(JSON.stringify(e));
+            if (page.length < 1000) return 0;
+            after = page.at(-1).seq;
+          }
+        }
+        const { events } = await api.call("trace.list", { project: project ?? undefined, limit: 50 });
         for (const e of events) console.log(`${new Date(e.ts).toTimeString().slice(0, 8)}  ${e.kind.padEnd(16)} ${(e.project ?? "-").padEnd(12)} ${dim(e.actor)}`);
         return 0;
       }
@@ -660,7 +668,10 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-main(process.argv.slice(2)).then((code) => process.exit(code), (err) => { console.error(`gov: ${err.message}`); process.exit(1); });
+// Exit once stdout has flushed: into a pipe its writes queue, and exiting at once cut off whatever a
+// slow reader (| less, | jq) had not taken yet.
+const exit = (code: number) => process.stdout.write("", () => process.exit(code));
+main(process.argv.slice(2)).then(exit, (err) => { console.error(`gov: ${err.message}`); exit(1); });
 
 async function daemon(verb: string | undefined): Promise<number> {
   const svc = await import("./service.ts");
