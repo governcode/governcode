@@ -122,6 +122,7 @@ export async function readCodexUsage(o: { supervisor: string; policyDir: string;
       try {
         mkdirSync(o.scratch, { recursive: true, mode: 0o700 });
         s = await session({ ...o, worktree: o.scratch, readOnly: true });
+        const sent = Date.now();   // the reading's time is when it was asked for, not when it came back
         const r = await Promise.race([s.rpc.request("account/rateLimits/read", {}),
           new Promise((_, fail) => setTimeout(() => fail(new Error("timeout")), 20_000))]) as any;
         const snap = r?.rateLimits ?? {};
@@ -129,7 +130,7 @@ export async function readCodexUsage(o: { supervisor: string; policyDir: string;
           ? [{ window: w.windowDurationMins ? (w.windowDurationMins >= 10_000 ? "weekly" : `${Math.round(w.windowDurationMins / 60)}-hour`) : name,
                usedPercent: w.usedPercent, resetsAt: w.resetsAt ? new Date(w.resetsAt * 1000).toISOString() : null }] : [];
         const readings = [...win(snap.primary, "primary"), ...win(snap.secondary, "secondary")];
-        return readings.length ? { provider: "codex", measuredAt: Date.now(), readings } : null;
+        return readings.length ? { provider: "codex", measuredAt: sent, readings } : null;
       } catch {
         return null;
       } finally {

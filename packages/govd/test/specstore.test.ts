@@ -77,8 +77,9 @@ test("limits: a failed reading holds, and finished Specs keep counting until the
   assert.equal(gate.admit("S-3", "codex", 11).ok, false, "40 + 40 owed + 11 = 91: held until measured");
   now += 1000;
   gate.record({ provider: "codex", measuredAt: now, readings: [{ window: "weekly", usedPercent: 60, resetsAt: null }] });
-  assert.equal(gate.admit("S-3", "codex", 11).ok, false, "rose 20 of the 40 owed: 60 + 20 + 11 = 91");
-  assert.ok(gate.admit("S-4", "codex", 10).ok, "60 + 20 + 10 = 90");
+  // Either Spec may have used all 20 alone, so the rise pays one claim at most: S-2's 15.
+  assert.equal(gate.admit("S-3", "codex", 6).ok, false, "rose 20: 60 + 25 owed + 6 = 91");
+  assert.ok(gate.admit("S-4", "codex", 5).ok, "60 + 25 + 5 = 90");
   gate.forget("codex");
   assert.equal(gate.admit("S-5", "codex", 1).ok, false, "forgotten means held");
 });

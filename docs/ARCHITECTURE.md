@@ -43,7 +43,8 @@ the GovernCode tool call Codex just announced, and declines any other server's.
 
 `delegate` measures the Runner's usage and checks the Limit (unknown means held; a finished
 Spec keeps counting until the provider's report has caught up with it: a reading taken 15
-minutes after it finished, or after the window it ran in reset), then builds the Runner's
+minutes after it finished that shows its window has moved, or the vendor confirming that the
+window it ran in has reset; 2 hours at most), then builds the Runner's
 workspace **in govd's own state directory**, out of every AI tool's reach: the project's
 committed HEAD, exported without filters, with its own git directory for snapshots. The
 Runner runs sandboxed with write access only to the Spec's scope (checked for symlinks).
