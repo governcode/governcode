@@ -281,6 +281,8 @@ test("Home uses the Controller chosen most recently, not the alphabetically last
   await c.call("controller.set", { project: "zulu", controller: { provider: "claude-code", model: "sonnet", effort: "low" } });
   await c.call("controller.set", { project: "alpha", controller: { provider: "codex", model: "gpt-5.5", effort: "low" } });
   assert.deepEqual((d as any).homeController(), { provider: "codex", model: "gpt-5.5", effort: "low" });
+  // Clients see it too (gov asks about the right tool's instructions at Home).
+  assert.deepEqual((await c.call("project.list")).result.home, { controller: { provider: "codex", model: "gpt-5.5", effort: "low" } });
   c.end(); d.close();
 });
 

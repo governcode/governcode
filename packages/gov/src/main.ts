@@ -76,10 +76,8 @@ const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
 /** The first time a Controller works, ask once whether the user's own instructions come along
  *  (off by default; said plainly both ways). */
-async function askPersonal(api: Awaited<ReturnType<typeof open>>, project: string | null, tty: ReturnType<typeof answers>): Promise<void> {
+async function askPersonal(api: Awaited<ReturnType<typeof open>>, provider: "claude" | "codex", tty: ReturnType<typeof answers>): Promise<void> {
   const { settings } = await api.call("settings.get", {});
-  const { projects } = await api.call("project.list", {});
-  const provider = projects.find((p: any) => p.name === project)?.controller.provider === "codex" ? "codex" : "claude";
   if (settings.personal?.[provider] !== null) return;
   const tool = provider === "codex" ? "Codex" : "Claude Code";
   const files = provider === "codex" ? "your AGENTS.md" : "your CLAUDE.md, skills, agents, commands, plugins and hooks";
@@ -94,7 +92,12 @@ async function askPersonal(api: Awaited<ReturnType<typeof open>>, project: strin
 /** One Controller turn in the terminal: text streams, Gates ask (with standing-allow choices). */
 export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: string | null, prompt: string,
     tty: ReturnType<typeof answers>): Promise<{ ok: boolean; summary: string }> {
-  await askPersonal(api, project, tty);
+  // The tool this turn runs (the project's Controller, or Home's) is asked about only once it is
+  // connected; otherwise govd refuses the turn and says how to connect, and nothing is asked first.
+  const { projects, home } = await api.call("project.list", {});
+  const provider = (project ? projects.find((p: any) => p.name === project)?.controller : home?.controller)?.provider === "codex" ? "codex" : "claude";
+  const { tools } = await api.call("tools.list", {});
+  if (tools.some((t: any) => t.tool === provider && t.connected)) await askPersonal(api, provider, tty);
   api.onEvent(async (ev) => {
     if (ev.kind === "text") process.stdout.write(ev.text + "\n");
     else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));

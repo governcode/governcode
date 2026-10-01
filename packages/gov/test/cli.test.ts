@@ -3,7 +3,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
@@ -35,9 +35,11 @@ async function fakeGovd(handle: (method: string, params: any, notify: Notify) =>
   return { dir, calls, methods: () => calls.map((c) => c.method) };
 }
 
-/** gov with stdin closed (or fed `input`), against the govd whose runtime folder is `dir`. */
+/** gov with stdin closed (or fed `input`), against the govd whose runtime folder is `dir`. The
+ *  user's git config stays out of it (gov demo commits). */
 function run(dir: string, args: string[], o: { cwd?: string; input?: string } = {}) {
-  const p = spawn(process.execPath, [gov, ...args], { cwd: o.cwd ?? root, env: { ...process.env, GOVERNCODE_RUNTIME_DIR: dir },
+  const p = spawn(process.execPath, [gov, ...args], { cwd: o.cwd ?? root,
+    env: { ...process.env, GOVERNCODE_RUNTIME_DIR: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
     stdio: [o.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   p.stdout!.on("data", (d) => (stdout += d));
@@ -110,4 +112,53 @@ test("gov controller checks the provider before anything is asked or recorded; c
   providers = ["codex"];
   await run(g.dir, ["controller", "codex", "--model", "gpt-5.4", "--effort", "max"], { cwd: g.path }).done;
   assert.deepEqual(g.calls.at(-1)!.params.controller, { provider: "codex", model: "gpt-5.4", effort: "max" });
+});
+
+const tools = (claude: boolean, codex: boolean) => ({ tools: [{ tool: "claude", connected: claude }, { tool: "codex", connected: codex }] });
+const NOT_ASKED = { settings: { personal: { claude: null, codex: null } } };
+
+test("gov ask checks the connection before the personal question, and asks about Home's own Controller", async () => {
+  const g = await withProject((m) => m === "tools.list" ? tools(false, true) : m === "settings.get" ? NOT_ASKED
+    : m === "ask" ? Promise.reject(new Error("connect Claude Code for GovernCode first: gov connect claude")) : undefined);
+  const r = await run(g.dir, ["ask", "hi"], { cwd: g.path }).done;
+  assert.equal(r.code, 1);
+  assert.doesNotMatch(r.stdout, /Use your own/);
+  assert.match(r.stderr, /connect Claude Code for GovernCode first/);
+  assert.ok(!g.methods().includes("settings.set"), "nothing recorded");
+
+  // At Home the Controller is the one chosen last (govd says which): here Codex.
+  const h = await fakeGovd((m) => m === "project.list" ? { projects: [], home: { controller: { provider: "codex", model: "gpt-5.5", effort: "medium" } } }
+    : m === "tools.list" ? tools(true, true) : m === "settings.get" ? NOT_ASKED : m === "ask" ? { ok: true, summary: "done" } : undefined);
+  const home = await run(h.dir, ["ask", "hi"], { input: "y\n" }).done;
+  assert.equal(home.code, 0, home.stderr);
+  assert.match(home.stdout, /Use your own Codex instructions in GovernCode\?/);
+  assert.deepEqual(h.calls.find((c) => c.method === "settings.set")!.params.personal, { claude: null, codex: true });
+});
+
+test("gov demo makes nothing until Claude Code is connected, and says plainly when Codex is not connected", async () => {
+  const now = { claude: false, codex: false, reason: "" };
+  const g = await fakeGovd((m) => m === "hello" ? { sandbox: { ok: true } } : m === "tools.list" ? tools(now.claude, now.codex)
+    : m === "project.list" ? { projects: [] } : m === "settings.get" ? { settings: { personal: { claude: false, codex: null } } }
+    : m === "ask" ? { ok: true, summary: "done" } : m === "spec.list" ? { specs: [] }
+    : m === "limits.list" ? { providers: [{ provider: "codex", verdict: { ok: false, reason: now.reason } }] } : undefined);
+  const first = join(root, "demo-1");
+  const r = await run(g.dir, ["demo", "--path", first]).done;
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /Claude Code is not connected for GovernCode yet\. Run gov connect claude, then gov demo again\./);
+  assert.ok(!existsSync(first), "no folder made");
+  assert.deepEqual(g.methods(), ["hello", "tools.list"], "nothing registered or asked");
+
+  now.claude = true;
+  const d = await run(g.dir, ["demo", "--path", first]).done;
+  assert.equal(d.code, 0, d.stderr);
+  assert.match(d.stdout, /Skipped: Codex is not connected for GovernCode \(gov connect codex, then run the demo again\)\./);
+  assert.doesNotMatch(d.stdout, /the Limit working/);
+  assert.ok(!g.methods().includes("limits.list"));
+
+  Object.assign(now, { codex: true, reason: "Codex did not report its usage (its login may need signing in again: gov connect codex) · held" });
+  const held = await run(g.dir, ["demo", "--path", join(root, "demo-2")]).done;
+  assert.match(held.stdout, /Skipped: Codex is held \(Codex did not report its usage/);
+  assert.doesNotMatch(held.stdout, /the Limit working/);
+  now.reason = "inside its 10% weekly Limit (95% used)";
+  assert.match((await run(g.dir, ["demo", "--path", join(root, "demo-3")]).done).stdout, /Codex is held \(inside its 10% weekly Limit .*\n.*the Limit working/);
 });

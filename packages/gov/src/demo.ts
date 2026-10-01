@@ -30,6 +30,10 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
     say("That is on purpose: it fails closed. Run ./target/release/govern-sup selftest to see what is missing.");
     return 1;
   }
+  // Checked before anything is made: the demo's Controller is Claude Code; Codex is optional.
+  const tools = (await api.call("tools.list", {})).tools as Array<{ tool: string; connected: boolean }>;
+  const connected = (tool: string) => tools.some((t) => t.tool === tool && t.connected);
+  if (!connected("claude")) { say("Claude Code is not connected for GovernCode yet. Run gov connect claude, then gov demo again."); return 1; }
   const path = resolve(o.path ?? join(homedir(), "governcode-demo"));
   if (existsSync(path)) { say(`${path} already exists. Remove it, or pass another folder: gov demo --path DIR`); return 2; }
 
@@ -70,13 +74,18 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
   say(dim(first.ok ? "— done" : `— the turn ended: ${first.summary}`));
 
   step(3, "handing a job to a Runner");
-  const runners = (await api.call("limits.list", { measure: true })).providers as Array<{ provider: string; verdict: { ok: boolean; reason?: string } }>;
+  const runners = connected("codex") ? (await api.call("limits.list", { measure: true })).providers as Array<{ provider: string; verdict: { ok: boolean; reason?: string } }> : [];
   const codex = runners.find((r) => r.provider === "codex");
   let reviewed = false;
-  if (!codex?.verdict.ok) {
+  if (!connected("codex")) {
+    say("Skipped: Codex is not connected for GovernCode (gov connect codex, then run the demo again).");
+  } else if (!codex?.verdict.ok) {
     say(`Skipped: ${codex ? `Codex is held (${codex.verdict.reason}).` : "no Runner is set up (install and log in to Codex to try this)."}`);
-    say(dim("A held Runner is the Limit working: GovernCode starts no job that would reach into the reserve you"));
-    say(dim("keep. Usage reports lag a little, so a job already running can overshoot slightly; it is stopped when seen."));
+    // Only a Limit or budget hold is the Limit working; a Runner held without a reading says why above.
+    if (codex?.verdict.reason?.startsWith("inside its ")) {
+      say(dim("A held Runner is the Limit working: GovernCode starts no job that would reach into the reserve you"));
+      say(dim("keep. Usage reports lag a little, so a job already running can overshoot slightly; it is stopped when seen."));
+    }
   } else {
     say("The Controller hands one small job to Codex. Codex works in its own copy of the project, in its");
     say("own sandbox, and can only write the files the job allows. Nothing reaches your folder until you accept.");
