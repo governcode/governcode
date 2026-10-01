@@ -158,3 +158,19 @@ test("board review: a turn cut off by govd stopping is closed on the record at t
     assert.equal(d2.ledger.eventsOfKind("p", ["turn.started", "turn.completed", "turn.failed"], 10).filter((e) => e.kind === "turn.failed").length, 1);
   } finally { d2.close(); }
 });
+
+test("Gate, plan and proposal ids go on from the Trace after a restart", () => {
+  const root = scratch("gc-ids-");
+  const opts = { socketPath: join(root, "run/govd.sock"), ledgerPath: join(root, "state/trace.sqlite"),
+    policyDir: join(root, "state/pol"), homeDir: join(root, "state/home"), supervisor: "/bin/true", version: "t" };
+  const d1 = new Daemon(opts);
+  d1.ledger.addProject("p", join(root, "p"), "project.created");
+  d1.ledger.append("p", "gate.opened", "user", { gate: "G-41", tool: "Bash" });
+  d1.ledger.append("p", "plan.proposed", "user", { plan: "GP-7", items: [], turn: "T-1" });
+  d1.ledger.append(null, "project.proposed", "user", { proposal: "P-3", name: "x", path: "/x", git: true });
+  d1.close();
+  const d2 = new Daemon(opts);
+  try {
+    assert.deepEqual([(d2 as any).gateSeq, (d2 as any).planSeq, (d2 as any).proposalSeq], [41, 7, 3]);
+  } finally { d2.close(); }
+});

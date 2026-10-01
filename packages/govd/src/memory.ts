@@ -34,7 +34,7 @@ export function projectRecord(L: Ledger, project: string, rules: string[], budge
   const cp = L.eventsOfKind(project, ["checkpoint.taken", "checkpoint.undone"], 200);
   const undone = new Set(cp.filter((e) => e.kind === "checkpoint.undone").map((e) => e.data.turn));
   const checkpoints = cp.filter((e) => e.kind === "checkpoint.taken").slice(-8)
-    .map((e) => ({ turn: e.data.turn, at: e.ts, files: (e.data.files as string[] ?? []).slice(0, 10), ...(undone.has(e.data.turn) ? { undone: true } : {}) }));
+    .map((e) => ({ turn: e.data.turn, at: e.ts, files: (e.data.files as string[] ?? []).slice(0, 10), ...(undone.has(e.data.turn) ? { undone: "the user undid this turn: these files are back as they were before it" } : {}) }));
   const allowed = rules.slice(0, 20).map((r) => r.slice(0, 200));
   if (!specs.length && !checkpoints.length && !allowed.length) return "";
   const rec = { specs, checkpoints, allowedForThisProject: allowed };

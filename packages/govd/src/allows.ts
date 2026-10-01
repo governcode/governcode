@@ -431,7 +431,8 @@ export class Allows {
     this.file = file;
     try {
       const saved = JSON.parse(readFileSync(file, "utf8"));
-      if (Array.isArray(saved)) this.rules = saved.filter((r) => r && r.scope === "project" && typeof r.key === "string");
+      // (a rule for Grok's catch-all kind is left behind: since 0.1.0-motion.9 each Grok tool is a kind of its own)
+      if (Array.isArray(saved)) this.rules = saved.filter((r) => r && r.scope === "project" && typeof r.key === "string" && r.key !== "runner:tool:grok_other");
       this.seq = Math.max(0, ...this.rules.map((r) => Number(String(r.id).slice(2)) || 0));
     } catch { /* none yet */ }
   }

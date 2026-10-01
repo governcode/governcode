@@ -87,6 +87,11 @@ export class Daemon {
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
     this.connector = new Connector({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir });
+    // Ids go on from the Trace after a restart, so G-3 in yesterday's transcript is still that Gate.
+    const last = (kind: TraceEvent["kind"], field: string) => Number(String(this.ledger.lastOfKind(kind)?.data[field] ?? "").replace(/^[A-Z]+-/, "")) || 0;
+    this.gateSeq = last("gate.opened", "gate");
+    this.planSeq = last("plan.proposed", "plan");
+    this.proposalSeq = last("project.proposed", "proposal");
   }
 
   /** The project's recent conversation, since its last reset: the user's messages and the
