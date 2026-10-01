@@ -97,7 +97,7 @@ for that hand-back; nothing else an AI tool runs may listen at all.
 Or on your own project:
 
 ```sh
-gov new demo --path ~/code/demo && cd ~/code/demo
+gov new demo --path ~/code/demo && cd ~/code/demo   # or, for a folder you already have: gov open PATH [NAME]
 gov controller claude-code --model sonnet --effort medium
 gov ask "Add a README with one line about this project"
 gov gates          # from another terminal: what is waiting, exactly as it will run

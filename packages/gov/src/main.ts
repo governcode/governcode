@@ -19,6 +19,8 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+
 function open(): Promise<{ call(method: string, params?: unknown): Promise<any>; onEvent(f: (e: any) => void): void; sock: Socket }> {
   return new Promise((ok, fail) => {
     const sock = connect(socketPath);
@@ -26,7 +28,7 @@ function open(): Promise<{ call(method: string, params?: unknown): Promise<any>;
     const waiting = new Map<number, (r: Reply) => void>();
     let listener: (e: any) => void = () => {};
     sock.once("error", () => fail(new Error(host ? `no tunnel to ${host} (no socket at ${socketPath}). Open one with: gov tunnel ${host}`
-      : `govd is not running (no socket at ${socketPath}). Start it with: npm run govd`)));
+      : `govd is not running (no socket at ${socketPath}). Start it with: gov daemon start (or run govd in another terminal)`)));
     const lines = createInterface({ input: sock });
     lines.on("error", () => {});   // the socket's own error handler reports it
     lines.on("line", (line) => {
@@ -148,6 +150,7 @@ async function main(argv: string[]): Promise<number> {
     argv = argv.slice(2);
   }
   const [cmd, ...rest] = argv;
+  if (cmd === "help" || cmd === "--help" || cmd === "-h") { console.log(USAGE); return 0; }
   if (cmd === "daemon") return daemon(rest[0]);
   if (cmd === "socket-path") { console.log(socketPath); return 0; }
   if (cmd === "tunnel") {
@@ -444,7 +447,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "disconnect": {
         const tool = rest[0];
-        if (!["agy", "claude", "codex"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex");
+        if (!["agy", "claude", "codex", "grok"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex|grok");
         console.log((await api.call("tools.disconnect", { tool })).note);
         return 0;
       }
@@ -532,7 +535,7 @@ async function main(argv: string[]): Promise<number> {
         finally { tty.close(); }
       }
       default:
-        console.error("usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH]|controller PROVIDER [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex]|disconnect TOOL|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path]");
+        console.error(USAGE);
         return 2;
     }
   } finally {
