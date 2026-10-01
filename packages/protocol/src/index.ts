@@ -15,7 +15,8 @@ export const ControllerChoice = z.object({
 });
 export type ControllerChoice = z.infer<typeof ControllerChoice>;
 
-export const ProjectName = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,62}$/, "lowercase letters, digits, . _ -");
+export const ProjectName = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,62}$/,
+  "a project name uses lowercase letters, digits, . _ - and starts with a letter or digit, at most 63 characters (e.g. my-app)");
 
 // A Spec: one delegated job, written down before it runs (phase 1). The Controller fills it
 // in; govd checks it against the Limit, turns `scope` into the sandbox policy, and records
@@ -48,6 +49,12 @@ export const ProjectProposal = z.object({
   git: z.boolean().default(true),
   reason: z.string().max(1000).default(""),
 });
+
+/** The Runners GovernCode has. A setting naming any other is refused: it would be saved and never used. */
+export const RUNNERS = ["agy", "codex", "grok", "ollama"] as const;
+/** The usage windows a reserve can name: the Runners' own (Grok's is weekly, monthly or a period)
+ *  and counted budgets'. */
+export const RESERVE_WINDOWS = ["5-hour", "daily", "weekly", "monthly", "period"] as const;
 
 /** How a counted budget is labelled wherever it is shown: it is blind to use outside GovernCode. */
 export const COUNTED_LABEL = "counted by GovernCode only";
