@@ -110,8 +110,10 @@ what they can do; the Gate just no longer asks each time. Use "this turn" when i
 steer (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `pwd`, `stat`, `du`, `df`, `which`,
 `find` with tests only) run without a Gate, and only with the options each is known to read
 with: any other option (`tail -f`, `rg --pre`, `grep -f`...) or a special file (`/dev`,
-`/proc`, `/sys`) asks. They are still sandboxed and still in the Trace. Turn it off in Settings to
-be asked for everything.
+`/proc`, `/sys`) asks. A Grok Runner's own read tools (reading a file, searching, listing a
+folder) are quiet reads on the same terms: one that reaches a special place, or that GovernCode
+cannot check, always asks. They are still sandboxed and still in the Trace. Turn it off in
+Settings to be asked for everything.
 
 ## Local models: nothing to run, so nothing to sandbox
 

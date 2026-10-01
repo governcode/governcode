@@ -281,8 +281,8 @@ async function delegate(ctx: DelegationContext, raw: unknown) {
   let poll: ReturnType<typeof setInterval> | undefined;
   let ran = false, runUsage: unknown;   // a cloud Runner was started: its use counts, whatever the outcome
   try {
-    // 2. Its own workspace in govd's state (out of every AI tool's reach): the project's
-    //    committed HEAD, exported without filters, with its own git dir for snapshots.
+    // 2. Its own workspace in govd's state (out of every AI tool's reach): the project as the
+    //    user has it now (specstore.createWorkspace), with its own git dir for snapshots.
     const project = ctx.project.path;
     let head = "";
     try { head = execFileSync("git", ["-C", project, "rev-parse", "--verify", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* none */ }

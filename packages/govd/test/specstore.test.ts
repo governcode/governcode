@@ -1,10 +1,10 @@
-// The Spec store: workspace from HEAD, filter-free snapshots, exact apply, symlink refusals.
+// The Spec store: workspace from the project as it is, filter-free snapshots, exact apply, symlink refusals.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, renameSync, symlinkSync, existsSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, renameSync, symlinkSync, existsSync, chmodSync, lstatSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as ss from "../src/specstore.ts";
 import { LimitGate } from "../src/limits.ts";
 import { scratch } from "./scratch.ts";
@@ -41,6 +41,56 @@ test("workspace, snapshots, diff and apply run no repo filter and apply exactly 
   assert.equal(readFileSync(join(proj, "a.txt"), "utf8"), "two\n");
   assert.equal(readFileSync(join(proj, "src/new.txt"), "utf8"), "fresh\n");
   assert.ok(!existsSync(join(proj, "PWNED")), "the repo's filter never ran");
+});
+
+test("workspace: the project as the user has it now, uncommitted changes and new files included, secrets and links never followed", () => {
+  const proj = project();
+  const outside = scratch("gc-outside-");
+  writeFileSync(join(outside, "secret.txt"), "outside\n");
+  writeFileSync(join(proj, "a.txt"), "changed, not committed\n");                 // an accepted Spec not yet committed
+  writeFileSync(join(proj, "src/new.txt"), "new\n");                              // a new file git does not ignore
+  writeFileSync(join(proj, ".gitignore"), "ignored.txt\n");
+  writeFileSync(join(proj, "ignored.txt"), "ignored\n");
+  for (const f of [".env", "deploy/.env.local", "id_ed25519", "certs/site.pem"]) {
+    mkdirSync(join(proj, dirname(f)), { recursive: true }); writeFileSync(join(proj, f), "secret\n");
+  }
+  symlinkSync("a.txt", join(proj, "link.txt"));                                     // a link stays a link
+  symlinkSync(join(outside, "secret.txt"), join(proj, "out.txt"));                 // a link out is copied as a link, never read
+  symlinkSync(outside, join(proj, "outdir"));                                      // a folder link is never entered
+  execFileSync("mkfifo", [join(proj, "pipe")]);                                    // would block a read
+  writeFileSync(join(proj, "big.bin"), "");
+  execFileSync("truncate", ["-s", "101M", join(proj, "big.bin")]);                 // a new file too big to review
+  rmSync(join(proj, "src/b.txt"));                                                 // deleted, not committed
+  const p = ss.specPaths(scratch("gc-state-"), "S-0010");
+  ss.createWorkspace(proj, p);
+  const has = (f: string) => { try { lstatSync(join(p.work, f)); return true; } catch { return false; } };
+  assert.equal(readFileSync(join(p.work, "a.txt"), "utf8"), "changed, not committed\n");
+  assert.equal(readFileSync(join(p.work, "src/new.txt"), "utf8"), "new\n");
+  for (const f of ["ignored.txt", ".env", "deploy/.env.local", "id_ed25519", "certs/site.pem", "pipe", "big.bin", "src/b.txt"]) {
+    assert.ok(!has(f), `${f} is not in the copy`);
+  }
+  assert.equal(readlinkSync(join(p.work, "link.txt")), "a.txt");
+  assert.equal(readlinkSync(join(p.work, "out.txt")), join(outside, "secret.txt"));
+  assert.equal(readlinkSync(join(p.work, "outdir")), outside, "a folder link is copied as a link, never entered");
+  // What a Spec then changes applies over the uncommitted state it started from.
+  const before = ss.snapshot(p, "before");
+  writeFileSync(join(p.work, "a.txt"), "runner\n");
+  const after = ss.snapshot(p, "after", before);
+  assert.deepEqual(ss.applyToProject(p, proj, before, after), ["a.txt"]);
+  assert.equal(readFileSync(join(proj, "a.txt"), "utf8"), "runner\n");
+});
+
+test("workspace: a tracked file whose folder is now a link elsewhere is never read through it", () => {
+  const proj = project();
+  const outside = scratch("gc-outside-");
+  writeFileSync(join(outside, "b.txt"), "a file outside the project\n");
+  renameSync(join(proj, "src"), join(proj, "src-moved"));
+  symlinkSync(outside, join(proj, "src"));                                         // git still tracks src/b.txt
+  const p = ss.specPaths(scratch("gc-state-"), "S-0011");
+  ss.createWorkspace(proj, p);
+  assert.ok(lstatSync(join(p.work, "src")).isSymbolicLink(), "the folder link is copied as a link, its file never read");
+  assert.deepEqual(readdirSync(outside), ["b.txt"], "and nothing written through it");
+  assert.equal(readFileSync(join(p.work, "a.txt"), "utf8"), "one\n");
 });
 
 test("apply refuses when the project changed since the Spec started, and changes nothing", () => {

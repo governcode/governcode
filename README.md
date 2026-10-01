@@ -163,7 +163,9 @@ gov spec-models within        # Controller keeps to them: free | within | defaul
 
 GovernCode checks Codex's measured usage against your Limit first, runs it in a workspace
 of its own inside the sandbox (it can write only the scope), shows every step that needs
-approval as a Gate, and applies nothing until you accept.
+approval as a Gate, and applies nothing until you accept. The workspace starts from your project
+as it is, uncommitted changes and Specs you accepted included, so you need not commit between
+Specs; new files that look like secrets (`.env`, keys) and files git ignores stay out of it.
 
 A **budget** is optional, for any cloud Runner: a cap per window (`5-hour`, `daily`, `weekly`,
 `monthly`) in tokens where the Runner reports them, turns otherwise. It is counted by GovernCode

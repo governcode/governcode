@@ -4,8 +4,8 @@
 // call here uses a git directory govd created, plumbing that never runs filters, hooks or
 // external diff drivers, and a config that turns off anything that could run a program.
 import { execFileSync } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync,
-  renameSync, rmSync, unlinkSync, mkdtempSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync,
+  readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, mkdtempSync, writeSync } from "node:fs";
 import { join, relative, resolve, sep, dirname, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -31,15 +31,57 @@ export function specPaths(stateDir: string, specId: string): SpecPaths {
   return { root, work: join(root, "work"), gitDir: join(root, "git") };
 }
 
-/** Make the Runner's workspace: the project's committed HEAD, exported without filters. */
+// New files the user has not committed that look like secrets stay out of a Runner's copy (its
+// provider sees the copy); files git tracks are already in the project's history.
+const SECRET_FILE = /(^|\/)(\.env(\..*)?|\.netrc|\.npmrc|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?)$|\.(pem|key|p12|pfx|jks|keystore)$/i;
+
+/** Make the Runner's workspace: the project as the user has it now, so a Spec builds on what they
+ *  see (uncommitted changes and accepted Specs included): what git tracks, plus new files it does
+ *  not ignore. Read without following any link: a link is copied as a link (as `git archive`
+ *  would), and a path through one, or anything but a file, is left out. No git program runs on the
+ *  project but `ls-files`, with every program-running option off. */
 export function createWorkspace(projectPath: string, p: SpecPaths): void {
   mkdirSync(p.work, { recursive: true, mode: 0o700 });
   chmodSync(p.root, 0o700);
   execFileSync("git", ["init", "-q", "--bare", p.gitDir], { env: { ...process.env, ...ENV }, stdio: "ignore" });
-  // `git archive` of HEAD reads objects only; tar format runs no configured program.
-  const tar = execFileSync("git", [...SAFE, "-C", projectPath, "archive", "--format=tar", "HEAD"],
-    { env: { ...process.env, ...ENV }, maxBuffer: 1024 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-  execFileSync("tar", ["-x", "--no-same-owner", "--no-same-permissions", "-C", p.work], { input: tar });
+  const tracked = listFiles(projectPath, ["--cached"]), fresh = listFiles(projectPath, ["--others", "--exclude-standard"]);
+  if (!tracked || !fresh) throw new Error("git could not list the project's files");
+  const root = realpathSync(projectPath);
+  const known = new Set(tracked);
+  for (const rel of tracked) copyIn(projectPath, root, p.work, rel);
+  // New files are left out, too, when larger than a snapshot takes (they could not be reviewed).
+  for (const rel of fresh) if (!SECRET_FILE.test(rel) && !known.has(rel)) copyIn(projectPath, root, p.work, rel, MAX_SNAPSHOT_FILE);
+}
+
+/** One project file into the workspace, or nothing: never through a link, never anything but a
+ *  file or a link (a FIFO could block, a device never end), skipped if it is gone. The file opened
+ *  must be the one at that path in the real project folder (/proc/self/fd), so a folder swapped
+ *  for a link meanwhile cannot bring in a file from elsewhere.
+ *  ponytail: Linux only (/proc); macOS needs F_GETPATH. */
+function copyIn(projectPath: string, root: string, work: string, rel: string, maxSize = Infinity): void {
+  const src = join(projectPath, rel), dir = dirname(rel);
+  try {
+    if (dir === ".") { if (lstatSync(projectPath).isSymbolicLink()) return; }
+    else safeTarget(projectPath, dir);
+  } catch { return; }
+  const st = lstatOrNull(src);
+  if (!st || !(st.isSymbolicLink() || (st.isFile() && st.size <= maxSize))) return;
+  let dest: string;
+  try { dest = safeTarget(work, rel); } catch { return; }   // under a link copied a moment ago
+  mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+  if (st.isSymbolicLink()) { symlinkSync(readlinkSync(src), dest); return; }
+  let fd: number;
+  try { fd = openSync(src, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return; }   // a link by now
+  try {
+    const f = fstatSync(fd);
+    if (!f.isFile() || f.size > maxSize || readlinkSync(`/proc/self/fd/${fd}`) !== join(root, rel)) return;
+    const out = openSync(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      const buf = Buffer.allocUnsafe(1 << 20);
+      for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0;) for (let off = 0; off < n;) off += writeSync(out, buf, off, n - off);
+      fchmodSync(out, f.mode & 0o111 ? 0o755 : 0o644);
+    } finally { closeSync(out); }
+  } finally { closeSync(fd); }
 }
 
 /** Snapshot a directory as a commit in the spec's own git dir, hashing raw bytes (no filters). */
@@ -94,8 +136,12 @@ function lstatExists(p: string): boolean {
  * ignore, listed by git with every program-running option off. Null if not a git project.
  */
 export function projectFiles(projectPath: string): string[] | null {
+  return listFiles(projectPath, ["--cached", "--others", "--exclude-standard"]);
+}
+
+function listFiles(projectPath: string, which: string[]): string[] | null {
   try {
-    const out = execFileSync("git", [...SAFE, "-C", projectPath, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    const out = execFileSync("git", [...SAFE, "-C", projectPath, "ls-files", "-z", ...which],
       { env: { ...process.env, ...ENV }, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).toString();
     return [...new Set(out.split("\0").filter(Boolean))];
   } catch {

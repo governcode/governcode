@@ -43,8 +43,10 @@ the GovernCode tool call Codex just announced, and declines any other server's.
 
 `delegate` measures the Runner's usage and checks the Limit (unknown means held; finished
 Specs keep counting until the provider's counter catches up), then builds the Runner's
-workspace **in govd's own state directory**, out of every AI tool's reach: the project's
-committed HEAD, exported without filters, with its own git directory for snapshots. The
+workspace **in govd's own state directory**, out of every AI tool's reach: the project as the
+user has it now (what git tracks, uncommitted changes included, plus new files it does not
+ignore, except ones that look like secrets such as `.env` or a key), read without following any
+link, with its own git directory for snapshots. The
 Runner runs sandboxed with write access only to the Spec's scope (checked for symlinks).
 Snapshots hash raw bytes with git plumbing under a config that runs no program, so no repo
 filter, hook or diff driver ever executes. A change outside the scope is never offered.
