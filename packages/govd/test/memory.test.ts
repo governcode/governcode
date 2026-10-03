@@ -320,3 +320,27 @@ test("conversation: the record never exceeds its budget, whatever the budget and
   }
   L.close();
 });
+
+test("review: after 'start fresh', a Controller's own turns are found however many of another provider's come after them", () => {
+  const L = new Ledger(":memory:");
+  L.addProject("p", "/tmp/p", "project.created");
+  for (let i = 0; i < 600; i++) turn(L, `claude early ${i}`, "ok");   // more than one page of turn starts before Codex's
+  turn(L, "codex: the job", "codex did it", "codex", "gpt-5.5");
+  for (let i = 0; i < 1600; i++) turn(L, `claude later ${i}`, "ok");   // more than 4,000 events after it
+  const r = conversationRecord(L, "p", { current: "codex", onlyProvider: "codex" });
+  assert.deepEqual(JSON.parse(r.record).map((i: any) => i.text), ["codex: the job", "codex did it"]);
+  // conversation_read reaches it too, going on from where a scan stopped if it has to.
+  let page = readConversation(L, "p", {}, { current: "codex", onlyProvider: "codex" });
+  for (let n = 0; n < 10 && !page.items!.length && page.nextBefore; n++) page = readConversation(L, "p", { before: page.nextBefore }, { current: "codex", onlyProvider: "codex" });
+  assert.deepEqual(page.items!.map((i: any) => i.text), ["codex: the job", "codex did it"]);
+  L.close();
+});
+
+test("review: when no earlier item fits the budget, the record is empty but says what was left out", () => {
+  const L = new Ledger(":memory:");
+  L.addProject("p", "/tmp/p", "project.created");
+  turn(L, "p".repeat(5000), "r".repeat(5000));
+  const r = conversationRecord(L, "p", { current: "claude-code", budget: 2000 });
+  assert.deepEqual([r.record, r.shown, r.omitted], ["", 0, 2]);
+  L.close();
+});

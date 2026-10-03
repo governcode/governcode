@@ -19,11 +19,11 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
-  "turns", "undo", "settings", "budget", "local", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
+  "turns", "undo", "settings", "budget", "local", "memory", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
   "limits", "specs", "diff", "accept", "discard", "trace", "ask", "demo"]);
 
 /** A Runner name, checked before anything is saved (govd checks too): a typo would be saved and never used. */
@@ -476,6 +476,19 @@ async function main(argv: string[]): Promise<number> {
           console.log(`${provider.padEnd(8)} budget ${Object.entries(b.windows).map(([w, n]) => `${n} ${b.unit} ${w}`).join(", ")} ${dim(`(${COUNTED_LABEL})`)}`);
         }
         console.log(`local models: at most ${settings.local.maxRunning} at once, ${settings.local.maxMinutes} min each`);
+        console.log(`recent conversation: up to ${settings.memory.conversationChars} characters per turn`);
+        return 0;
+      }
+      case "memory": {
+        // gov memory 24000: how much of the recent conversation each Controller turn gets (whole
+        // messages only; the rest is left out whole and readable with conversation_read).
+        if (rest.length > 1 || (rest.length === 1 && !/^\d+$/.test(rest[0]))) throw new Error("usage: gov memory [CHARS]   (2000-48000; without CHARS, the current budget)");
+        const { settings } = await api.call("settings.get", {});
+        if (!rest.length) { console.log(`recent conversation: up to ${settings.memory.conversationChars} characters per turn`); return 0; }
+        const chars = Number(rest[0]);
+        if (chars < 2000 || chars > 48_000) throw new Error("usage: gov memory [CHARS]   (2000-48000; without CHARS, the current budget)");
+        await api.call("settings.set", { ...settings, memory: { conversationChars: chars } });
+        console.log(`recent conversation: up to ${chars} characters per turn`);
         return 0;
       }
       case "budget": {

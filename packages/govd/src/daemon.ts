@@ -549,7 +549,8 @@ export class Daemon {
     // Controller that wrote it; what does not fit is left out whole (conversation_read reads it).
     const conv = conversationRecord(L, project.name, { current: project.controller.provider,
       onlyProvider: share ? undefined : project.controller.provider, budget: this.settings().memory.conversationChars });
-    const history = conv.record;
+    // Nothing fit (every earlier item is larger than the budget): an empty record still says so.
+    const history = conv.record || (conv.omitted || conv.older ? "[]" : "");
     const left = conv.omitted || conv.older ? `; ${conv.omitted}${conv.older ? " or more" : ""} earlier item${conv.omitted === 1 && !conv.older ? " was" : "s were"} left out whole${found ? ": read them with the conversation_read tool" : ""}` : "";
     const notes = found && share ? notesOf(L, found.name).text : "";
     const record = found && share ? projectRecord(L, found.name, this.allows.list(found.name).map((r) => r.label)) : "";

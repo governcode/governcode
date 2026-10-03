@@ -134,24 +134,61 @@ export function selectConversation(items: ConversationItem[], budget: number, cu
   return all.filter((i) => picked.has(i.seq));
 }
 
+// Turn events are read a page at a time, newest first, each page starting at a turn's beginning so
+// no turn is split; filtering by provider happens per page, so a Controller's own turns are found
+// however many of another provider's come after them. Scanning stops at MAX_SCAN events.
+const PAGE = 2000, MAX_SCAN = 40_000;
+
+/** Items before `before` (since the reset), newest pages first, until `enough(items)` or the reset
+ *  is reached. `cursor` is where to go on from when there may be more (not `exhausted`). */
+function itemsBefore(L: Ledger, project: string | null, floor: number, before: number, onlyProvider: string | undefined,
+    enough: (items: ConversationItem[]) => boolean): { items: ConversationItem[]; exhausted: boolean; cursor: number } {
+  const items: ConversationItem[] = [];
+  let hi = before, scanned = 0;
+  for (;;) {
+    const events = L.eventsOfKindIn(project, TURN_KINDS, floor, hi, PAGE);
+    if (!events.length) return { items, exhausted: true, cursor: hi };
+    scanned += events.length;
+    const reachedFloor = events.length < PAGE;
+    const start = events.findIndex((e) => e.kind === "turn.started");
+    // A page with no turn's beginning is the middle of a very long turn: keep going back. Events
+    // before the first beginning on a page that reached the reset belong to no turn shown here.
+    if (start < 0) { if (reachedFloor) return { items, exhausted: true, cursor: hi }; hi = events[0].seq; }
+    else { items.unshift(...itemsOf(events.slice(start), onlyProvider)); hi = events[start].seq; }
+    if (reachedFloor) return { items, exhausted: true, cursor: hi };
+    if (enough(items) || scanned >= MAX_SCAN) return { items, exhausted: false, cursor: hi };
+  }
+}
+
+/** The first message since the reset that this Controller may see (another provider's are skipped
+ *  when only its own turns may be shown), looked up from the start. */
+function firstMessage(L: Ledger, project: string | null, floor: number, onlyProvider?: string): ConversationItem | undefined {
+  for (let lo = floor, scanned = 0; scanned < MAX_SCAN;) {
+    const starts = L.eventsOfKindIn(project, ["turn.started"], lo, NEWEST, 500, true);
+    const hit = starts.find((e) => !onlyProvider || (e.data.controller as { provider?: unknown } | undefined)?.provider === onlyProvider);
+    if (hit) return itemsOf([hit], onlyProvider)[0];
+    if (starts.length < 500) return undefined;
+    lo = starts.at(-1)!.seq; scanned += starts.length;
+  }
+  return undefined;
+}
+
 /** The conversation for a turn, as a JSON record, and how much of it was left out. `current` is the
  *  provider taking the turn; `onlyProvider` limits it to that provider's own turns (the user has not
  *  agreed to share the rest). */
 export function conversationRecord(L: Ledger, project: string | null, o: { current?: string; onlyProvider?: string; budget?: number }):
     { record: string; shown: number; omitted: number; older: boolean } {
+  const budget = o.budget ?? CONVERSATION_CHARS;
   const floor = conversationFloor(L, project);
-  const WINDOW = 4000;
-  const events = L.eventsOfKindIn(project, TURN_KINDS, floor, NEWEST, WINDOW);
-  const items = itemsOf(events, o.onlyProvider);
-  // The first message since the reset may be older than the window: looked up on its own.
-  const firstStarted = L.eventsOfKindIn(project, ["turn.started"], floor, NEWEST, 200, true)
-    .find((e) => !o.onlyProvider || (e.data.controller as { provider?: unknown } | undefined)?.provider === o.onlyProvider);
-  const first = firstStarted ? itemsOf([firstStarted], o.onlyProvider)[0] : undefined;
-  const picked = selectConversation(items, o.budget ?? CONVERSATION_CHARS, o.current, first);
-  const inView = new Set(items.map((i) => i.seq));
+  // Enough to fill the budget twice over (or 200 items): selection skips what does not fit.
+  const got = itemsBefore(L, project, floor, NEWEST, o.onlyProvider,
+    (items) => items.length >= 200 || items.reduce((n, i) => n + i.text.length, 0) >= 2 * budget);
+  const first = firstMessage(L, project, floor, o.onlyProvider);
+  const picked = selectConversation(got.items, budget, o.current, first);
+  const inView = new Set(got.items.map((i) => i.seq));
   return { record: picked.length ? JSON.stringify(picked.map((i) => shown(i, o.current)), null, 1) : "",
-    shown: picked.length, omitted: items.length - picked.filter((i) => inView.has(i.seq)).length,
-    older: events.length >= WINDOW };
+    shown: picked.length, omitted: got.items.length - picked.filter((i) => inView.has(i.seq)).length,
+    older: !got.exhausted };
 }
 
 /** conversation_read: earlier items of this conversation (never before the user's last reset), for a
@@ -172,18 +209,21 @@ export function readConversation(L: Ledger, project: string, p: unknown, o: { cu
   const seq = int("seq", 1, NEWEST);
   if (seq !== undefined) {
     const offset = int("offset", 0, 1_000_000, 0)!;
-    const item = itemsOf(L.eventsOfKindIn(project, TURN_KINDS, floor, seq + 1, 2000), o.onlyProvider).find((i) => i.seq === seq);
+    // The item's whole turn, from its beginning (the newest turn start at or before it) to the item.
+    const start = L.eventsOfKindIn(project, ["turn.started"], floor, seq + 1, 1)[0];
+    const item = start && itemsOf(L.eventsOfKindIn(project, TURN_KINDS, start.seq - 1, seq + 1, 20_000, true), o.onlyProvider).find((i) => i.seq === seq);
     if (!item) throw new Error(`no item ${seq} in this conversation (or it is before the user's last reset)`);
     const end = offset + maxChars;
     return { note, item: shown(item, o.current, item.text.slice(offset, end)), nextOffset: end < item.text.length ? end : null };
   }
   const before = int("before", 1, NEWEST, NEWEST)!;
   const limit = int("limit", 1, 20, 10)!;
-  const events = L.eventsOfKindIn(project, TURN_KINDS, floor, before, 2000);
-  const items = itemsOf(events, o.onlyProvider);
-  const page = items.slice(-limit);
-  const more = items.length > page.length || (events.length >= 2000 && page.length > 0);
+  const got = itemsBefore(L, project, floor, before, o.onlyProvider, (items) => items.length > limit);
+  const page = got.items.slice(-limit);
+  // More may come: older items already read, or a scan that stopped before the reset (then go on
+  // from where it stopped, even if this page found nothing this Controller may see).
+  const nextBefore = got.items.length > page.length ? page[0].seq : !got.exhausted ? got.cursor : null;
   return { note,
     items: page.map((i) => ({ ...shown(i, o.current, i.text.slice(0, maxChars)), ...(i.text.length > maxChars ? { nextOffset: maxChars } : {}) })),
-    nextBefore: more ? page[0].seq : null };
+    nextBefore };
 }
