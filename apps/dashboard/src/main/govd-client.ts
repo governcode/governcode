@@ -100,9 +100,11 @@ export function checkConnect(streamId: unknown, tool: unknown): { streamId: stri
   return { streamId, params: parsed.data };
 }
 
-export function checkAsk(askId: unknown, project: unknown, prompt: unknown): { askId: string; params: { project: string | null; prompt: string } } {
+export function checkAsk(askId: unknown, project: unknown, prompt: unknown, continuationOf?: unknown): {
+  askId: string; params: { project: string | null; prompt: string; continuationOf?: string };
+} {
   if (typeof askId !== "string" || !ASK_ID.test(askId)) throw new GovdError("bad ask id");
-  const parsed = Params.ask.safeParse({ project, prompt });
+  const parsed = Params.ask.safeParse({ project, prompt, ...(continuationOf === undefined ? {} : { continuationOf }) });
   if (!parsed.success) throw new GovdError(issues(parsed.error));
   return { askId, params: parsed.data };
 }

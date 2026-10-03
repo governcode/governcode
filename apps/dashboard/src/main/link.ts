@@ -84,7 +84,7 @@ export class GovdLink {
   }
 
   /** One ask on its own connection; events stream to `onEvent` until the result arrives. */
-  async ask(params: { project: string | null; prompt: string }, onEvent: (e: AskEvent) => void): Promise<AskResult> {
+  async ask(params: { project: string | null; prompt: string; continuationOf?: string }, onEvent: (e: AskEvent) => void): Promise<AskResult> {
     const c = await connect(this.path);
     try {
       c.onEvent((e) => { if (e && typeof e === "object" && typeof (e as AskEvent).kind === "string") onEvent(e as AskEvent); });

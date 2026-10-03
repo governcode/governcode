@@ -1,7 +1,7 @@
 // Terminal: chat with the Controller of the selected project (or Home). Events stream in as
 // they happen; a Gate appears inline with the exact request and waits for an answer.
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { call, controllerLabel, type Gate, type Project } from "../api.ts";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { call, clock, controllerLabel, useWatch, type Gate, type Project, type RecoveryItem } from "../api.ts";
 import { GateCard, Pill, UndoCheckpoint, type GateState } from "../ui.tsx";
 
 export type Entry =
@@ -15,16 +15,34 @@ export type Entry =
   | { t: "proposal"; id: string; name: string; path: string; git: boolean; reason: string }
   | { t: "plan"; id: string; items: Array<{ who: string; what: string; scope?: string[] }>; note: string; handoff: string }
   | { t: "wake"; specs: string[] }   // a turn GovernCode started to report finished Specs
+  | { t: "continuation"; turn: string } // a turn GovernCode continued after its usage limit reset
   | { t: "done"; ok: boolean; summary: string }
   | { t: "error"; text: string };
 export type Thread = { entries: Entry[]; busy: boolean };
 
 export function Terminal(props: { project: Project | null; thread: Thread; openGates: Gate[]; gatesAt: number;
-  onSend: (prompt: string) => void; onGate: (id: string, a: "allow" | "deny") => void; onOpenProject?: (name: string) => void;
+  onSend: (prompt: string, continuationOf?: string) => void; onGate: (id: string, a: "allow" | "deny") => void; onOpenProject?: (name: string) => void;
   onNewConversation?: () => void }) {
   const [draft, setDraft] = useState("");
+  const [recovery, setRecovery] = useState<RecoveryItem | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const log = useRef<HTMLDivElement>(null);
   const open = new Set(props.openGates.map((g) => g.id));
+
+  const loadRecovery = useCallback(async () => {
+    if (!props.project) { setRecovery(null); return; }
+    try {
+      const r = await call<{ items: RecoveryItem[] }>("recovery.list", { project: props.project.name });
+      setRecovery(r.items.find((x) => x.kind === "turn") ?? null);
+      setRecoveryError(null);
+    } catch { setRecovery(null); }   // an older govd has no recovery: no bar
+  }, [props.project]);
+  useEffect(() => { void loadRecovery(); }, [loadRecovery]);
+  useWatch((w) => {
+    if (props.project && w.kind === "trace" && w.event.project === props.project.name
+        && (w.event.kind.startsWith("turn.") || w.event.kind.startsWith("recovery."))) void loadRecovery();
+  });
 
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [props.thread.entries.length]);
 
@@ -39,6 +57,13 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
   };
   const gateState = (e: Extract<Entry, { t: "gate" }>): GateState =>
     e.answered ?? (open.has(e.id) || props.gatesAt < e.arrived ? "waiting" : "settled");
+  const setAtReset = async (atReset: boolean) => {
+    if (!recovery) return;
+    setRecoveryBusy(true);
+    try { await call("recovery.set", { target: recovery.target, atReset }); await loadRecovery(); }
+    catch (e) { setRecoveryError(e instanceof Error ? e.message : String(e)); }
+    finally { setRecoveryBusy(false); }
+  };
 
   return (
     <section className="view terminal">
@@ -79,11 +104,26 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
             case "proposal": return <ProposalCard key={i} {...e} onOpen={props.onOpenProject} />;
             case "plan": return <PlanCard key={i} {...e} />;
             case "wake": return <div key={i} className="checkpoint-line dim">GovernCode told the Controller that {listed(e.specs)} finished:</div>;
+            case "continuation": return <div key={i} className="checkpoint-line dim">GovernCode continued {e.turn} after its usage limit reset:</div>;
             case "done": return <div key={i} className={`done ${e.ok ? "dim" : "error"}`}>{e.ok ? "— done" : `— failed: ${e.summary}`}</div>;
             case "error": return <div key={i} className="done error">— {e.text}</div>;
           }
         })}
       </div>
+      {recovery && (
+        <div className="recovery-bar row small">
+          <span><b>{recovery.provider}</b> hit its usage limit ({recovery.resetsAt ? `resets ${clock(recovery.resetsAt).replace(/:\d{2}$/, "")}` : "reset time unknown"}).</span>
+          <span className="spacer" />
+          {recovery.note && <span className="dim">{recovery.note}</span>}
+          <button className="btn" disabled={props.thread.busy} onClick={() => props.onSend("Continue where you left off.", recovery.target)}>Continue now</button>
+          <label className="check" title={recovery.resetsAt === null ? "The reset time is unknown" : undefined}>
+            <input type="checkbox" checked={recovery.atReset} disabled={recoveryBusy || recovery.resetsAt === null}
+              onChange={(e) => void setAtReset(e.target.checked)} />
+            <span>Continue at reset</span>
+          </label>
+        </div>
+      )}
+      {recoveryError && <div className="recovery-bar error small">{recoveryError}</div>}
       <div className="composer">
         <textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={onKey} rows={3}
           placeholder={props.thread.busy ? "The Controller is working…" : "Ask the Controller (Enter to send, Shift+Enter for a new line)"} />

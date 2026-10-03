@@ -24,6 +24,7 @@ export const Channel = {
  */
 export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "controller.set", "gate.list",
   "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "spec.cancel", "trace.list", "turn.list", "turn.undo", "limits.list", "proposal.answer", "settings.get", "settings.set",
+  "recovery.list", "recovery.set", "recovery.resume", "recovery.clear",
   "allows.list", "allows.revoke", "conversation.reset", "tools.list", "tools.disconnect", "connect.input", "connect.cancel",
   "notes.get", "notes.set", "context.state", "context.share", "crew.get", "crew.set", "plan.answer"] as const;
 export type Callable = (typeof CALLABLE)[number];
@@ -67,7 +68,7 @@ export type Outcome<T> = { ok: true; value: T } | { ok: false; error: string; co
 /** What the preload exposes on `window.governcode`. Nothing else crosses the bridge. */
 export type DashboardApi = {
   call<T = any>(method: Callable, params?: Record<string, unknown>): Promise<Outcome<T>>;
-  ask(askId: string, project: string | null, prompt: string): Promise<Outcome<AskResult>>;
+  ask(askId: string, project: string | null, prompt: string, continuationOf?: string): Promise<Outcome<AskResult>>;
   status(): Promise<Status>;
   retry(): Promise<Status>;
   onEvent(listener: (askId: string, event: AskEvent) => void): () => void;

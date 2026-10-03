@@ -13,13 +13,13 @@ type Effort = "low" | "medium" | "high" | "max" | null;
 type SettingsValue = { reserves: Reserves; runners: Record<string, { model: string; effort: Effort }>; specModels: "free" | "within" | "defaults";
   gates: { quietReads: boolean; level: "relaxed" | "balanced" | "strict" }; local: { maxRunning: number; maxMinutes: number };
   memory: { conversationChars: number }; specs: { maxPerProject: number; maxPerRunner: number };
-  personal: { claude: boolean | null; codex: boolean | null }; budgets: Record<string, Budget> };
+  personal: { claude: boolean | null; codex: boolean | null }; budgets: Record<string, Budget>; recovery: { autoResume: boolean } };
 type Budget = { unit: "tokens" | "turns"; windows: Partial<Record<BudgetWindow, number>> };
 type BudgetWindow = "5-hour" | "daily" | "weekly" | "monthly";
 const BUDGET_WINDOWS: BudgetWindow[] = ["5-hour", "daily", "weekly", "monthly"];
 const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" },
   local: { maxRunning: 1, maxMinutes: 10 }, memory: { conversationChars: 16_000 }, specs: { maxPerProject: 3, maxPerRunner: 2 },
-  personal: { claude: null, codex: null }, budgets: {} };
+  personal: { claude: null, codex: null }, budgets: {}, recovery: { autoResume: false } };
 const LEVELS: Array<[SettingsValue["gates"]["level"], string, string]> = [
   ["relaxed", "Relaxed", "Only risky steps ask: deleting, git commands that change the repository, installing packages, network tools, sudo, interpreters, and handing work to a paid Runner. Everything else runs and is recorded in the Trace."],
   ["balanced", "Balanced (default)", "Each new kind of command asks once; answer \u201cAllow for this project\u201d and that kind stops asking here. Risky steps always ask."],
@@ -182,6 +182,13 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
             </label>
           ))}
         </div>
+
+        <h2>Usage limits</h2>
+        <label className="policy-option">
+          <input type="checkbox" checked={draft.recovery.autoResume}
+            onChange={(e) => setDraft((d) => ({ ...d, recovery: { autoResume: e.target.checked } }))} />
+          <span><b>Resume at the reset time by default</b><span className="dim small"> · Resume now is always available. A resume measures usage again first. Unattended resumes run only while the Dashboard is open, and a reset time is never guessed.</span></span>
+        </label>
 
         <h2>Local models</h2>
         <p className="dim small">A local model has no usage to measure, so its Limit is your machine's. It runs no commands: it proposes whole files, GovernCode checks them against the Spec's scope, and you review them like any other Spec.</p>

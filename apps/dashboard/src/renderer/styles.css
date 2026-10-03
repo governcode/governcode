@@ -97,6 +97,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .done { padding-left: 94px; font-size: 12px; }
 .composer { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); align-items: flex-end; }
 .composer textarea { flex: 1; resize: vertical; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.recovery-bar { padding: 7px 16px; border-top: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
 
 .gate { border: 1px solid var(--line); border-left: 3px solid var(--warn); background: var(--panel); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
 .gate-allow { border-left-color: var(--ok); } .gate-deny { border-left-color: var(--danger); } .gate-settled { border-left-color: var(--dim); }

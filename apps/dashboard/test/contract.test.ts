@@ -35,6 +35,14 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.throws(() => checkCall("spec.accept", { id: "../x" }));
   assert.deepEqual(checkCall("spec.cancel", { id: "S-0001" }).params, { id: "S-0001" });
   assert.throws(() => checkCall("spec.cancel", { id: "T-1" }));
+  assert.deepEqual(checkCall("recovery.list", { project: "demo" }).params, { project: "demo" });
+  assert.deepEqual(checkCall("recovery.set", { target: "T-12", atReset: true }).params, { target: "T-12", atReset: true });
+  assert.deepEqual(checkCall("recovery.resume", { id: "S-0001" }).params, { id: "S-0001" });
+  assert.deepEqual(checkCall("recovery.clear", { target: "S-0001" }).params, { target: "S-0001" });
+  for (const bad of ["S-1", "T-", "../T-12"]) assert.throws(() => checkCall("recovery.set", { target: bad, atReset: true }));
+  assert.throws(() => checkCall("recovery.set", { target: "T-12", atReset: "yes" }));
+  assert.throws(() => checkCall("recovery.resume", { id: "T-12" }));
+  assert.throws(() => checkCall("recovery.clear", { target: "S-12" }));
   assert.deepEqual(checkCall("trace.list", undefined).params, { limit: 50 });
   assert.ok(!CALLABLE.includes("ask" as never), "ask streams on its own channel");
   // Projects and the Controller, checked against the protocol's schemas.
@@ -56,7 +64,7 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.deepEqual(checkCall("proposal.answer", { id: "P-2", answer: "create" }).params, { id: "P-2", answer: "create" });
   for (const bad of [{ id: "P-2", answer: "yes" }, { id: "G-2", answer: "create" }]) assert.throws(() => checkCall("proposal.answer", bad));
   // Settings: reserves are whole percents from 0 to 90, keyed by Runner and window.
-  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, memory: { conversationChars: 16_000 }, specs: { maxPerProject: 3, maxPerRunner: 2 }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null }, budgets: {} });
+  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, memory: { conversationChars: 16_000 }, specs: { maxPerProject: 3, maxPerRunner: 2 }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null }, budgets: {}, recovery: { autoResume: false } });
   assert.throws(() => checkCall("settings.set", { specModels: "anything" }));
   assert.throws(() => checkCall("settings.set", { runners: { codex: { model: "m", effort: "huge" } } }));
   for (const bad of [{ codex: { weekly: 91 } }, { codex: { weekly: 1.5 } }, { "../x": { weekly: 5 } }]) assert.throws(() => checkCall("settings.set", { reserves: bad }));
@@ -69,9 +77,11 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
 
 test("an ask needs a well-formed id and prompt; Home is a null project", () => {
   assert.deepEqual(checkAsk("a1", null, "hi"), { askId: "a1", params: { project: null, prompt: "hi" } });
+  assert.deepEqual(checkAsk("a2", "demo", "continue", "T-123"), { askId: "a2", params: { project: "demo", prompt: "continue", continuationOf: "T-123" } });
   assert.throws(() => checkAsk("a 1", null, "hi"), /bad ask id/);
   assert.throws(() => checkAsk("a1", "Bad Name", "hi"));
   assert.throws(() => checkAsk("a1", null, ""));
+  assert.throws(() => checkAsk("a1", "demo", "continue", "S-0001"));
 });
 
 test("a Connect needs a well-formed stream id and a tool GovernCode can connect", () => {
@@ -185,9 +195,9 @@ test("the built preload needs only electron and exposes exactly the Dashboard AP
   assert.deepEqual(Object.keys(exposed), ["governcode"]);
   assert.deepEqual(Object.keys(exposed.governcode).sort(), ["ask", "call", "connect", "onEvent", "onStatus", "onWatch", "openSignIn", "pickFolder", "retry", "status"]);
   await exposed.governcode.call("gate.list");
-  await exposed.governcode.ask("a1", null, "hi");
+  await exposed.governcode.ask("a1", null, "hi", "T-123");
   await exposed.governcode.pickFolder();
-  assert.deepEqual(JSON.parse(JSON.stringify(invoked)), [[Channel.call, "gate.list", {}], [Channel.ask, "a1", null, "hi"], [Channel.pickFolder]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked)), [[Channel.call, "gate.list", {}], [Channel.ask, "a1", null, "hi", "T-123"], [Channel.pickFolder]]);
 });
 
 test("against the real govd: a Controller turn's Checkpoint is listed, undone once, and refused after", async () => {

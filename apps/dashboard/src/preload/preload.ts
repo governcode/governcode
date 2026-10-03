@@ -6,7 +6,7 @@ import { Channel, type AskEvent, type DashboardApi, type Status, type WatchEvent
 
 const api: DashboardApi = {
   call: (method, params) => ipcRenderer.invoke(Channel.call, method, params ?? {}),
-  ask: (askId, project, prompt) => ipcRenderer.invoke(Channel.ask, askId, project, prompt),
+  ask: (askId, project, prompt, continuationOf) => ipcRenderer.invoke(Channel.ask, askId, project, prompt, continuationOf),
   status: () => ipcRenderer.invoke(Channel.status),
   retry: () => ipcRenderer.invoke(Channel.retry),
   onEvent: (listener) => {
