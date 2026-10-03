@@ -579,3 +579,42 @@ test("a reservation dropped before its Runner started owes nothing (abandon), un
   gate.release("S-B");                                // it ran: owed until the provider's report catches up
   assert.equal(gate.view("fakecloud").owedPercent, 20);
 });
+
+test("limits: a hold uses the latest reset of every blocking window, or none if one is unknown", () => {
+  const c = clock(), sooner = c.now() + H, later = c.now() + 2 * H;
+  const gate = new LimitGate({}, c.now);
+  gate.record(report(c, ["5-hour", 95, sooner], ["weekly", 95, later]));
+  const both = gate.check("fakecloud");
+  assert.ok(!both.ok);
+  assert.match(both.reason, /5-hour Limit/, "the first blocking reading still supplies the reason");
+  assert.equal(both.resetsAt, new Date(later).toISOString());
+  gate.record(report(c, ["5-hour", 95, sooner], ["weekly", 95, null]));
+  const unknown = gate.check("fakecloud");
+  assert.ok(!unknown.ok);
+  assert.equal(unknown.resetsAt, null);
+});
+
+test("limits: owed amounts survive restart, expire at the fallback, and a broken file is ignored", () => {
+  const dir = scratch("gc-owed-"), file = join(dir, "owed.json"), c = clock();
+  const before = new LimitGate({}, c.now, file);
+  before.record(report(c, ["weekly", 40, null]));
+  assert.ok(before.admit("S-1", "fakecloud", 20).ok);
+  before.release("S-1");
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+
+  const restarted = new LimitGate({}, c.now, file);
+  restarted.record(report(c, ["weekly", 40, null]));
+  assert.equal(restarted.view("fakecloud").owedPercent, 20);
+
+  c.advance(REPORT_FALLBACK_MS + 1);
+  const expired = new LimitGate({}, c.now, file);
+  expired.record(report(c, ["weekly", 40, null]));
+  assert.equal(expired.view("fakecloud").owedPercent, 0);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).debits, []);
+
+  const broken = join(dir, "broken.json");
+  writeFileSync(broken, "{not json");
+  const ignored = new LimitGate({}, c.now, broken);
+  ignored.record(report(c, ["weekly", 40, null]));
+  assert.equal(ignored.view("fakecloud").owedPercent, 0);
+});

@@ -63,7 +63,7 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
       clearTimeout(w.timer);
       const hasResult = "result" in m, hasError = "error" in m;
       if (hasError === hasResult) w.fail(new Error("the agent sent a malformed reply"));
-      else if (hasError) w.fail(new Error(String(m.error?.message ?? "agent error").slice(0, 300)));
+      else if (hasError) w.fail(Object.assign(new Error(String(m.error?.message ?? "agent error").slice(0, 300)), { code: m.error?.code }));
       else w.ok(m.result);
     } else if (m.id === undefined && typeof m.method === "string") onNote(m.method, m.params ?? {});
   };
@@ -229,7 +229,7 @@ export const CLIENT_INFO = { name: "governcode", title: "GovernCode", version: "
  * (the caller reports it, after its own cleanup).
  */
 export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; prompt: string; hooks: TurnHooks; signal?: AbortSignal;
-  gateTimeoutMs?: number; maxGates?: number; promptTimeoutMs?: number }): Promise<{ ok: boolean; summary: string; usage: unknown }> {
+  gateTimeoutMs?: number; maxGates?: number; promptTimeoutMs?: number }): Promise<{ ok: boolean; summary: string; usage: unknown; limit?: { resetsAt: string | null } }> {
   const { rpc } = o;
   const tokens = acpTokenTally();
   let asked = 0;
@@ -325,6 +325,8 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
   } catch (e) {
     if (stopped !== null) return stoppedResult();
     if (prompting) { rpc.notify("session/cancel", { sessionId }); rpc.close(); }   // no answer in time: the process is ended (the caller waits for it to be gone)
+    if (prompting && e instanceof Error && (e as Error & { code?: unknown }).code === -32003)
+      return { ok: false, summary: `${o.agent} hit its rate limit`, limit: { resetsAt: null }, usage: tokens.usage(false) };
     return { ok: false, summary: `${o.agent}: ${e instanceof Error ? e.message : e}`, usage: tokens.usage(false) };
   } finally {
     prompting = false;

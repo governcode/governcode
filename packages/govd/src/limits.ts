@@ -63,10 +63,26 @@ export class LimitGate {
   // provider's own windows owe this: govd's own count already includes every finished Spec.
   private debits: Debit[] = [];
   private now: () => number;
+  private file: string | null;
 
-  constructor(config: Partial<LimitsConfig> = {}, now: () => number = Date.now) {
+  constructor(config: Partial<LimitsConfig> = {}, now: () => number = Date.now, file: string | null = null) {
     this.config = { ...DEFAULTS, ...config };
     this.now = now;
+    this.file = file;
+    if (!file) return;
+    try {
+      const d = JSON.parse(readFileSync(file, "utf8"));
+      const obj = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
+      const finite = (x: unknown) => typeof x === "number" && Number.isFinite(x);
+      if (!obj(d) || d.version !== 1 || !Array.isArray(d.debits)) return;
+      const valid = (x: unknown): x is Debit => obj(x) && typeof x.provider === "string"
+        && finite(x.percent) && x.percent > 0 && finite(x.at) && obj(x.baselines)
+        && Object.values(x.baselines).every((b) => obj(b) && finite(b.used)
+          && (b.resetsAt === null || typeof b.resetsAt === "string") && (b.from === undefined || finite(b.from)));
+      if (!d.debits.every(valid)) return;
+      this.debits = d.debits.filter((x: Debit) => this.now() - x.at <= REPORT_FALLBACK_MS);
+      if (this.debits.length !== d.debits.length) this.saveDebits();
+    } catch { /* A missing or broken owed file starts empty. */ }
   }
 
   record(m: Measurement): void {
@@ -77,16 +93,21 @@ export class LimitGate {
     // A finished Spec's claim on a window ends once the report has caught up with it. Claims still
     // open there then count only the rise from here on: the rise so far may be the ended ones' use.
     const mine = this.debits.filter((d) => d.provider === m.provider);
+    let changed = false;
     for (const w of new Set(mine.flatMap((d) => Object.keys(d.baselines)))) {
       const ds = mine.filter((d) => w in d.baselines), open = ds.filter((d) => !this.settled(d, w, m));
       if (open.length === ds.length) continue;
       const now = m.readings.find((r) => !r.counted && r.window === w)?.usedPercent ?? 0;
       for (const d of ds) {
         const b = d.baselines[w];
-        if (open.includes(d)) b.from = Math.max(b.from ?? b.used, now); else delete d.baselines[w];
+        if (open.includes(d)) {
+          const from = Math.max(b.from ?? b.used, now);
+          if (from !== b.from) { b.from = from; changed = true; }
+        } else { delete d.baselines[w]; changed = true; }
       }
     }
     this.debits = this.debits.filter((d) => Object.keys(d.baselines).length);
+    if (changed) this.saveDebits();
   }
 
   /** Forget a provider's measurement (a failed reading): it is held until measured again. */
@@ -166,25 +187,34 @@ export class LimitGate {
     const reserved = this.reserved(provider);
     const running = [...this.inflight.values()].filter((f) => f.provider === provider).length;
     // Every reading of every source is checked, so the stricter one decides.
+    const blocked: Array<{ reason: string; resetsAt: string | null }> = [];
     for (const r of m.readings) {
       const c = r.counted, keep = this.reserve(provider, r.window, !!c);
       if (c?.unit === "turns") {
         // A Spec is exactly one turn: counted in turns, not in a requested percent.
         if (c.used + running + 1 > c.cap * (100 - keep) / 100 + 1e-9) {
-          return no(`inside its ${r.window} budget (${c.used} of ${c.cap} turns used${running ? `, ${running} running` : ""}${keep ? `, ${keep}% kept back` : ""}; ${COUNTED_LABEL})`, r.resetsAt);
+          blocked.push({ reason: `inside its ${r.window} budget (${c.used} of ${c.cap} turns used${running ? `, ${running} running` : ""}${keep ? `, ${keep}% kept back` : ""}; ${COUNTED_LABEL})`, resetsAt: r.resetsAt });
         }
       } else if (c) {
         // Running Specs only: finished ones are already in the count.
         if ((c.used / c.cap) * 100 + reserved + percent > 100 - keep) {
-          return no(`inside its ${r.window} budget (${c.used} of ${c.cap} tokens used${reserved ? `, ${reserved}% reserved by running Specs` : ""}${keep ? `, ${keep}% kept back` : ""}; ${COUNTED_LABEL})`, r.resetsAt);
+          blocked.push({ reason: `inside its ${r.window} budget (${c.used} of ${c.cap} tokens used${reserved ? `, ${reserved}% reserved by running Specs` : ""}${keep ? `, ${keep}% kept back` : ""}; ${COUNTED_LABEL})`, resetsAt: r.resetsAt });
         }
       } else {
         const owed = this.owed(provider, r.window), held = shownHeld(owed);
         if (r.usedPercent + reserved + owed + percent > 100 - keep) {
-          return no(`inside its ${keep}% ${r.window} Limit (${r.usedPercent}% used${reserved ? `, ${reserved}% reserved by running Specs` : ""}${held
-            ? `, ${held}% held for finished Specs until the usage report catches up` : ""})`, r.resetsAt);
+          blocked.push({ reason: `inside its ${keep}% ${r.window} Limit (${r.usedPercent}% used${reserved ? `, ${reserved}% reserved by running Specs` : ""}${held
+            ? `, ${held}% held for finished Specs until the usage report catches up` : ""})`, resetsAt: r.resetsAt });
         }
       }
+    }
+    if (blocked.length) {
+      // When it can run again: the latest reset among the blocking windows, or unknown if any is
+      // (or if they cannot be compared). Never guessed.
+      const times = blocked.map((b) => b.resetsAt === null ? NaN : Date.parse(b.resetsAt));
+      const resetsAt = blocked.length === 1 ? blocked[0].resetsAt
+        : times.every(Number.isFinite) ? blocked[times.indexOf(Math.max(...times))].resetsAt : null;
+      return no(blocked[0].reason, resetsAt);
     }
     return { verdict: { ok: true, provider }, percent,
       baselines: Object.fromEntries(m.readings.filter((r) => !r.counted).map((r) => [r.window, { used: r.usedPercent, resetsAt: r.resetsAt }])) };
@@ -264,7 +294,17 @@ export class LimitGate {
   release(spec: string): void {
     const f = this.inflight.get(spec);
     this.inflight.delete(spec);
-    if (f && f.percent > 0 && Object.keys(f.baselines).length) this.debits.push({ provider: f.provider, percent: f.percent, at: this.now(), baselines: f.baselines });
+    if (f && f.percent > 0 && Object.keys(f.baselines).length) {
+      this.debits.push({ provider: f.provider, percent: f.percent, at: this.now(), baselines: f.baselines });
+      this.saveDebits();
+    }
+  }
+
+  /** Owed amounts survive a restart in govd's own state (owner-only, replaced whole). A copy that
+   *  cannot be written stops nothing: the Limit still keeps them in memory. */
+  private saveDebits(): void {
+    if (!this.file) return;
+    try { writeWhole(this.file, { version: 1, debits: this.debits }); } catch { /* kept in memory */ }
   }
 }
 
@@ -398,28 +438,33 @@ export class CountedStore {
     return { m: { provider, measuredAt: this.now(), readings }, why: null };
   }
 
-  /** Written whole, synced, renamed into place, and the folder synced: it survives a power cut.
-   *  A file that could not be trusted is never overwritten. */
+  /** A file that could not be trusted is never overwritten. */
   private save(): void {
     if (!this.file) return;
     if (this.broken) throw new Error(`the count ${this.broken}`);
-    const tmp = `${this.file}.${process.pid}.tmp`, dir = dirname(this.file);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const fd = openSync(tmp, "w", 0o600);
-    try {
-      // writeSync may write less than asked: loop until every byte is down, or fail (no rename).
-      const buf = Buffer.from(JSON.stringify({ version: 1, tallies: { ...this.tallies, ...this.bad }, open: this.open }));
-      for (let off = 0; off < buf.length;) {
-        const n = fs.writeSync(fd, buf, off, buf.length - off);
-        if (!(n > 0)) throw new Error("the count could not be written in full");
-        off += n;
-      }
-      fsyncSync(fd);
-    } finally { closeSync(fd); }
-    renameSync(tmp, this.file);
-    const dfd = openSync(dir, "r");
-    try { fsyncSync(dfd); } finally { closeSync(dfd); }
+    writeWhole(this.file, { version: 1, tallies: { ...this.tallies, ...this.bad }, open: this.open });
   }
+}
+
+/** Written whole (owner-only), synced, renamed into place, and the folder synced: it survives a
+ *  power cut. Throws if it could not be written. */
+function writeWhole(file: string, data: unknown): void {
+  const tmp = `${file}.${process.pid}.tmp`, dir = dirname(file);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const fd = openSync(tmp, "w", 0o600);
+  try {
+    // writeSync may write less than asked: loop until every byte is down, or fail (no rename).
+    const buf = Buffer.from(JSON.stringify(data));
+    for (let off = 0; off < buf.length;) {
+      const n = fs.writeSync(fd, buf, off, buf.length - off);
+      if (!(n > 0)) throw new Error(`${file} could not be written in full`);
+      off += n;
+    }
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  renameSync(tmp, file);
+  const dfd = openSync(dir, "r");
+  try { fsyncSync(dfd); } finally { closeSync(dfd); }
 }
 
 /**

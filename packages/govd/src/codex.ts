@@ -121,7 +121,23 @@ async function session(o: { supervisor: string; policyDir: string; stateDir: str
   return { rpc, cleanup };
 }
 
-/** Codex's usage windows, for the Limit gate. Null when they cannot be read (= held). */
+/** Codex's usage windows, in the same shape for reads and update notifications. */
+function codexRateLimitReadings(snap: any): Measurement["readings"] {
+  const win = (w: any, name: string): Measurement["readings"] => {
+    if (!w || typeof w.usedPercent !== "number") return [];
+    const ms = typeof w.resetsAt === "number" ? w.resetsAt * 1000 : NaN;
+    return [{ window: w.windowDurationMins ? (w.windowDurationMins >= 10_000 ? "weekly" : `${Math.round(w.windowDurationMins / 60)}-hour`) : name,
+      usedPercent: w.usedPercent, resetsAt: Number.isFinite(ms) && ms > 0 && ms < 8.64e15 ? new Date(ms).toISOString() : null }];
+  };
+  return [...win(snap?.primary, "primary"), ...win(snap?.secondary, "secondary")];
+}
+
+function codexLimitReset(snap: any): string | null {
+  const exhausted = codexRateLimitReadings(snap).filter((r) => r.usedPercent >= 100);
+  if (!exhausted.length || exhausted.some((r) => r.resetsAt === null)) return null;
+  return exhausted.reduce((latest, r) => r.resetsAt! > latest ? r.resetsAt! : latest, exhausted[0].resetsAt!);
+}
+
 /** Codex's usage windows, asked of OpenAI with GovernCode's Codex login (an authenticated request:
  *  Connect uses it to check that the login really works). Null when they cannot be read. */
 export async function readCodexUsage(o: { supervisor: string; policyDir: string; stateDir: string; scratch: string }): Promise<Measurement | null> {
@@ -132,11 +148,7 @@ export async function readCodexUsage(o: { supervisor: string; policyDir: string;
         const sent = Date.now();   // the reading's time is when it was asked for, not when it came back
         const r = await Promise.race([s.rpc.request("account/rateLimits/read", {}),
           new Promise((_, fail) => setTimeout(() => fail(new Error("timeout")), 20_000))]) as any;
-        const snap = r?.rateLimits ?? {};
-        const win = (w: any, name: string) => w && typeof w.usedPercent === "number"
-          ? [{ window: w.windowDurationMins ? (w.windowDurationMins >= 10_000 ? "weekly" : `${Math.round(w.windowDurationMins / 60)}-hour`) : name,
-               usedPercent: w.usedPercent, resetsAt: w.resetsAt ? new Date(w.resetsAt * 1000).toISOString() : null }] : [];
-        const readings = [...win(snap.primary, "primary"), ...win(snap.secondary, "secondary")];
+        const readings = codexRateLimitReadings(r?.rateLimits);
         return readings.length ? { provider: "codex", measuredAt: sent, readings } : null;
       } catch {
         return null;
@@ -222,13 +234,19 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   const { rpc, cleanup } = s;
   let text = "";
   let finished = false;
+  let limited = false;
+  let rateLimits: any;
   const items = new Map<string, any>();   // itemId -> the item Codex announced (holds a file change's diffs)
   const tokens = codexTokenTally();
+  const limitCode = (info: unknown) => {
+    const code = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : null;
+    return code === "usageLimitExceeded" || code === "rateLimitExceeded";
+  };
   // Every ending reports the tokens seen so far: a failed or stopped run still counts them, as a
   // floor only (it may have used more after its last update).
   // Reported only once the sandbox has gone (govern-sup exits after every process of the run): a
   // snapshot taken earlier could miss a last write. A SIGKILL after 40 s is the last resort.
-  const finish = (r: { ok: boolean; summary: string }) => {
+  const finish = (r: { ok: boolean; summary: string; limit?: { resetsAt: string | null } }) => {
     if (finished) return; finished = true; cleanup();
     const last = setTimeout(() => rpc.kill(), 40_000);
     last.unref?.();
@@ -282,6 +300,8 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
       if (m.method === "item/completed") inflight.delete(String(p.item.id));
     }
     if (m.method === "thread/tokenUsage/updated") tokens.add(p);
+    if (m.method === "account/rateLimits/updated") rateLimits = p.rateLimits;
+    if (m.method === "error" && p.willRetry === false && limitCode(p.error?.codexErrorInfo)) limited = true;
     if (m.method === "item/agentMessage/delta" && typeof p.delta === "string") text += p.delta;
     if (m.method === "item/completed" && p.item?.type === "agentMessage" && typeof p.item.text === "string") {
       o.hooks.text(p.item.text); text = "";
@@ -292,7 +312,10 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     }
     if (m.method === "turn/completed") {
       const status = p.turn?.status;
-      finish({ ok: status === "completed", summary: status === "completed" ? "done" : `turn ${status ?? "ended"}: ${JSON.stringify(p.turn?.error ?? "").slice(0, 300)}` });
+      if (limitCode(p.turn?.error?.codexErrorInfo)) limited = true;
+      finish({ ok: status === "completed" && !limited,
+        summary: limited ? "Codex hit its usage limit" : status === "completed" ? "done" : `turn ${status ?? "ended"}: ${JSON.stringify(p.turn?.error ?? "").slice(0, 300)}`,
+        ...(limited ? { limit: { resetsAt: codexLimitReset(rateLimits) } } : {}) });
     }
   });
   void rpc.exited.then((err) => finish({ ok: false, summary: `codex exited: ${err.trim().split("\n").slice(-2).join(" | ")}` }));

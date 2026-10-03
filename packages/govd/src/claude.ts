@@ -55,8 +55,9 @@ export type TurnHooks = {
   text(chunk: string): void;
   tool(name: string, input: Record<string, unknown>): void;
   gate(req: GateRequest): Promise<"allow" | "deny">;
+  notice?(text: string): void;
   // started false: no process of the tool got going (it could not start), so nothing was used.
-  done(result: { ok: boolean; summary: string; usage?: unknown; started?: false }): void;
+  done(result: { ok: boolean; summary: string; usage?: unknown; started?: false; limit?: { resetsAt: string | null } }): void;
 };
 
 /** The exact bytes a Gate shows and a phone will later sign: sorted keys, ASCII-escaped. */
@@ -202,6 +203,8 @@ export function runTurn(opts: {
   supervisor: string; policyDir: string; worktree: string; readOnly?: boolean; controller: ControllerChoice; prompt: string; hooks: TurnHooks;
   mcp?: McpServer; personal?: boolean; noSubagents?: boolean; stateDir: string;
 }): { cancel(): void } {
+  const configuredStall = Number(process.env.GOVERNCODE_LIMIT_STALL_MS);
+  const limitStallMs = Number.isFinite(configuredStall) && configuredStall >= 0 ? configuredStall : 60_000;
   mkdirSync(opts.policyDir, { recursive: true, mode: 0o700 });
   const sessionTmp = mkdtempSync(join(tmpdir(), "governcode-turn-"));
   const rh = claudeRunHome(opts.stateDir, opts.personal === true);
@@ -249,14 +252,42 @@ export function runTurn(opts: {
   send({ type: "user", message: { role: "user", content: [{ type: "text", text: opts.prompt }] } });
 
   let finished = false;
-  const finish = (r: { ok: boolean; summary: string; usage?: unknown }) => {
+  // Usage limits (#226): each window Claude Code reports rejected, with its reset time (null when it
+  // gives none). The reset is the latest of them, or unknown if any is: never guessed (T3's rule).
+  let limitStall: NodeJS.Timeout | undefined;
+  const blockedWindows = new Map<string, number | null>();
+  const noticedLimits = new Set<string>();
+  const resetsAt = (): string | null => {
+    const times = [...blockedWindows.values()];
+    if (times.length === 0 || times.some((v) => v === null)) return null;
+    return new Date(Math.max(...times.map((v) => v!))).toISOString();
+  };
+  const finish = (r: { ok: boolean; summary: string; usage?: unknown; limit?: { resetsAt: string | null } }) => {
     if (finished) return;
     finished = true;
+    if (limitStall) clearTimeout(limitStall);
     child.stdin.end();
     try { process.kill(-child.pid!, "SIGTERM"); } catch { /* already gone */ }
     rmSync(policyFile, { force: true });
     rmSync(sessionTmp, { recursive: true, force: true });
     opts.hooks.done(r);
+  };
+  // A rejected window can pause Claude Code without ending its turn: with no result and no output
+  // for a while (GOVERNCODE_LIMIT_STALL_MS, 60 s), the turn ends as limited.
+  const armLimitStall = () => {
+    if (limitStall) clearTimeout(limitStall);
+    limitStall = undefined;
+    if (blockedWindows.size === 0 || finished) return;
+    limitStall = setTimeout(() => finish({ ok: false, summary: "Claude Code hit its usage limit",
+      limit: { resetsAt: resetsAt() } }), limitStallMs);
+  };
+  const resetTime = (seconds: unknown): number | null => {
+    const ms = Number(seconds) * 1000;
+    return Number.isFinite(ms) && ms > 0 && ms < 8.64e15 ? ms : null;
+  };
+  const clockTime = (ms: number) => {
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
 
   const pendingIds = new Set<string>();
@@ -264,6 +295,7 @@ export function runTurn(opts: {
     let e: Record<string, any>;
     try { e = JSON.parse(line); } catch { return; }
     if (e.type === "assistant") {
+      armLimitStall();
       for (const c of e.message?.content ?? []) {
         if (c.type === "text") opts.hooks.text(c.text);
         if (c.type === "tool_use") opts.hooks.tool(c.name, c.input ?? {});
@@ -282,8 +314,39 @@ export function runTurn(opts: {
       send({ type: "control_response", response: { subtype: "success", request_id: e.request_id,
         response: answer === "allow" ? { behavior: "allow", updatedInput: input }
                                      : { behavior: "deny", message: "Denied at the Gate." } } });
+    } else if (e.type === "rate_limit_event") {
+      const info = e.rate_limit_info ?? {};
+      const window = String(info.rateLimitType ?? "unknown");
+      const overageAllowed = info.overageStatus === "allowed" || info.overageStatus === "allowed_warning" ||
+        info.isUsingOverage === true || info.overageInUse === true;
+      if (info.status === "rejected" && !overageAllowed) {
+        const reset = resetTime(info.resetsAt);
+        blockedWindows.set(window, reset);
+        const noticeKey = `${window}:${reset ?? "none"}`;
+        if (!noticedLimits.has(noticeKey)) {
+          noticedLimits.add(noticeKey);
+          opts.hooks.notice?.(`Claude Code hit its usage limit (${reset === null ? "no reset time given" : `resets ${clockTime(reset)}`})`);
+        }
+        armLimitStall();
+      } else if (info.status === "allowed" || info.status === "allowed_warning" || overageAllowed) {
+        blockedWindows.delete(window);
+        armLimitStall();
+      }
     } else if (e.type === "result") {
-      finish({ ok: !e.is_error, summary: String(e.result ?? e.subtype ?? ""), usage: e.usage });
+      // Limited: a blocking limit or a 429, a window still rejected, or older versions' text form.
+      const textEpoch = /usage limit reached\|(\d{9,})/i.exec(String(e.result ?? ""));
+      const remembered = blockedWindows.size > 0 &&
+        (e.subtype !== "success" || e.api_error_status == null || e.api_error_status === 429) &&
+        (e.terminal_reason == null || e.terminal_reason === "api_error" || e.terminal_reason === "blocking_limit");
+      const limited = textEpoch !== null || remembered || e.terminal_reason === "blocking_limit" ||
+        (e.subtype === "success" && e.api_error_status === 429);
+      if (limited) {
+        const reset = textEpoch ? resetTime(textEpoch[1]) : null;
+        finish({ ok: false, summary: "Claude Code hit its usage limit", usage: e.usage,
+          limit: { resetsAt: textEpoch ? (reset === null ? null : new Date(reset).toISOString()) : resetsAt() } });
+      } else {
+        finish({ ok: !e.is_error, summary: String(e.result ?? e.subtype ?? ""), usage: e.usage });
+      }
     }
   });
   child.on("exit", (code) => finish({ ok: false, summary: code === 0 ? "ended without a result" :

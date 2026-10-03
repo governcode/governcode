@@ -479,6 +479,32 @@ test("acp: an agent that dies mid-turn ends it with its last words; requests Gov
   assert.equal(r.usage, null);
 });
 
+test("acp: a Grok rate-limit error is identified and another prompt error is not", async () => {
+  const run = (code: number) => {
+    let notify: (method: string, params: any) => void = () => {};
+    const rpc = {
+      async request(method: string) {
+        if (method === "initialize") return { protocolVersion: 1 };
+        if (method === "session/new") return { sessionId: "s-1" };
+        notify("_x.ai/session_notification", { sessionId: "s-1", update: { sessionUpdate: "turn_completed", prompt_id: "p-1",
+          usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } } });
+        throw Object.assign(new Error("prompt failed"), { code });
+      },
+      notify() {}, onRequest() {}, onNotify(f: typeof notify) { notify = f; }, close() {},
+      exited: Promise.resolve(""), closed: Promise.resolve(0),
+    };
+    return runAcpTurn({ rpc, agent: "grok", cwd: root, prompt: "go", hooks: { text() {}, tool() {}, gate: async () => "deny", done() {} } });
+  };
+  const r = await run(-32003);
+  assert.deepEqual(r, { ok: false, summary: "grok hit its rate limit", limit: { resetsAt: null },
+    usage: { totalTokens: 120, inputTokens: 100, outputTokens: 20, complete: false } });
+
+  const r2 = await run(-32001);
+  assert.equal(r2.ok, false);
+  assert.match(r2.summary, /grok: prompt failed/);
+  assert.equal("limit" in r2, false);
+});
+
 test("acp: requests GovernCode does not offer get an error, another session's words, tokens and requests are not this run's, and a request after the turn is rejected", async () => {
   const d = direct("probe", [], async () => "allow");
   const r = await runAcpTurn({ rpc: d.rpc, agent: "grok", cwd: d.work, prompt: "go", hooks: d.hooks });

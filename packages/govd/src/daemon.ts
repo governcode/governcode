@@ -56,7 +56,7 @@ export class Daemon {
     answer: (r: { answer: string; approved: PlanItem[] }) => void }>();
   private planSeq = 0;
   private turnPlans = new Map<string, { approved: Array<PlanItem & { used?: boolean }>; justYou: boolean }>();
-  private limits = new LimitGate();
+  private limits!: LimitGate;
   private allows!: Allows;               // standing allows (#192): they skip questions, never the sandbox
   // Controller turns running per project: accept and undo wait for them, so a running tool
   // cannot swap a folder for a symlink while govd writes into the project.
@@ -94,6 +94,7 @@ export class Daemon {
     this.opts = opts;
     this.ledger = new Ledger(opts.ledgerPath);
     const stateDir = resolve(opts.ledgerPath, "..");
+    this.limits = new LimitGate({}, Date.now, join(stateDir, "owed.json"));
     this.counted = new CountedStore(join(stateDir, "counted.json"));
     // A cloud Runner's own usage report, with the user's counted budget on top when one is set.
     const budgeted = (provider: string, native?: UsageSource) => withBudget(provider, native, this.counted, () => this.settings().budgets[provider]);
