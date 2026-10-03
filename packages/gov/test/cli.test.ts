@@ -145,6 +145,28 @@ test("gov new says where the project is; gov specs shows the default model and l
   assert.equal(new Set(specs.map((l) => l.search(/(needs-review|accepted|failed) /))).size, 1, "the status column lines up");
 });
 
+test("gov limited, resume and auto-resume use the recovery methods", async () => {
+  const settings = { personal: { claude: false, codex: false }, recovery: { autoResume: false } };
+  const g = await fakeGovd((m, p) => m === "recovery.list" ? { items: [{ target: "S-0001", project: "p", kind: "held",
+    provider: "codex", resetsAt: null, since: "2026-10-03T00:00:00.000Z", why: "held", atReset: false, due: false }] }
+    : m === "recovery.resume" ? { id: p.id, status: "running" }
+    : m === "settings.get" ? { settings }
+    : m === "project.list" ? { projects: [], home: { controller: { provider: "claude-code" } } } : undefined);
+  const limited = await run(g.dir, ["limited"]).done;
+  assert.equal(limited.code, 0, limited.stderr);
+  assert.match(limited.stdout, /S-0001 +held Spec +codex +reset time unknown · at reset: off/);
+  assert.match((await run(g.dir, ["resume", "S-0001"]).done).stdout, /S-0001: running/);
+  assert.match((await run(g.dir, ["resume", "S-0001", "--at-reset"]).done).stdout, /S-0001: at reset on/);
+  assert.match((await run(g.dir, ["resume", "S-0001", "--off"]).done).stdout, /S-0001: at reset off/);
+  assert.match((await run(g.dir, ["resume", "S-0001", "--clear"]).done).stdout, /S-0001: cleared/);
+  assert.match((await run(g.dir, ["auto-resume", "on"]).done).stdout, /auto-resume: on/);
+  assert.ok(g.calls.some((c) => c.method === "recovery.resume" && c.params.id === "S-0001"));
+  assert.ok(g.calls.some((c) => c.method === "recovery.set" && c.params.atReset === true));
+  assert.ok(g.calls.some((c) => c.method === "recovery.set" && c.params.atReset === false));
+  assert.ok(g.calls.some((c) => c.method === "recovery.clear" && c.params.target === "S-0001"));
+  assert.ok(g.calls.some((c) => c.method === "settings.set" && c.params.recovery.autoResume === true));
+});
+
 test("gov connect grok: GovernCode's instruction once, then the link and the code", async () => {
   const g = await fakeGovd((m, _p, notify) => {
     if (m !== "connect.start") return undefined;

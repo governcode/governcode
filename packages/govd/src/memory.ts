@@ -90,8 +90,8 @@ function itemsOf(events: TraceEvent[], onlyProvider?: string): ConversationItem[
       const provider = typeof c.provider === "string" ? c.provider : null;
       turn = null;
       if (onlyProvider && provider !== onlyProvider) continue;
-      // A wake turn's message is GovernCode's (Specs finished), not the user's.
-      out.push({ seq: e.seq, from: e.data.origin === "wake" ? "govd" : "user", provider: null, model: null, endedEarly: false, text: String(e.data.prompt ?? "") });
+      // An unattended turn's message is GovernCode's, not the user's.
+      out.push({ seq: e.seq, from: e.data.origin === "wake" || e.data.origin === "continuation" ? "govd" : "user", provider: null, model: null, endedEarly: false, text: String(e.data.prompt ?? "") });
       turn = { provider, model: typeof c.model === "string" ? c.model : null, texts: [] };
     } else if (!turn) continue;
     else if (e.kind === "turn.text") turn.texts.push(String(e.data.text ?? ""));
@@ -167,7 +167,7 @@ function itemsBefore(L: Ledger, project: string | null, floor: number, before: n
 function firstMessage(L: Ledger, project: string | null, floor: number, onlyProvider?: string): ConversationItem | undefined {
   for (let lo = floor, scanned = 0; scanned < MAX_SCAN;) {
     const starts = L.eventsOfKindIn(project, ["turn.started"], lo, NEWEST, 500, true);
-    const hit = starts.find((e) => e.data.origin !== "wake" && (!onlyProvider || (e.data.controller as { provider?: unknown } | undefined)?.provider === onlyProvider));
+    const hit = starts.find((e) => !["wake", "continuation"].includes(String(e.data.origin ?? "")) && (!onlyProvider || (e.data.controller as { provider?: unknown } | undefined)?.provider === onlyProvider));
     if (hit) return itemsOf([hit], onlyProvider)[0];
     if (starts.length < 500) return undefined;
     lo = starts.at(-1)!.seq; scanned += starts.length;

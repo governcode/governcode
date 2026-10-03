@@ -15,6 +15,7 @@ const specOf = (body: string): Spec => { const s = JSON.parse(body); return s.st
 export class Ledger {
   private db: DatabaseSync;
   private listeners = new Set<(e: TraceEvent) => void>();
+  private closed = false;
 
   constructor(path: string) {
     if (path !== ":memory:") {
@@ -38,6 +39,8 @@ export class Ledger {
 
   append(project: string | null, kind: TraceEvent["kind"], actor: string, data: Record<string, unknown> = {}): TraceEvent {
     const ts = new Date().toISOString();
+    // govd has stopped: a tool still winding down records nothing more (a restart closes what it left open).
+    if (this.closed) return { seq: 0, ts, project, kind, actor, data };
     const row = this.db
       .prepare("INSERT INTO events (ts, project, kind, actor, data) VALUES (?, ?, ?, ?, ?) RETURNING seq")
       .get(ts, project, kind, actor, JSON.stringify(data)) as { seq: number };
@@ -156,7 +159,7 @@ export class Ledger {
     });
   }
 
-  updateSpec(id: string, change: Partial<Pick<Spec, "status" | "checkpoints" | "files" | "note" | "turn" | "delivery" | "summaries">>, actor: string): Spec {
+  updateSpec(id: string, change: Partial<Pick<Spec, "status" | "checkpoints" | "files" | "note" | "turn" | "delivery" | "summaries" | "limited" | "model" | "effort" | "budgetPercent">>, actor: string): Spec {
     const kinds: Partial<Record<SpecStatus, TraceEvent["kind"]>> = { held: "spec.held", running: "spec.started",
       "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", discarded: "spec.discarded", cancelled: "spec.cancelled" };
     // (Who asked for a cancel, and why, is recorded when they ask: spec.cancel.)
@@ -183,6 +186,8 @@ export class Ledger {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 }

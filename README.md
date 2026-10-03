@@ -200,6 +200,14 @@ Controller hears of it as the Crew card says (below). If govd stops while Specs 
 marked failed when it starts again, with their copy kept for review (`gov diff`), and your next
 message tells the Controller; nothing starts by itself after a restart.
 
+**Usage limits.** When a Limit holds a Spec, or a Runner or Controller runs out of usage,
+GovernCode records it with the reset time the provider gave. `gov limited` (or the Dashboard)
+shows each one; `gov resume ID` resumes now, `gov resume ID --at-reset` opts it in at reset, and
+`--clear` clears its recovery record. Resume at reset is off by default (`gov auto-resume on`
+makes it the default), and unattended resumes run only while the Dashboard is open. A resume
+measures usage and checks the Limit again; a held Spec gets a fresh copy of the project.
+GovernCode never guesses a reset time: Grok gives none, so resume it yourself.
+
 An honest limit that applies to every Runner: a Runner can read its own login (the sign-in it
 works with, in its run's home) inside the sandbox, and reading is a quiet step, so no Gate asks
 first. Like any text, a Runner could repeat it in its words or write it into its changes, where

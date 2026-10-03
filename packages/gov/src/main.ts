@@ -19,12 +19,12 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|cancel S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
   "turns", "undo", "settings", "budget", "local", "memory", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
-  "limits", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "ask", "demo"]);
+  "limits", "limited", "resume", "auto-resume", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "ask", "demo"]);
 
 /** A Runner name, checked before anything is saved (govd checks too): a typo would be saved and never used. */
 function runner(name: string): string {
@@ -131,6 +131,13 @@ const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (An
 const CONTROLLER_DEFAULTS: Record<string, { model: string; effort: string }> = { "claude-code": { model: "opus", effort: "high" }, codex: { model: "gpt-5.5", effort: "medium" } };
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
+const resetWhen = (iso: string) => {
+  const at = new Date(iso), minutes = Math.ceil((at.getTime() - Date.now()) / 60_000);
+  const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  if (minutes <= 0) return `resets ${clock} (passed)`;
+  const hours = Math.floor(minutes / 60), rest = minutes % 60;
+  return `resets ${clock} (in ${[hours ? `${hours} h` : "", rest ? `${rest} min` : ""].filter(Boolean).join(" ")})`;
+};
 // A tool's own "open this URL" line before its link (Grok's, Codex's): gov says it once, with the
 // link. Only a whole line of these fixed words is left out, so no code, link or error is hidden.
 const PREAMBLE = /^(to sign in, |if your browser did not open, )?(open|navigate to) this url( in your browser)?( to authenticate)?:$/i;
@@ -153,7 +160,7 @@ async function askPersonal(api: Awaited<ReturnType<typeof open>>, provider: "cla
 
 /** One Controller turn in the terminal: text streams, Gates ask (with standing-allow choices). */
 export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: string | null, prompt: string,
-    tty: ReturnType<typeof answers>): Promise<{ ok: boolean; summary: string }> {
+    tty: ReturnType<typeof answers>, extra: { continuationOf?: string } = {}): Promise<{ ok: boolean; summary: string }> {
   // The tool this turn runs (the project's Controller, or Home's) is asked about only once it is
   // connected; otherwise govd refuses the turn and says how to connect, and nothing is asked first.
   const { projects, home } = await api.call("project.list", {});
@@ -243,7 +250,7 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
   // (wake false: gov shows no wake turns, so it is not someone there to see one.)
   await api.call("watch", { wake: false }).catch(() => {});
   let r;
-  try { r = await api.call("ask", { project, prompt }); }
+  try { r = await api.call("ask", { project, prompt, ...extra }); }
   finally { for (const [id, w] of open) if (!id.startsWith("P-")) { open.delete(id); w?.abort(); } }   // the turn's Gates and plans end with it
   // Specs this turn handed off may still be running: they go on after gov exits.
   if (handed.size && project) {
@@ -491,6 +498,15 @@ async function main(argv: string[]): Promise<number> {
         console.log(`local models: at most ${settings.local.maxRunning} at once, ${settings.local.maxMinutes} min each`);
         console.log(`recent conversation: up to ${settings.memory.conversationChars} characters per turn`);
         if (settings.specs) console.log(`Specs at once: up to ${settings.specs.maxPerProject} per project, ${settings.specs.maxPerRunner} per Runner`);
+        console.log(`auto-resume: ${settings.recovery.autoResume ? "on" : "off"}`);
+        return 0;
+      }
+      case "auto-resume": {
+        const state = rest[0];
+        if (rest.length !== 1 || (state !== "on" && state !== "off")) throw new Error("usage: gov auto-resume on|off");
+        const { settings } = await api.call("settings.get", {});
+        await api.call("settings.set", { ...settings, recovery: { autoResume: state === "on" } });
+        console.log(`auto-resume: ${state}`);
         return 0;
       }
       case "memory": {
@@ -678,6 +694,45 @@ async function main(argv: string[]): Promise<number> {
           console.log(`${x.provider.padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${rule}${held ? ` · ${held}` : ""}${x.counted ? ` · ${x.counted}` : ""}${x.unmetered ? " · unmetered (your opt-in)" : ""}${x.verdict.ok ? "" : `  ${dim(x.verdict.reason)}`}`);
         }
         return 0;
+      }
+      case "limited": {
+        const { items } = await api.call("recovery.list", {});
+        if (!items.length) console.log(dim("no limited Specs or turns"));
+        const kind: Record<string, string> = { held: "held Spec", spec: "limited Spec", turn: "turn" };
+        for (const x of items) {
+          const reset = x.resetsAt === null ? "reset time unknown" : resetWhen(x.resetsAt);
+          console.log(`${x.target}  ${(kind[x.kind] ?? x.kind).padEnd(12)} ${x.provider.padEnd(8)} ${reset} · at reset: ${x.atReset ? "on" : "off"}${x.note ? ` · ${x.note}` : ""}`);
+        }
+        return 0;
+      }
+      case "resume": {
+        const [id, flag] = rest;
+        const usage = "usage: gov resume ID [--at-reset|--off|--clear]";
+        if (!/^(S-\d{4,}|T-\d+)$/.test(id ?? "") || rest.length > 2 || (flag !== undefined && !["--at-reset", "--off", "--clear"].includes(flag))) throw new Error(usage);
+        if (flag === "--clear") {
+          await api.call("recovery.clear", { target: id });
+          console.log(`${id}: cleared`);
+          return 0;
+        }
+        if (flag) {
+          const atReset = flag === "--at-reset";
+          await api.call("recovery.set", { target: id, atReset });
+          console.log(`${id}: at reset ${atReset ? "on" : "off"}`);
+          return 0;
+        }
+        if (id.startsWith("S-")) {
+          const r = await api.call("recovery.resume", { id });
+          const note = r.note ?? r.reason;
+          console.log(`${r.id}: ${r.status}${note ? ` · ${note}` : ""}`);
+          return 0;
+        }
+        const listed = await api.call("recovery.list", {});
+        const project = listed.items?.find((x: any) => x.target === id)?.project ?? await currentProject(api);
+        const tty = answers();
+        const r = await runAsk(api, project, "Continue where you left off.", tty, { continuationOf: id });
+        tty.close();
+        console.log(dim(r.ok ? "— done" : `— failed: ${r.summary}`));
+        return r.ok ? 0 : 1;
       }
       case "specs": {
         const project = await currentProject(api);

@@ -357,3 +357,18 @@ test("conversation: a wake turn's message is GovernCode's, never the user's, and
   const small = JSON.parse(conversationRecord(L, "p", { current: "claude-code", budget: 200 }).record);
   assert.ok(small.every((i: { from: string }) => i.from !== "GovernCode (not the user)"), JSON.stringify(small));
 });
+
+test("conversation: an automatic continuation is GovernCode's and never the first message", () => {
+  const L = new Ledger(":memory:");
+  turn(L, "do the work", "stopped early");
+  L.append("p", "turn.started", "govd", { prompt: "Continue the user's last request.", controller: {
+    provider: "claude-code", model: "sonnet" }, origin: "continuation", continuationOf: "T-1" });
+  L.append("p", "turn.text", "controller · claude-code", { text: "continued it" });
+  L.append("p", "turn.completed", "controller · claude-code", { summary: "continued it" });
+  const rec = JSON.parse(conversationRecord(L, "p", { current: "claude-code" }).record);
+  assert.deepEqual(rec.map((i: { from: string }) => i.from), ["user", "you (claude-code · sonnet)",
+    "GovernCode (not the user)", "you (claude-code · sonnet)"]);
+  const small = JSON.parse(conversationRecord(L, "p", { current: "claude-code", budget: 200 }).record);
+  assert.ok(small.every((i: { from: string }) => i.from !== "GovernCode (not the user)"), JSON.stringify(small));
+  L.close();
+});
