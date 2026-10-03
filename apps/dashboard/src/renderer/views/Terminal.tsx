@@ -21,6 +21,7 @@ export type Entry =
 export type Thread = { entries: Entry[]; busy: boolean };
 
 export function Terminal(props: { project: Project | null; thread: Thread; openGates: Gate[]; gatesAt: number;
+  recoveryEnabled: boolean;
   onSend: (prompt: string, continuationOf?: string) => void; onGate: (id: string, a: "allow" | "deny") => void; onOpenProject?: (name: string) => void;
   onNewConversation?: () => void }) {
   const [draft, setDraft] = useState("");
@@ -31,13 +32,13 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
   const open = new Set(props.openGates.map((g) => g.id));
 
   const loadRecovery = useCallback(async () => {
-    if (!props.project) { setRecovery(null); return; }
+    if (!props.recoveryEnabled || !props.project) { setRecovery(null); setRecoveryError(null); return; }
     try {
       const r = await call<{ items: RecoveryItem[] }>("recovery.list", { project: props.project.name });
       setRecovery(r.items.find((x) => x.kind === "turn") ?? null);
       setRecoveryError(null);
     } catch { setRecovery(null); }   // an older govd has no recovery: no bar
-  }, [props.project]);
+  }, [props.project, props.recoveryEnabled]);
   useEffect(() => { void loadRecovery(); }, [loadRecovery]);
   useWatch((w) => {
     if (props.project && w.kind === "trace" && w.event.project === props.project.name
@@ -60,8 +61,15 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
   const setAtReset = async (atReset: boolean) => {
     if (!recovery) return;
     setRecoveryBusy(true);
-    try { await call("recovery.set", { target: recovery.target, atReset }); await loadRecovery(); }
-    catch (e) { setRecoveryError(e instanceof Error ? e.message : String(e)); }
+    try { await call("recovery.set", { target: recovery.target, since: recovery.since, atReset }); await loadRecovery(); }
+    catch (e) { const message = e instanceof Error ? e.message : String(e); await loadRecovery(); setRecoveryError(message); }
+    finally { setRecoveryBusy(false); }
+  };
+  const clearRecovery = async () => {
+    if (!recovery) return;
+    setRecoveryBusy(true);
+    try { await call("recovery.clear", { target: recovery.target, since: recovery.since }); await loadRecovery(); }
+    catch (e) { const message = e instanceof Error ? e.message : String(e); await loadRecovery(); setRecoveryError(message); }
     finally { setRecoveryBusy(false); }
   };
 
@@ -110,20 +118,21 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
           }
         })}
       </div>
-      {recovery && (
+      {props.recoveryEnabled && recovery && (
         <div className="recovery-bar row small">
           <span><b>{recovery.provider}</b> hit its usage limit ({recovery.resetsAt ? `resets ${clock(recovery.resetsAt).replace(/:\d{2}$/, "")}` : "reset time unknown"}).</span>
           <span className="spacer" />
           {recovery.note && <span className="dim">{recovery.note}</span>}
-          <button className="btn" disabled={props.thread.busy} onClick={() => props.onSend("Continue where you left off.", recovery.target)}>Continue now</button>
+          <button className="btn" disabled={props.thread.busy || recoveryBusy} onClick={() => props.onSend("Continue where you left off.", recovery.target)}>Continue now</button>
           <label className="check" title={recovery.resetsAt === null ? "The reset time is unknown" : undefined}>
             <input type="checkbox" checked={recovery.atReset} disabled={recoveryBusy || recovery.resetsAt === null}
               onChange={(e) => void setAtReset(e.target.checked)} />
             <span>Continue at reset</span>
           </label>
+          <button className="btn" title="The turn itself stays" disabled={recoveryBusy} onClick={() => void clearRecovery()}>Forget it</button>
         </div>
       )}
-      {recoveryError && <div className="recovery-bar error small">{recoveryError}</div>}
+      {props.recoveryEnabled && recoveryError && <div className="recovery-bar error small">{recoveryError}</div>}
       <div className="composer">
         <textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={onKey} rows={3}
           placeholder={props.thread.busy ? "The Controller is working…" : "Ask the Controller (Enter to send, Shift+Enter for a new line)"} />
