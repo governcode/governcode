@@ -277,7 +277,7 @@ export function runTurn(opts: {
   const armLimitStall = () => {
     if (limitStall) clearTimeout(limitStall);
     limitStall = undefined;
-    if (blockedWindows.size === 0 || finished) return;
+    if (blockedWindows.size === 0 || pendingIds.size > 0 || finished) return;
     limitStall = setTimeout(() => finish({ ok: false, summary: "Claude Code hit its usage limit",
       limit: { resetsAt: resetsAt() } }), limitStallMs);
   };
@@ -300,11 +300,14 @@ export function runTurn(opts: {
         if (c.type === "text") opts.hooks.text(c.text);
         if (c.type === "tool_use") opts.hooks.tool(c.name, c.input ?? {});
       }
+    } else if (e.type === "tool_progress") {
+      armLimitStall();
     } else if (e.type === "control_request" && e.request?.subtype === "can_use_tool") {
       // One Gate per request id at a time: a repeated id while one is pending is ignored,
       // so an answer can never land on a different request than the one shown.
       if (pendingIds.has(String(e.request_id))) return;
       pendingIds.add(String(e.request_id));
+      armLimitStall();
       const input = (e.request.input ?? {}) as Record<string, unknown>;
       const req: GateRequest = { id: String(e.request_id), tool: String(e.request.tool_name), input,
         canonical: canonical({ tool: e.request.tool_name, input }) };
@@ -314,6 +317,7 @@ export function runTurn(opts: {
       send({ type: "control_response", response: { subtype: "success", request_id: e.request_id,
         response: answer === "allow" ? { behavior: "allow", updatedInput: input }
                                      : { behavior: "deny", message: "Denied at the Gate." } } });
+      armLimitStall();
     } else if (e.type === "rate_limit_event") {
       const info = e.rate_limit_info ?? {};
       const window = String(info.rateLimitType ?? "unknown");

@@ -594,7 +594,19 @@ test("limits: a hold uses the latest reset of every blocking window, or none if 
   assert.equal(unknown.resetsAt, null);
 });
 
-test("limits: owed amounts survive restart, expire at the fallback, and a broken file is ignored", () => {
+test("limits: stillWithin uses the first crossed window's reason and no reset if any crossed window is unknown", () => {
+  const c = clock(), sooner = c.now() + H;
+  const gate = new LimitGate({}, c.now);
+  gate.record(report(c, ["5-hour", 20, sooner], ["weekly", 20, null]));
+  assert.ok(gate.admit("S-1", "fakecloud", 10).ok);
+  gate.record(report(c, ["5-hour", 95, sooner], ["weekly", 95, null]));
+  const crossed = gate.stillWithin("S-1");
+  assert.ok(!crossed.ok);
+  assert.match(crossed.reason, /5-hour Limit/, "the first crossed reading still supplies the reason");
+  assert.equal(crossed.resetsAt, null);
+});
+
+test("limits: owed amounts survive restart and expire at the fallback", () => {
   const dir = scratch("gc-owed-"), file = join(dir, "owed.json"), c = clock();
   const before = new LimitGate({}, c.now, file);
   before.record(report(c, ["weekly", 40, null]));
@@ -611,10 +623,58 @@ test("limits: owed amounts survive restart, expire at the fallback, and a broken
   expired.record(report(c, ["weekly", 40, null]));
   assert.equal(expired.view("fakecloud").owedPercent, 0);
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).debits, []);
+});
 
+test("limits: a claim is on disk before its Runner starts and becomes owed after a crash", () => {
+  const file = join(scratch("gc-owed-"), "owed.json"), c = clock();
+  const before = new LimitGate({}, c.now, file);
+  before.record(report(c, ["weekly", 40, null]));
+  assert.ok(before.admit("S-1", "fakecloud", 20).ok);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).claims.map((x: any) => x.spec), ["S-1"]);
+
+  c.advance(MIN);
+  const after = new LimitGate({}, c.now, file);
+  after.record(report(c, ["weekly", 40, null]));
+  assert.equal(after.view("fakecloud").owedPercent, 20);
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  assert.deepEqual(saved.claims, []);
+  assert.equal(saved.debits[0].at, c.now(), "the crashed claim is dated when it was loaded");
+});
+
+test("limits: a corrupt owed file holds a metered provider and is not replaced", () => {
+  const dir = scratch("gc-owed-"), file = join(dir, "owed.json"), c = clock();
+  writeFileSync(file, "{not json");
+  const gate = new LimitGate({}, c.now, file);
+  gate.record(report(c, ["weekly", 40, null]));
+  const held = gate.admit("S-1", "fakecloud", 20);
+  assert.deepEqual(held, { ok: false, provider: "fakecloud", reason: `its owed amounts could not be read/written; see ${file}`, resetsAt: null });
+  assert.equal(readFileSync(file, "utf8"), "{not json");
+});
+
+test("limits: a claim that cannot be written holds the provider and starts no reservation", (t) => {
+  const file = join(scratch("gc-owed-"), "owed.json"), c = clock();
+  const gate = new LimitGate({}, c.now, file);
+  gate.record(report(c, ["weekly", 40, null]));
+  t.mock.method(fs, "writeSync", () => 0);
+  const held = gate.admit("S-1", "fakecloud", 20);
+  assert.deepEqual(held, { ok: false, provider: "fakecloud", reason: `its owed amounts could not be read/written; see ${file}`, resetsAt: null });
+  assert.equal(gate.view("fakecloud").reservedPercent, 0);
+});
+
+test("limits: an older owed file without claims is still read", () => {
+  const dir = scratch("gc-owed-"), file = join(dir, "owed.json"), c = clock();
+  writeFileSync(file, JSON.stringify({ version: 1, debits: [] }));
+  const gate = new LimitGate({}, c.now, file);
+  gate.record(report(c, ["weekly", 40, null]));
+  assert.ok(gate.admit("S-1", "fakecloud", 20).ok);
+});
+
+test("limits: a readable but untrusted owed file holds a metered provider", () => {
+  const dir = scratch("gc-owed-"), c = clock();
   const broken = join(dir, "broken.json");
-  writeFileSync(broken, "{not json");
-  const ignored = new LimitGate({}, c.now, broken);
-  ignored.record(report(c, ["weekly", 40, null]));
-  assert.equal(ignored.view("fakecloud").owedPercent, 0);
+  writeFileSync(broken, JSON.stringify({ version: 1, debits: "none", claims: [] }));
+  const gate = new LimitGate({}, c.now, broken);
+  gate.record(report(c, ["weekly", 40, null]));
+  const held = gate.check("fakecloud", 20);
+  assert.ok(!held.ok && held.reason === `its owed amounts could not be read/written; see ${broken}`);
 });

@@ -31,13 +31,19 @@ case "$(cat scenario)" in
   "stall")
     echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1900000100}}'
     sleep 3600 ;;
+  "gate")
+    read -r line
+    echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1900000100}}'
+    echo '{"type":"control_request","request_id":"gate","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"true"}}}'
+    read -r line
+    echo '{"type":"result","is_error":false,"subtype":"success","api_error_status":200,"result":"completed after gate"}' ;;
   "old text") echo '{"type":"result","is_error":true,"subtype":"error","result":"Usage limit reached|1900000200"}' ;;
   *) echo '{"type":"result","is_error":true,"subtype":"error","terminal_reason":"api_error","api_error_status":500,"result":"ordinary failure"}' ;;
 esac
 sleep .1
 `);
 process.env.PATH = `${bin}:${process.env.PATH}`;
-process.env.GOVERNCODE_LIMIT_STALL_MS = "30";
+process.env.GOVERNCODE_LIMIT_STALL_MS = "100";
 
 type Result = { ok: boolean; summary: string; usage?: unknown; started?: false; limit?: { resetsAt: string | null }; notices: string[] };
 
@@ -49,6 +55,19 @@ function turn(prompt: string): Promise<Result> {
     runTurn({ supervisor, policyDir: join(dir, "policy"), worktree: dir, controller: { provider: "claude-code", model: "sonnet", effort: null },
       prompt, stateDir: join(dir, "state"), hooks: { text() {}, tool() {}, gate: async () => "deny",
         notice: (text) => notices.push(text), done: (result) => resolve({ ...result, notices }) } });
+  });
+}
+
+function gatedTurn(): Promise<Result> {
+  const dir = scratch("claude-limit-turn-");
+  writeFileSync(join(dir, "scenario"), "gate");
+  const notices: string[] = [];
+  return new Promise((resolve) => {
+    runTurn({ supervisor, policyDir: join(dir, "policy"), worktree: dir, controller: { provider: "claude-code", model: "sonnet", effort: null },
+      prompt: "gate", stateDir: join(dir, "state"), hooks: { text() {}, tool() {}, gate: async () => {
+        await new Promise((r) => setTimeout(r, 250));
+        return "deny";
+      }, notice: (text) => notices.push(text), done: (result) => resolve({ ...result, notices }) } });
   });
 }
 
@@ -76,6 +95,13 @@ test("a rejected window that stalls ends the turn as limited", async () => {
   const result = await turn("stall");
   assert.deepEqual(result.limit, { resetsAt: new Date(1900000100 * 1000).toISOString() });
   assert.equal(result.summary, "Claude Code hit its usage limit");
+});
+
+test("Claude does not call a pending Gate a limit stall", async () => {
+  const result = await gatedTurn();
+  assert.equal(result.ok, true);
+  assert.equal(result.summary, "completed after gate");
+  assert.equal(result.limit, undefined);
 });
 
 test("Claude accepts the older usage-limit epoch text", async () => {

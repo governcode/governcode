@@ -35,6 +35,11 @@ while IFS= read -r line; do
       echo '{"id":3,"result":{}}'
       echo '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":2000000000},"secondary":{"usedPercent":100,"windowDurationMins":10080}}}}'
       echo '{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"codexErrorInfo":"rateLimitExceeded"}}}}' ;;
+    *'"method":"turn/start"'*'exit'*)
+      echo '{"id":3,"result":{}}'
+      echo '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":2000000000},"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":2100000000}}}}'
+      echo '{"method":"error","params":{"error":{"message":"limited","codexErrorInfo":{"usageLimitExceeded":{}}},"willRetry":false,"turnId":"turn","threadId":"thread"}}'
+      exit 0 ;;
     *'"method":"turn/start"'*)
       echo '{"id":3,"result":{}}'
       echo '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":2000000000}}}}'
@@ -69,6 +74,13 @@ test("Codex completed limit has no reset when an exhausted window has none", asy
   assert.equal(result.ok, false);
   assert.equal(result.summary, "Codex hit its usage limit");
   assert.deepEqual(result.limit, { resetsAt: null });
+});
+
+test("Codex keeps a known limit when app-server exits without completing", async () => {
+  const result = await run("exit");
+  assert.equal(result.ok, false);
+  assert.equal(result.summary, "Codex hit its usage limit");
+  assert.deepEqual(result.limit, { resetsAt: new Date(2100000000 * 1000).toISOString() });
 });
 
 test("Codex retrying limit notification does not mark the turn limited", async () => {

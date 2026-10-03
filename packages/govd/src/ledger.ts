@@ -169,7 +169,8 @@ export class Ledger {
       const next: Spec = { ...spec, ...change };
       this.db.prepare("UPDATE specs SET body = ? WHERE id = ?").run(JSON.stringify(next), id);
       const kind = change.status && kinds[change.status];
-      if (kind) this.append(spec.project, kind, actor, { spec: id, ...(change.note ? { note: change.note } : {}), ...(change.files ? { files: change.files.length } : {}) });
+      if (kind) this.append(spec.project, kind, actor, { spec: id, ...(change.note ? { note: change.note } : {}), ...(change.files ? { files: change.files.length } : {}),
+        ...(change.limited ? { limited: change.limited, provider: next.to } : {}) });
       return next;
     });
   }

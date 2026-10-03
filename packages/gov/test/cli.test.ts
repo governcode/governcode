@@ -145,25 +145,62 @@ test("gov new says where the project is; gov specs shows the default model and l
   assert.equal(new Set(specs.map((l) => l.search(/(needs-review|accepted|failed) /))).size, 1, "the status column lines up");
 });
 
+test("gov settings works with an older govd, and auto-resume requires recovery", async () => {
+  const settings = { reserves: {}, runners: {}, specModels: "free", budgets: {}, local: { maxRunning: 1, maxMinutes: 10 },
+    memory: { conversationChars: 16_000 }, specs: { maxPerProject: 3, maxPerRunner: 2 } };
+  const old = await fakeGovd((m) => m === "settings.get" ? { settings } : m === "hello" ? { features: ["projects"] } : undefined);
+  const shown = await run(old.dir, ["settings"]).done;
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.doesNotMatch(shown.stdout, /auto-resume:/);
+  const refused = await run(old.dir, ["auto-resume", "on"]).done;
+  assert.equal(refused.code, 1);
+  assert.equal(refused.stderr, "gov: this govd has no usage-limit recovery (update GovernCode)\n");
+  assert.deepEqual(old.methods().slice(-1), ["hello"], "settings were not read or changed");
+});
+
 test("gov limited, resume and auto-resume use the recovery methods", async () => {
+  const since = "2026-10-03T00:00:00.000Z";
   const settings = { personal: { claude: false, codex: false }, recovery: { autoResume: false } };
-  const g = await fakeGovd((m, p) => m === "recovery.list" ? { items: [{ target: "S-0001", project: "p", kind: "held",
-    provider: "codex", resetsAt: null, since: "2026-10-03T00:00:00.000Z", why: "held", atReset: false, due: false }] }
+  const items = [{ target: "S-0001", project: "p", kind: "held", provider: "codex", resetsAt: null,
+    since, why: "held", atReset: false, due: false }, { target: "T-7", project: "other", kind: "turn",
+    provider: "claude-code", resetsAt: null, since: "2026-10-03T01:00:00.000Z", why: "limited", atReset: false, due: false }];
+  const g = await fakeGovd((m, p) => m === "recovery.list" ? { items }
     : m === "recovery.resume" ? { id: p.id, status: "running" }
+    : m === "hello" ? { features: ["projects", "recovery"] }
     : m === "settings.get" ? { settings }
-    : m === "project.list" ? { projects: [], home: { controller: { provider: "claude-code" } } } : undefined);
+    : m === "project.list" ? { projects: [{ name: "other", path: "/other", controller: { provider: "claude-code" } }] }
+    : m === "tools.list" ? { tools: [] }
+    : m === "ask" ? { ok: true, summary: "done" } : undefined);
   const limited = await run(g.dir, ["limited"]).done;
   assert.equal(limited.code, 0, limited.stderr);
   assert.match(limited.stdout, /S-0001 +held Spec +codex +reset time unknown · at reset: off/);
-  assert.match((await run(g.dir, ["resume", "S-0001"]).done).stdout, /S-0001: running/);
-  assert.match((await run(g.dir, ["resume", "S-0001", "--at-reset"]).done).stdout, /S-0001: at reset on/);
-  assert.match((await run(g.dir, ["resume", "S-0001", "--off"]).done).stdout, /S-0001: at reset off/);
-  assert.match((await run(g.dir, ["resume", "S-0001", "--clear"]).done).stdout, /S-0001: cleared/);
+  const command = async (args: string[]) => {
+    const before = g.calls.length;
+    const result = await run(g.dir, args).done;
+    return { result, calls: g.calls.slice(before) };
+  };
+  const now = await command(["resume", "S-0001"]);
+  assert.match(now.result.stdout, /S-0001: running/);
+  assert.deepEqual(now.calls.map((c) => c.method), ["recovery.list", "recovery.resume"]);
+  assert.deepEqual(now.calls[1].params, { id: "S-0001", since });
+  const atReset = await command(["resume", "S-0001", "--at-reset"]);
+  assert.match(atReset.result.stdout, /S-0001: at reset on/);
+  assert.deepEqual(atReset.calls.map((c) => c.method), ["recovery.list", "recovery.set"]);
+  assert.deepEqual(atReset.calls[1].params, { target: "S-0001", since, atReset: true });
+  const off = await command(["resume", "S-0001", "--off"]);
+  assert.match(off.result.stdout, /S-0001: at reset off/);
+  assert.deepEqual(off.calls[1].params, { target: "S-0001", since, atReset: false });
+  const clear = await command(["resume", "S-0001", "--clear"]);
+  assert.match(clear.result.stdout, /S-0001: cleared/);
+  assert.deepEqual(clear.calls[1].params, { target: "S-0001", since });
+  const missing = await command(["resume", "S-0002"]);
+  assert.equal(missing.result.stderr, "gov: S-0002 is not limited\n");
+  assert.deepEqual(missing.calls.map((c) => c.method), ["recovery.list"]);
+  const turn = await command(["resume", "T-7"]);
+  assert.equal(turn.result.code, 0, turn.result.stderr);
+  assert.deepEqual(turn.calls.find((c) => c.method === "ask")!.params,
+    { project: "other", prompt: "Continue where you left off.", continuationOf: "T-7" });
   assert.match((await run(g.dir, ["auto-resume", "on"]).done).stdout, /auto-resume: on/);
-  assert.ok(g.calls.some((c) => c.method === "recovery.resume" && c.params.id === "S-0001"));
-  assert.ok(g.calls.some((c) => c.method === "recovery.set" && c.params.atReset === true));
-  assert.ok(g.calls.some((c) => c.method === "recovery.set" && c.params.atReset === false));
-  assert.ok(g.calls.some((c) => c.method === "recovery.clear" && c.params.target === "S-0001"));
   assert.ok(g.calls.some((c) => c.method === "settings.set" && c.params.recovery.autoResume === true));
 });
 

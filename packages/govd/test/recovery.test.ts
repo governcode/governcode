@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { scratch, markConnected } from "./scratch.ts";
 
 process.env.GOVERNCODE_RECOVERY_SWEEP_MS = "40";
+process.env.GOVERNCODE_LIMIT_POLL_MS = "40";
 const { Daemon } = await import("../src/daemon.ts");
 
 const root = scratch("gc-recovery-");
@@ -41,6 +42,7 @@ const write = () => {
 };
 rl.on("line", (line) => {
   const m = JSON.parse(line);
+  if (m.id === "gate" && m.result) return;
   if (m.method === "initialize") return out({ id: m.id, result: {} });
   if (m.method === "account/rateLimits/read") return setTimeout(() => out({ id: m.id, result: { rateLimits: limits() } }), Number(cfg.readDelay ?? 0));
   if (m.method === "thread/start") return out({ id: m.id, result: { thread: { id: "thread" } } });
@@ -49,6 +51,11 @@ rl.on("line", (line) => {
   const prompt = m.params?.input?.[0]?.text || "";
   if (cfg.promptFile) fs.writeFileSync(cfg.promptFile, prompt);
   write();
+  if (cfg.gateRun) {
+    out({ id: "gate", method: "item/commandExecution/requestApproval", params: { approvalId: "approval",
+      command: ["sh", "-c", "true"], cwd: process.cwd(), reason: "test" } });
+    return;
+  }
   out({ method: "item/completed", params: { item: { id: "message", type: "agentMessage", text: String(cfg.summary ?? "worked") } } });
   if (cfg.limitRun) {
     out({ method: "account/rateLimits/updated", params: { rateLimits: limits(Number(cfg.limitUsed ?? 100)) } });
@@ -124,7 +131,7 @@ function client(sock: string) {
 }
 
 type Fake = { used?: number; limitUsed?: number; resetsAt?: number; limitRun?: boolean; text?: string; append?: boolean; fromReadme?: boolean;
-  summary?: string; promptFile?: string; readDelay?: number };
+  summary?: string; promptFile?: string; readDelay?: number; gateRun?: boolean };
 
 function fakeFile(dir: string): string { return join(dir, "state/tools/codex/fake.json"); }
 function setRunner(dir: string, fake: Fake): void { writeFileSync(fakeFile(dir), JSON.stringify(fake)); }
@@ -151,6 +158,10 @@ async function setup(fake: Fake = {}, dir = join(root, `d-${Math.random().toStri
   return { d, c, dir, proj, sock: join(dir, "run/govd.sock") };
 }
 
+// The Runner itself asked at a Gate (the handoff's own Gate opens first and does not count).
+const runnerAsked = (t: { d: { ledger: { eventsOfKind(p: string, k: any[]): Array<{ data: Record<string, unknown> }> } } }) =>
+  t.d.ledger.eventsOfKind("p", ["gate.opened"]).some((e) => /Runner · codex/.test(String(e.data.tool)));
+
 const until = async (condition: () => boolean, ms = 15_000) => {
   for (const end = Date.now() + ms; !condition(); await new Promise((resolve) => setTimeout(resolve, 20))) {
     if (Date.now() > end) throw new Error("timed out");
@@ -171,6 +182,12 @@ async function recoveries(t: Awaited<ReturnType<typeof setup>>) {
   return response.result.items as any[];
 }
 
+async function recoverySince(t: Awaited<ReturnType<typeof setup>>, target: string): Promise<string> {
+  const item = (await recoveries(t)).find((candidate) => candidate.target === target);
+  assert.ok(item, `${target} is not listed for recovery`);
+  return item.since;
+}
+
 test("a held Spec is listed with its reset, and clearing only removes the recovery item", async () => {
   const reset = Math.floor((Date.now() + 60_000) / 1000);
   const t = await setup({ used: 100, resetsAt: reset });
@@ -180,7 +197,7 @@ test("a held Spec is listed with its reset, and clearing only removes the recove
     atReset: item.atReset, due: item.due },
   { target: id, project: "p", kind: "held", provider: "codex", resetsAt: new Date(reset * 1000).toISOString(), atReset: false, due: false });
   assert.equal(t.d.ledger.spec(id)!.status, "held");
-  assert.equal((await t.c.call("recovery.clear", { target: id })).result.target, id);
+  assert.equal((await t.c.call("recovery.clear", { target: id, since: item.since })).result.target, id);
   assert.deepEqual(await recoveries(t), []);
   assert.equal(t.d.ledger.spec(id)!.status, "held", "clear does not discard the Spec");
 });
@@ -190,7 +207,7 @@ test("resume now measures again, uses a fresh project copy, and records resumed 
   const id = await handoff(t);
   writeFileSync(join(t.proj, "README.md"), "# changed after the hold\n");
   setRunner(t.dir, { used: 10, fromReadme: true });
-  const response = await t.c.call("recovery.resume", { id });
+  const response = await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) });
   assert.equal(response.result.id, id, JSON.stringify(response));
   await until(() => t.d.ledger.spec(id)?.status === "needs-review");
   assert.match((await t.c.call("spec.diff", { id })).result.diff, /changed after the hold/);
@@ -204,7 +221,8 @@ test("two resume-now calls racing on measurement start only one round", async ()
   const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() + 60_000) / 1000) });
   const id = await handoff(t);
   setRunner(t.dir, { used: 10, readDelay: 200 });
-  const replies = await Promise.all([t.c.call("recovery.resume", { id }), t.c.call("recovery.resume", { id })]);
+  const since = await recoverySince(t, id);
+  const replies = await Promise.all([t.c.call("recovery.resume", { id, since }), t.c.call("recovery.resume", { id, since })]);
   assert.equal(replies.filter((reply) => reply.result).length, 1, JSON.stringify(replies));
   assert.match(replies.find((reply) => reply.error)!.error.message, /already running|not a limited Spec/);
   await until(() => t.d.ledger.spec(id)?.status === "needs-review");
@@ -214,7 +232,7 @@ test("two resume-now calls racing on measurement start only one round", async ()
 test("resume now that is still over the Limit stays held without running", async () => {
   const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() + 60_000) / 1000) });
   const id = await handoff(t);
-  const response = await t.c.call("recovery.resume", { id });
+  const response = await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) });
   assert.equal(response.result.id, id, JSON.stringify(response));
   assert.equal(t.d.ledger.spec(id)!.status, "held");
   assert.equal(t.d.ledger.eventsOfKind("p", ["recovery.resumed"]).length, 1);
@@ -222,17 +240,75 @@ test("resume now that is still over the Limit stays held without running", async
   assert.equal(t.d.ledger.eventsOfKind("p", ["spec.held"]).length, 2, "the fresh Limit decision is recorded");
 });
 
+test("a recovery choice is bound to the limited episode the client saw", async () => {
+  const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() + 60_000) / 1000) });
+  const id = await handoff(t);
+  const since = await recoverySince(t, id);
+  await t.c.call("recovery.set", { target: id, since, atReset: false });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal((await t.c.call("recovery.resume", { id, since })).result.status, "held");
+  const refused = await t.c.call("recovery.set", { target: id, since, atReset: true });
+  assert.equal(refused.error.message, `${id} has changed since you looked (a newer limit): look again (gov limited)`);
+});
+
+test("a held transition records the Limit and Runner in the Trace", async () => {
+  const reset = Math.floor((Date.now() + 60_000) / 1000);
+  const t = await setup({ used: 100, resetsAt: reset });
+  const id = await handoff(t);
+  const held = t.d.ledger.eventsOfKind("p", ["spec.held"]).at(-1)!;
+  assert.deepEqual(held.data, { spec: id, note: t.d.ledger.spec(id)!.limited!.why,
+    limited: t.d.ledger.spec(id)!.limited, provider: "codex" });
+  assert.equal((await recoveries(t)).find((item) => item.target === id).atReset, false);
+});
+
 test("at-reset recovery waits for a watcher, then a due Spec resumes", async () => {
   const past = Math.floor((Date.now() - 60_000) / 1000);
   const t = await setup({ used: 100, resetsAt: past });
   const id = await handoff(t);
-  assert.equal((await t.c.call("recovery.set", { target: id, atReset: true })).result.target, id);
+  assert.equal((await t.c.call("recovery.set", { target: id, since: await recoverySince(t, id), atReset: true })).result.target, id);
   setRunner(t.dir, { used: 10 });
   await new Promise((resolve) => setTimeout(resolve, 160));
   assert.equal(t.d.ledger.spec(id)!.status, "held", "an ordinary connected client does not permit unattended work");
   await t.c.call("watch", { wake: true });
   await until(() => t.d.ledger.spec(id)?.status === "needs-review");
   assert.equal(t.d.ledger.eventsOfKind("p", ["recovery.resumed"]).at(-1)!.actor, "govd");
+});
+
+test("a sweep-resumed Spec stops when its last watcher leaves", async () => {
+  const past = Math.floor((Date.now() - 60_000) / 1000);
+  const t = await setup({ used: 100, resetsAt: past });
+  const id = await handoff(t);
+  await t.c.call("recovery.set", { target: id, since: await recoverySince(t, id), atReset: true });
+  setRunner(t.dir, { used: 10, gateRun: true });
+  await t.c.call("watch", { wake: true });
+  await until(() => runnerAsked(t));
+  assert.equal(t.d.ledger.spec(id)!.status, "running");
+  t.c.end();
+  await until(() => t.d.ledger.spec(id)?.status === "failed");
+  const spec = t.d.ledger.spec(id)!;
+  assert.deepEqual(spec.limited, { resetsAt: new Date(past * 1000).toISOString(), at: spec.limited!.at,
+    why: "stopped: nobody was connected to see it" });
+  assert.ok(t.d.ledger.eventsOfKind("p", ["gate.denied"]).some((event) => event.data.by === "the Spec ended"));
+  const c = client(t.sock);
+  const listed = await c.call("recovery.list", { project: "p" });
+  const item = listed.result.items.find((candidate: any) => candidate.target === id);
+  assert.equal(item.kind, "spec");
+  // A new limited episode: the old at-reset choice does not carry over, so it waits for the user.
+  assert.equal(item.atReset, false);
+  assert.equal(item.due, false);
+});
+
+test("a Limit crossed while a Runner works becomes a resumable limited Spec", async () => {
+  const reset = Math.floor((Date.now() + 60_000) / 1000);
+  const t = await setup({ used: 10, gateRun: true });
+  const id = await handoff(t);
+  await until(() => runnerAsked(t));
+  setRunner(t.dir, { used: 100, resetsAt: reset });
+  await until(() => t.d.ledger.spec(id)?.status === "failed");
+  const item = (await recoveries(t)).find((candidate) => candidate.target === id);
+  assert.equal(item.kind, "spec");
+  assert.equal(item.resetsAt, new Date(reset * 1000).toISOString());
+  assert.match(item.why, /crossed its weekly Limit/);
 });
 
 test("auto-resume arms a newly held Spec, but an unknown reset can only resume now", async () => {
@@ -247,10 +323,10 @@ test("auto-resume arms a newly held Spec, but an unknown reset can only resume n
 
   setRunner(t.dir, { used: 100 });
   const unknown = await handoff(t);
-  const refused = await t.c.call("recovery.set", { target: unknown, atReset: true });
+  const refused = await t.c.call("recovery.set", { target: unknown, since: await recoverySince(t, unknown), atReset: true });
   assert.equal(refused.error.message, `no reset time is known for ${unknown}: resume it yourself`);
   setRunner(t.dir, { used: 10 });
-  assert.equal((await t.c.call("recovery.resume", { id: unknown })).result.id, unknown);
+  assert.equal((await t.c.call("recovery.resume", { id: unknown, since: await recoverySince(t, unknown) })).result.id, unknown);
   await until(() => t.d.ledger.spec(unknown)?.status === "needs-review");
 });
 
@@ -258,7 +334,7 @@ test("a changed handoff blocks automatic recovery, while resume now uses the new
   const past = Math.floor((Date.now() - 60_000) / 1000);
   const t = await setup({ used: 100, resetsAt: past });
   const id = await handoff(t);
-  await t.c.call("recovery.set", { target: id, atReset: true });
+  await t.c.call("recovery.set", { target: id, since: await recoverySince(t, id), atReset: true });
   await t.c.call("settings.set", { runners: { codex: { model: "gpt-new", effort: "medium" } }, specModels: "defaults" });
   setRunner(t.dir, { used: 10 });
   await t.c.call("watch", { wake: true });
@@ -270,7 +346,7 @@ test("a changed handoff blocks automatic recovery, while resume now uses the new
   }
   assert.equal(item?.note, "the handoff changed: resume it yourself to run it as it is now");
   assert.equal(t.d.ledger.spec(id)!.status, "held");
-  assert.equal((await t.c.call("recovery.resume", { id })).result.id, id);
+  assert.equal((await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) })).result.id, id);
   await until(() => t.d.ledger.spec(id)?.status === "needs-review");
   assert.deepEqual({ model: t.d.ledger.spec(id)!.model, effort: t.d.ledger.spec(id)!.effort }, { model: "gpt-new", effort: "medium" });
 });
@@ -279,7 +355,7 @@ test("a resumed guard prevents the sweep from starting the same Spec twice", asy
   const past = Math.floor((Date.now() - 60_000) / 1000);
   const t = await setup({ used: 100, resetsAt: past });
   const id = await handoff(t);
-  await t.c.call("recovery.set", { target: id, atReset: true });
+  await t.c.call("recovery.set", { target: id, since: await recoverySince(t, id), atReset: true });
   const resetsAt = t.d.ledger.spec(id)!.limited!.resetsAt;
   t.d.ledger.append("p", "recovery.resumed", "govd", { target: id, resetsAt, by: "govd" });
   setRunner(t.dir, { used: 10 });
@@ -299,13 +375,13 @@ test("a Runner-limited Spec continues in its existing copy and keeps both rounds
   await until(() => t.d.ledger.spec(id)?.status === "failed");
   assert.equal(t.d.ledger.spec(id)!.limited?.resetsAt, new Date(reset * 1000).toISOString());
   const before = t.d.ledger.spec(id)!.checkpoints.before;
-  await t.c.call("recovery.set", { target: id, atReset: true });
+  await t.c.call("recovery.set", { target: id, since: await recoverySince(t, id), atReset: true });
   setRunner(t.dir, { used: 100, resetsAt: reset });
-  assert.equal((await t.c.call("recovery.resume", { id })).result.status, "failed");
+  assert.equal((await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) })).result.status, "failed");
   const renewed = (await recoveries(t)).find((item) => item.target === id);
   assert.equal(renewed.atReset, false, "the old at-reset choice does not carry into the renewed limit");
   setRunner(t.dir, { used: 10, append: true, text: "second\n", summary: "second round", promptFile });
-  assert.equal((await t.c.call("recovery.resume", { id })).result.id, id);
+  assert.equal((await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) })).result.id, id);
   await until(() => t.d.ledger.spec(id)?.status === "needs-review");
   const spec = t.d.ledger.spec(id)!;
   assert.equal(spec.checkpoints.before, before, "the continuation keeps the first round's before-snapshot");
@@ -377,7 +453,7 @@ test("a due Controller continuation is govd's, runs only with a watcher, and is 
   setController(t.dir, { limit: true, resetsAt: past });
   await t.c.call("ask", { project: "p", prompt: "limited work" });
   const target = t.d.ledger.eventsOfKind("p", ["turn.failed"]).at(-1)!.data.turn as string;
-  await t.c.call("recovery.set", { target, atReset: true });
+  await t.c.call("recovery.set", { target, since: await recoverySince(t, target), atReset: true });
   setController(t.dir, {});
   await new Promise((resolve) => setTimeout(resolve, 160));
   assert.equal(t.d.ledger.eventsOfKind("p", ["turn.started"]).length, 1);
@@ -396,7 +472,7 @@ test("a due recovery choice survives restart and runs once when a watcher connec
   const dir = join(root, "restart");
   const first = await setup({ used: 100, resetsAt: Math.floor((Date.now() - 60_000) / 1000) }, dir);
   const id = await handoff(first);
-  await first.c.call("recovery.set", { target: id, atReset: true });
+  await first.c.call("recovery.set", { target: id, since: await recoverySince(first, id), atReset: true });
   setRunner(dir, { used: 10 });
   first.c.end();
   first.d.close();
@@ -408,4 +484,12 @@ test("a due recovery choice survives restart and runs once when a watcher connec
   assert.equal(second.d.ledger.eventsOfKind("p", ["recovery.resumed"]).length, 1);
   assert.equal(second.d.ledger.eventsOfKind("p", ["spec.started"]).length, 1);
   assert.ok(existsSync(join(dir, `state/specs/${id}/work/x/hello.txt`)));
+});
+
+test("settings from an older client keep recovery values they do not contain", async () => {
+  const t = await setup();
+  await t.c.call("settings.set", { recovery: { autoResume: true } });
+  const changed = await t.c.call("settings.set", { gates: { quietReads: false, level: "strict" } });
+  assert.equal(changed.result.settings.recovery.autoResume, true);
+  assert.equal((await t.c.call("settings.get", {})).result.settings.recovery.autoResume, true);
 });

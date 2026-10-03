@@ -11,7 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { SpecInput, type SettingsValue, type Spec } from "@governcode/protocol";
 import type { Ledger } from "./ledger.ts";
-import { reportedTokens, usageComplete, type CountedStore, type LimitGate, type UsageSource } from "./limits.ts";
+import { reportedTokens, usageComplete, type CountedStore, type LimitGate, type UsageSource, type Verdict } from "./limits.ts";
 import { canonical, type GateRequest } from "./claude.ts";
 import { applyToProject, changedFiles, createWorkspace, diff, hasCommit, removeWorkspace, safeTarget, snapshot, specPaths } from "./specstore.ts";
 import { runCodexTurn } from "./codex.ts";
@@ -99,6 +99,13 @@ export class SpecRuns {
     if (!r || r.cancelled) return false;
     r.cancelled = true;
     r.stop.abort(`cancelled: ${reason}`);
+    return true;
+  }
+  /** Stop one Runner without making it a user cancel. */
+  stop(id: string, reason: unknown): boolean {
+    const r = this.runs.get(id);
+    if (!r || r.stop.signal.aborted) return false;
+    r.stop.abort(reason);
     return true;
   }
   /** Running now, in a project and/or for a Runner. */
@@ -588,6 +595,7 @@ async function runRound(ctx: DelegationContext, spec: Spec, input: SpecInput, pr
   const L = ctx.ledger;
   let poll: ReturnType<typeof setInterval> | undefined;
   let ran = false, begun = false, runUsage: unknown;   // a cloud Runner was started: its use counts, whatever the outcome
+  let crossed: Extract<Verdict, { ok: false }> & { at: string } | undefined;
   const own = ctx.specGate?.(spec);
   const gate = own ? own.gate : ctx.gate;
   try {
@@ -598,7 +606,11 @@ async function runRound(ctx: DelegationContext, spec: Spec, input: SpecInput, pr
     poll = setInterval(async () => {
       await measured(ctx, input.to);
       const v = ctx.limits.stillWithin(spec.id);
-      if (!v.ok) { ctx.notify({ kind: "spec.text", id: spec.id, text: `Limit: ${v.reason}; stopping.` }); stop.abort(v.reason); }
+      if (!v.ok && !crossed) {
+        crossed = { ...v, at: new Date().toISOString() };
+        ctx.notify({ kind: "spec.text", id: spec.id, text: `Limit: ${v.reason}; stopping.` });
+        stop.abort(v.reason);
+      }
     }, POLL_MS);
     const local = ctx.limits.localRule(input.to);
     const result = await new Promise<{ ok: boolean; summary: string; usage?: unknown; started?: false; limit?: { resetsAt: string | null } }>((done) => {
@@ -663,9 +675,14 @@ async function runRound(ctx: DelegationContext, spec: Spec, input: SpecInput, pr
     const scopes = input.scope.write.map((x) => x.replace(/^\.\/+/, "").replace(/\/+$/, ""));
     const outside = scopes.length ? files.filter((f) => !scopes.some((x) => f === x || f.startsWith(x + "/"))) : [];
     const stoppedByUser = cancelled();
+    const stopped = stop.signal.reason as { limited?: { resetsAt: string | null; at: string; why: string } } | undefined;
+    const limited = result.limit
+      ? { resetsAt: result.limit.resetsAt, at: new Date().toISOString(), why: `${input.to} hit its usage limit; ${result.limit.resetsAt ? `resets ${result.limit.resetsAt}` : "no reset time given"}` }
+      : crossed ? { resetsAt: crossed.resetsAt, at: crossed.at, why: crossed.reason }
+      : stopped?.limited;
     const ok = (result.ok || (stoppedByUser && files.length > 0)) && !outside.length;
-    const status = result.limit ? "failed" : outside.length ? "failed" : ok ? "needs-review" : stoppedByUser ? "cancelled" : "failed";
-    const limitWhy = result.limit ? `${input.to} hit its usage limit; ${result.limit.resetsAt ? `resets ${result.limit.resetsAt}` : "no reset time given"}` : "";
+    const status = limited ? "failed" : outside.length ? "failed" : ok ? "needs-review" : stoppedByUser ? "cancelled" : "failed";
+    const limitWhy = limited?.why ?? "";
     const note = [outside.length ? `changed files outside its scope: ${outside.join(", ")}` : "",
       limitWhy || (stoppedByUser ? (files.length ? "cancelled before it finished: partial work, review it closely" : "cancelled before it changed anything") : result.ok ? "" : result.summary),
       w.notCopied].filter(Boolean).join("; ") || undefined;
@@ -676,8 +693,8 @@ async function runRound(ctx: DelegationContext, spec: Spec, input: SpecInput, pr
     // Who hears about it: the call still waiting (inline), nobody (a cancel), or the Controller later.
     const delivery = inline.waiting ? "acknowledged" : stoppedByUser ? "disposed" : "pending";
     L.updateSpec(spec.id, { status, files, checkpoints: { before: w.before, after }, note, summaries, delivery,
-      ...(result.limit ? { limited: { resetsAt: result.limit.resetsAt, at: new Date().toISOString(), why: limitWhy } } : {}) }, "govd");
-    if (result.limit) ctx.onLimited?.(spec.id);
+      ...(limited ? { limited } : {}) }, "govd");
+    if (limited) ctx.onLimited?.(spec.id);
     const d = files.length ? diff(w.paths, w.before, after) : "";
     const out: SpecResult = { id: spec.id, status, runner: input.to, files, ...(note ? { note } : {}), summary,
       diff: d.length > 20_000 ? d.slice(0, 20_000) + "\n… (diff truncated; the user sees it in full with gov diff)" : d,

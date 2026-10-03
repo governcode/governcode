@@ -49,6 +49,7 @@ export const REPORT_FALLBACK_MS = 2 * 3_600_000;
 type Baselines = Record<string, { used: number; resetsAt: string | null; from?: number }>;
 // at: when the Spec finished.
 type Debit = { provider: string; percent: number; at: number; baselines: Baselines };
+type Claim = Debit & { spec: string };
 // A held amount as shown: up to the next tenth, so a hold that still counts never shows as 0%
 // (less 1e-9 for float noise, as with counted budgets).
 const shownHeld = (n: number) => Math.max(0, Math.ceil(n * 10 - 1e-9) / 10);
@@ -57,32 +58,46 @@ export class LimitGate {
   private config: LimitsConfig;
   private latest = new Map<string, Measurement>();
   private whyNot = new Map<string, string>();      // a failed reading's reason, shown when it holds
-  private inflight = new Map<string, { provider: string; percent: number; baselines: Baselines }>();
+  private inflight = new Map<string, Omit<Claim, "spec">>();
   // Finished Specs keep counting until the provider's own report catches up: usage reports lag,
   // so without this, back-to-back Specs could each be admitted against the same reading. Only the
   // provider's own windows owe this: govd's own count already includes every finished Spec.
   private debits: Debit[] = [];
   private now: () => number;
   private file: string | null;
+  private broken = false;
 
   constructor(config: Partial<LimitsConfig> = {}, now: () => number = Date.now, file: string | null = null) {
     this.config = { ...DEFAULTS, ...config };
     this.now = now;
     this.file = file;
     if (!file) return;
+    let raw: string;
+    try { raw = readFileSync(file, "utf8"); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") this.broken = true;
+      return;
+    }
     try {
-      const d = JSON.parse(readFileSync(file, "utf8"));
+      const d = JSON.parse(raw);
       const obj = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
       const finite = (x: unknown) => typeof x === "number" && Number.isFinite(x);
-      if (!obj(d) || d.version !== 1 || !Array.isArray(d.debits)) return;
+      if (!obj(d) || d.version !== 1 || !Array.isArray(d.debits) || (d.claims !== undefined && !Array.isArray(d.claims))) {
+        this.broken = true; return;
+      }
       const valid = (x: unknown): x is Debit => obj(x) && typeof x.provider === "string"
         && finite(x.percent) && x.percent > 0 && finite(x.at) && obj(x.baselines)
         && Object.values(x.baselines).every((b) => obj(b) && finite(b.used)
           && (b.resetsAt === null || typeof b.resetsAt === "string") && (b.from === undefined || finite(b.from)));
-      if (!d.debits.every(valid)) return;
+      const claims = d.claims ?? [];
+      const validClaim = (x: unknown): x is Claim => valid(x) && typeof (x as Record<string, unknown>).spec === "string";
+      if (!d.debits.every(valid) || !claims.every(validClaim)) {
+        this.broken = true; return;
+      }
       this.debits = d.debits.filter((x: Debit) => this.now() - x.at <= REPORT_FALLBACK_MS);
-      if (this.debits.length !== d.debits.length) this.saveDebits();
-    } catch { /* A missing or broken owed file starts empty. */ }
+      // A claim left open means govd stopped after the Runner could have spent all of it.
+      this.debits.push(...claims.map((x: Claim) => ({ provider: x.provider, percent: x.percent, at: this.now(), baselines: x.baselines })));
+      if (this.debits.length !== d.debits.length || claims.length) this.saveOwed();
+    } catch { this.broken = true; }
   }
 
   record(m: Measurement): void {
@@ -107,7 +122,9 @@ export class LimitGate {
       }
     }
     this.debits = this.debits.filter((d) => Object.keys(d.baselines).length);
-    if (changed) this.saveDebits();
+    if (changed) {
+      try { this.saveOwed(); } catch { this.broken = true; }
+    }
   }
 
   /** Forget a provider's measurement (a failed reading): it is held until measured again. */
@@ -143,7 +160,16 @@ export class LimitGate {
   /** May a Spec reserving `requested` percent start on `provider`? Reserves it if so. */
   admit(spec: string, provider: string, requested: number): Verdict {
     const { verdict, percent, baselines } = this.decide(provider, requested);
-    if (verdict.ok) this.inflight.set(spec, { provider, percent, baselines });
+    if (verdict.ok) {
+      this.inflight.set(spec, { provider, percent, baselines, at: this.now() });
+      if (percent > 0 && Object.keys(baselines).length) {
+        try { this.saveOwed(); } catch {
+          this.inflight.delete(spec);
+          this.broken = true;
+          return { ok: false, provider, reason: this.brokenReason(), resetsAt: null };
+        }
+      }
+    }
     return verdict;
   }
 
@@ -178,6 +204,7 @@ export class LimitGate {
     if (this.config.unmetered.includes(provider)) {
       return { verdict: { ok: true, provider, note: "unmetered (your opt-in): nothing counted, no Limit" }, percent: 0, baselines: {} };
     }
+    if (this.broken) return no(this.brokenReason());
     const m = this.current(provider);
     if (m && "why" in m) return no(`${m.why} · held`);
     if (!m || !m.readings.length) return no(`${this.whyNot.get(provider) ?? "no usage source"} · held`);
@@ -244,14 +271,17 @@ export class LimitGate {
     const m = this.current(f.provider);
     if (!m || "why" in m || this.now() - m.measuredAt > this.config.ttlMs) return { ok: false, provider: f.provider, reason: "usage no longer measured · stop", resetsAt: null };
     // A counted budget is compared in its own unit, never in a rounded percent.
-    const over = m.readings.find((r) => {
+    const over = m.readings.filter((r) => {
       const keep = this.reserve(f.provider, r.window, !!r.counted);
       return r.counted ? r.counted.used > r.counted.cap * (100 - keep) / 100 + 1e-9 : r.usedPercent > 100 - keep;
     });
-    return over ? { ok: false, provider: f.provider, reason: over.counted
-        ? `crossed its ${over.window} budget (${over.counted.used} of ${over.counted.cap} ${over.counted.unit}; ${COUNTED_LABEL})`
-        : `crossed its ${over.window} Limit (${over.usedPercent}% used)`, resetsAt: over.resetsAt }
-                : { ok: true, provider: f.provider };
+    if (!over.length) return { ok: true, provider: f.provider };
+    const first = over[0], times = over.map((r) => r.resetsAt === null ? NaN : Date.parse(r.resetsAt));
+    const resetsAt = over.length === 1 ? first.resetsAt
+      : times.every(Number.isFinite) ? over[times.indexOf(Math.max(...times))].resetsAt : null;
+    return { ok: false, provider: f.provider, reason: first.counted
+      ? `crossed its ${first.window} budget (${first.counted.used} of ${first.counted.cap} ${first.counted.unit}; ${COUNTED_LABEL})`
+      : `crossed its ${first.window} Limit (${first.usedPercent}% used)`, resetsAt };
   }
 
   /** What finished Specs may still owe in one of the provider's own windows: their reservations,
@@ -288,7 +318,11 @@ export class LimitGate {
   /** A reserved Spec that never started a Runner (its copy failed, it was stopped first): nothing was
    *  spent, so nothing is owed. */
   abandon(spec: string): void {
+    const f = this.inflight.get(spec);
     this.inflight.delete(spec);
+    if (f && f.percent > 0 && Object.keys(f.baselines).length) {
+      try { this.saveOwed(); } catch { this.broken = true; }
+    }
   }
 
   release(spec: string): void {
@@ -296,15 +330,21 @@ export class LimitGate {
     this.inflight.delete(spec);
     if (f && f.percent > 0 && Object.keys(f.baselines).length) {
       this.debits.push({ provider: f.provider, percent: f.percent, at: this.now(), baselines: f.baselines });
-      this.saveDebits();
+      try { this.saveOwed(); } catch { this.broken = true; }
     }
   }
 
-  /** Owed amounts survive a restart in govd's own state (owner-only, replaced whole). A copy that
-   *  cannot be written stops nothing: the Limit still keeps them in memory. */
-  private saveDebits(): void {
+  private brokenReason(): string {
+    return `its owed amounts could not be read/written; see ${this.file}`;
+  }
+
+  /** Owed amounts and open claims survive a restart in govd's own state (owner-only, replaced whole). */
+  private saveOwed(): void {
     if (!this.file) return;
-    try { writeWhole(this.file, { version: 1, debits: this.debits }); } catch { /* kept in memory */ }
+    if (this.broken) throw new Error(this.brokenReason());
+    const claims: Claim[] = [...this.inflight].filter(([, f]) => f.percent > 0 && Object.keys(f.baselines).length)
+      .map(([spec, f]) => ({ spec, ...f }));
+    writeWhole(this.file, { version: 1, debits: this.debits, claims });
   }
 }
 

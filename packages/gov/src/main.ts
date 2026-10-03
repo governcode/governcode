@@ -498,12 +498,14 @@ async function main(argv: string[]): Promise<number> {
         console.log(`local models: at most ${settings.local.maxRunning} at once, ${settings.local.maxMinutes} min each`);
         console.log(`recent conversation: up to ${settings.memory.conversationChars} characters per turn`);
         if (settings.specs) console.log(`Specs at once: up to ${settings.specs.maxPerProject} per project, ${settings.specs.maxPerRunner} per Runner`);
-        console.log(`auto-resume: ${settings.recovery.autoResume ? "on" : "off"}`);
+        if (settings.recovery?.autoResume !== undefined) console.log(`auto-resume: ${settings.recovery.autoResume ? "on" : "off"}`);
         return 0;
       }
       case "auto-resume": {
         const state = rest[0];
         if (rest.length !== 1 || (state !== "on" && state !== "off")) throw new Error("usage: gov auto-resume on|off");
+        const hello = await api.call("hello", { client: "gov", protocol: 1 });
+        if (!hello.features?.includes("recovery")) throw new Error("this govd has no usage-limit recovery (update GovernCode)");
         const { settings } = await api.call("settings.get", {});
         await api.call("settings.set", { ...settings, recovery: { autoResume: state === "on" } });
         console.log(`auto-resume: ${state}`);
@@ -709,27 +711,28 @@ async function main(argv: string[]): Promise<number> {
         const [id, flag] = rest;
         const usage = "usage: gov resume ID [--at-reset|--off|--clear]";
         if (!/^(S-\d{4,}|T-\d+)$/.test(id ?? "") || rest.length > 2 || (flag !== undefined && !["--at-reset", "--off", "--clear"].includes(flag))) throw new Error(usage);
+        const listed = await api.call("recovery.list", {});
+        const item = listed.items?.find((x: any) => x.target === id);
+        if (!item) throw new Error(`${id} is not limited`);
         if (flag === "--clear") {
-          await api.call("recovery.clear", { target: id });
+          await api.call("recovery.clear", { target: id, since: item.since });
           console.log(`${id}: cleared`);
           return 0;
         }
         if (flag) {
           const atReset = flag === "--at-reset";
-          await api.call("recovery.set", { target: id, atReset });
+          await api.call("recovery.set", { target: id, since: item.since, atReset });
           console.log(`${id}: at reset ${atReset ? "on" : "off"}`);
           return 0;
         }
         if (id.startsWith("S-")) {
-          const r = await api.call("recovery.resume", { id });
+          const r = await api.call("recovery.resume", { id, since: item.since });
           const note = r.note ?? r.reason;
           console.log(`${r.id}: ${r.status}${note ? ` · ${note}` : ""}`);
           return 0;
         }
-        const listed = await api.call("recovery.list", {});
-        const project = listed.items?.find((x: any) => x.target === id)?.project ?? await currentProject(api);
         const tty = answers();
-        const r = await runAsk(api, project, "Continue where you left off.", tty, { continuationOf: id });
+        const r = await runAsk(api, item.project, "Continue where you left off.", tty, { continuationOf: id });
         tty.close();
         console.log(dim(r.ok ? "— done" : `— failed: ${r.summary}`));
         return r.ok ? 0 : 1;

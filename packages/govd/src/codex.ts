@@ -248,6 +248,7 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   // snapshot taken earlier could miss a last write. A SIGKILL after 40 s is the last resort.
   const finish = (r: { ok: boolean; summary: string; limit?: { resetsAt: string | null } }) => {
     if (finished) return; finished = true; cleanup();
+    if (limited) r = { ok: false, summary: "Codex hit its usage limit", limit: { resetsAt: codexLimitReset(rateLimits) } };
     const last = setTimeout(() => rpc.kill(), 40_000);
     last.unref?.();
     void rpc.exited.then(() => { clearTimeout(last); o.hooks.done({ ...r, usage: tokens.usage(r.ok) }); });

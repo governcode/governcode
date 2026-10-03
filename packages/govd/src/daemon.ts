@@ -85,6 +85,8 @@ export class Daemon {
   private waking = new Map<string, Promise<void>>();
   // The wake turns running now, by turn id, each with its stop: one ends when nobody is left to see it.
   private wakeTurns = new Map<string, () => void>();
+  // Specs an at-reset sweep resumed while a client could show the unattended work.
+  private recoveryRuns = new Map<string, { resetsAt: string | null }>();
   private recoveryTimer?: ReturnType<typeof setInterval>;
   private recoveryBusy = false;
   private readonly recoverySweepMs: number;
@@ -311,6 +313,10 @@ export class Daemon {
         for (const g of [...this.gates.values()]) if (g.ctx.turn === turn && !g.ctx.spec) this.settle(g.id, "deny", "nobody is connected");
         stop();
       }
+      if (!this.someoneSeesWakes()) for (const [id, limit] of this.recoveryRuns) {
+        const why = "stopped: nobody was connected to see it";
+        this.runs.stop(id, { limited: { resetsAt: limit.resetsAt, at: new Date().toISOString(), why } });
+      }
     });
     const write = (obj: unknown) => sock.writable && sock.write(JSON.stringify(obj) + "\n");
     sock.on("close", () => {
@@ -332,7 +338,7 @@ export class Daemon {
         const parsed = Params[method].safeParse(req.params ?? {});
         // Each problem names its field (id: ..., reserves.codex.weekly: ...), for the CLI and the Dashboard alike.
         if (!parsed.success) throw new RpcError(Errors.badParams, issues(parsed.error));
-        const result = await this.call(method, parsed.data as never, (n) => write({ jsonrpc: "2.0", method: "event", params: n }), sock);
+        const result = await this.call(method, parsed.data as never, (n) => write({ jsonrpc: "2.0", method: "event", params: n }), sock, req.params);
         write({ jsonrpc: "2.0", id, result });
       } catch (err) {
         const code = err instanceof RpcError ? err.code : -32603;
@@ -519,7 +525,17 @@ export class Daemon {
           if (!spec) continue;
           const ctx = this.recoveryContext(item.project);
           if (resumeSpecIssue(ctx, spec)) continue;
-          try { await resumeSpec(ctx, spec, "govd"); } catch { /* it remains visible for the user */ }
+          try {
+            await resumeSpec(ctx, spec, "govd");
+            if (this.runs.has(spec.id)) {
+              this.recoveryRuns.set(spec.id, { resetsAt: item.resetsAt });
+              void this.runs.done(spec.id)?.then(() => this.recoveryRuns.delete(spec.id), () => this.recoveryRuns.delete(spec.id));
+              if (!this.someoneSeesWakes()) {
+                const why = "stopped: nobody was connected to see it";
+                this.runs.stop(spec.id, { limited: { resetsAt: item.resetsAt, at: new Date().toISOString(), why } });
+              }
+            }
+          } catch { /* it remains visible for the user */ }
           continue;
         }
         if ((this.turning.get(item.project) ?? 0) > 0) continue;
@@ -577,7 +593,7 @@ export class Daemon {
     if (wake) setImmediate(() => { void this.sweepRecovery(); });
   }
 
-  private async call(method: Method, p: any, notify: (n: unknown) => void, sock: Socket): Promise<unknown> {
+  private async call(method: Method, p: any, notify: (n: unknown) => void, sock: Socket, rawParams?: unknown): Promise<unknown> {
     const L = this.ledger;
     switch (method) {
       case "hello":
@@ -687,14 +703,17 @@ export class Daemon {
       case "settings.get":
         return { settings: this.settings() };
       case "settings.set": {
+        const saved = this.settings();
+        const raw = rawParams && typeof rawParams === "object" && !Array.isArray(rawParams) ? rawParams as Record<string, unknown> : {};
+        const value = { ...saved, ...Object.fromEntries(Object.keys(saved).filter((key) => Object.hasOwn(raw, key)).map((key) => [key, p[key]])) };
         // A window the Runner reports now counts too (the Dashboard offers exactly those).
-        knownNames(settingNames(p), settingNames(this.settings()), (r) => this.limits.view(r).readings.map((x) => x.window));
-        this.saveSettings(p);
-        this.limits.setReserves(p.reserves);
-        this.limits.setLocal(p.local);
-        L.append(null, "settings.changed", "user", { reserves: p.reserves, runners: p.runners, specModels: p.specModels, local: p.local, budgets: p.budgets,
-          recovery: p.recovery });
-        return { settings: p };
+        knownNames(settingNames(value), settingNames(saved), (r) => this.limits.view(r).readings.map((x) => x.window));
+        this.saveSettings(value);
+        this.limits.setReserves(value.reserves);
+        this.limits.setLocal(value.local);
+        L.append(null, "settings.changed", "user", { reserves: value.reserves, runners: value.runners, specModels: value.specModels, local: value.local, budgets: value.budgets,
+          recovery: value.recovery });
+        return { settings: value };
       }
       case "limits.list": {
         if (p.measure) await Promise.all(Object.values(this.usage).map(async (src) => {
@@ -712,6 +731,8 @@ export class Daemon {
           if (p.target.startsWith("S-") && !L.spec(p.target)) throw new RpcError(Errors.notFound, `no Spec ${p.target}`);
           throw new RpcError(Errors.refused, `${p.target} is not limited`);
         }
+        if (state.item.since !== p.since) throw new RpcError(Errors.refused,
+          `${p.target} has changed since you looked (a newer limit): look again (gov limited)`);
         if (p.atReset && state.item.resetsAt === null) throw new RpcError(Errors.refused,
           `no reset time is known for ${p.target}: resume it yourself`);
         L.append(state.item.project, "recovery.set", "user", { target: p.target, resetsAt: state.item.resetsAt, atReset: p.atReset });
@@ -721,6 +742,8 @@ export class Daemon {
         const spec = this.specOr404(p.id);
         const state = this.recoveryTarget(p.id);
         if (!state || state.item.kind === "turn") throw new RpcError(Errors.refused, `${p.id} is not a limited Spec`);
+        if (state.item.since !== p.since) throw new RpcError(Errors.refused,
+          `${p.id} has changed since you looked (a newer limit): look again (gov limited)`);
         return this.refusingAsync(() => resumeSpec(this.recoveryContext(spec.project), spec, "user"));
       }
       case "recovery.clear": {
@@ -729,6 +752,8 @@ export class Daemon {
           if (p.target.startsWith("S-") && !L.spec(p.target)) throw new RpcError(Errors.notFound, `no Spec ${p.target}`);
           throw new RpcError(Errors.refused, `${p.target} is not limited`);
         }
+        if (state.item.since !== p.since) throw new RpcError(Errors.refused,
+          `${p.target} has changed since you looked (a newer limit): look again (gov limited)`);
         L.append(state.item.project, "recovery.cleared", "user", { target: p.target });
         return { target: p.target, cleared: true };
       }
