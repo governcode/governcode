@@ -157,6 +157,7 @@ export type CrewValue = z.infer<typeof Crew>;
 
 /** A limited Spec or Controller turn that may be resumed (#226). */
 const RecoveryTarget = z.string().regex(/^(S-\d{4,}|T-\d+)$/);
+const RecoverySince = z.string().min(1).max(40);
 
 export const Params = {
   hello: z.object({ client: z.string().max(40), protocol: z.number().int() }),
@@ -187,10 +188,12 @@ export const Params = {
   // unknown), since, why, atReset, due, note? }> }: held = its Limit held it before it started;
   // spec = its Runner hit the provider's limit (its copy kept); due = at reset, and the reset passed;
   // note = why it is not resumed by itself. A turn is continued with ask { continuationOf }.
+  // since: the item's own `since`, as listed: a choice made on one limit never applies to a newer
+  // one (govd refuses it when the item has changed since the client looked).
   "recovery.list": z.object({ project: ProjectName.optional() }),
-  "recovery.set": z.object({ target: RecoveryTarget, atReset: z.boolean() }),
-  "recovery.resume": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
-  "recovery.clear": z.object({ target: RecoveryTarget }),
+  "recovery.set": z.object({ target: RecoveryTarget, since: RecoverySince, atReset: z.boolean() }),
+  "recovery.resume": z.object({ id: z.string().regex(/^S-\d{4,}$/), since: RecoverySince }),
+  "recovery.clear": z.object({ target: RecoveryTarget, since: RecoverySince }),
   // remember: also allow this kind of step for the rest of this turn / Spec / project. It only
   // skips the question; the sandbox still applies to every step.
   "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]),
