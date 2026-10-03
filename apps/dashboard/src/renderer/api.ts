@@ -25,8 +25,10 @@ export type Spec = {
   id: string; project: string; status: SpecStatus; created: string; to: string; brief: string; result: string;
   scope: { read: string[]; write: string[] }; budgetPercent: number; workspace: string; model: string;
   effort: string | null; reason: string; checkpoints: { before: string | null; after: string | null };
-  files: string[]; note?: string;
+  files: string[]; note?: string; limited?: { resetsAt: string | null; at: string; why: string };
 };
+export type RecoveryItem = { target: string; project: string; kind: "held" | "spec" | "turn"; provider: string;
+  resetsAt: string | null; since: string; why: string; atReset: boolean; due: boolean; note?: string };
 
 const pad = (n: number) => String(n).padStart(2, "0");
 

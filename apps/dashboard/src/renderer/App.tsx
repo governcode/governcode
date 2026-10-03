@@ -99,15 +99,15 @@ export function App() {
   // The first message to a Controller asks once whether the user's own instructions come along:
   // about the tool this turn runs (the project's Controller, or Home's), and only once that tool
   // is connected (otherwise govd refuses the turn and says how to connect), as gov ask does.
-  const [personalAsk, setPersonalAsk] = useState<{ provider: "claude" | "codex"; prompt: string; home: boolean } | null>(null);
-  const send = useCallback(async (prompt: string) => {
+  const [personalAsk, setPersonalAsk] = useState<{ provider: "claude" | "codex"; prompt: string; home: boolean; continuationOf?: string } | null>(null);
+  const send = useCallback(async (prompt: string, continuationOf?: string) => {
     const provider = personalKey(project === HOME ? homeController : projects.find((p) => p.name === project)?.controller);
     const s = await call<{ settings: { personal?: Record<string, boolean | null> } }>("settings.get").catch(() => null);
     if (s?.settings.personal?.[provider] === null) {
       const t = await call<{ tools: Array<{ tool: string; connected: boolean }> }>("tools.list", {}).catch(() => null);
-      if (t?.tools.some((x) => x.tool === provider && x.connected)) { setPersonalAsk({ provider, prompt, home: project === HOME }); return; }
+      if (t?.tools.some((x) => x.tool === provider && x.connected)) { setPersonalAsk({ provider, prompt, home: project === HOME, continuationOf }); return; }
     }
-    await sendNow(prompt);
+    await sendNow(prompt, continuationOf);
   }, [project, projects, homeController]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const choosePersonal = useCallback(async (use: boolean) => {
@@ -116,7 +116,7 @@ export function App() {
     const s = await call<{ settings: Record<string, any> }>("settings.get");
     await call("settings.set", { ...s.settings, personal: { ...s.settings.personal, [ask.provider]: use } });
     setPersonalAsk(null);
-    await sendNow(ask.prompt);
+    await sendNow(ask.prompt, ask.continuationOf);
   }, [personalAsk]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const newConversation = useCallback(async () => {
@@ -125,12 +125,12 @@ export function App() {
     push(key, () => ({ entries: [], busy: false }));
   }, [project, push]);
 
-  const sendNow = useCallback(async (prompt: string) => {
+  const sendNow = useCallback(async (prompt: string, continuationOf?: string) => {
     const key = project;
     const askId = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     askThread.current.set(askId, key);
     push(key, (t) => ({ entries: [...t.entries, { t: "you", text: prompt }], busy: true }));
-    const r = await api().ask(askId, key === HOME ? null : key, prompt);
+    const r = await api().ask(askId, key === HOME ? null : key, prompt, continuationOf);
     askThread.current.delete(askId);
     push(key, (t) => ({ busy: false, entries: [...t.entries, r.ok
       ? { t: "done", ok: r.value.ok, summary: r.value.summary }
@@ -246,16 +246,17 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
 }
 
 /**
- * A wake turn (Crew card: report right away) has no ask stream: GovernCode started it to report
- * finished Specs. Its Controller's words reach that project's Terminal from the Trace, from its
- * turn.started to its end; other turns' events are left to their own ask streams.
+ * A wake or automatic continuation turn has no ask stream: GovernCode started it itself. Its
+ * Controller's words reach that project's Terminal from the Trace, from turn.started to its end;
+ * other turns' events are left to their own ask streams.
  */
 function wakeEntry(ev: TraceEvent, waking: Set<string>): Entry | null {
   const key = ev.project!, d = ev.data;
   if (ev.kind === "turn.started") {
-    if (d.origin !== "wake") { waking.delete(key); return null; }
+    if (d.origin !== "wake" && d.origin !== "continuation") { waking.delete(key); return null; }
     waking.add(key);
-    return { t: "wake", specs: Array.isArray(d.specs) ? d.specs.map(String) : [] };
+    return d.origin === "wake" ? { t: "wake", specs: Array.isArray(d.specs) ? d.specs.map(String) : [] }
+      : { t: "continuation", turn: String(d.continuationOf) };
   }
   if (!waking.has(key)) return null;
   switch (ev.kind) {

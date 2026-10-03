@@ -1,18 +1,24 @@
 // Pipeline: the Specs, their status, and for one Spec its details, its diff, and the choice
 // to accept it into the project or discard it.
 import { useCallback, useEffect, useState } from "react";
-import { call, clock, dotted, modelLabel, useFallbackPoll, useWatch, type Spec } from "../api.ts";
+import { call, clock, dotted, modelLabel, useFallbackPoll, useWatch, type RecoveryItem, type Spec } from "../api.ts";
 import { ConfirmButton, DiffView, Empty, SpecPill } from "../ui.tsx";
 
 export function Pipeline({ project, live }: { project: string | null; live: boolean }) {
   const [specs, setSpecs] = useState<Spec[] | null>(null);
+  const [recoveries, setRecoveries] = useState<RecoveryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const r = await call<{ specs: Spec[] }>("spec.list", project ? { project } : {});
-      setSpecs([...r.specs].reverse());
+      const [listed, recovery] = await Promise.all([
+        call<{ specs: Spec[] }>("spec.list", project ? { project } : {}),
+        // (an older govd has no recovery: no limited items, the Specs still show)
+        call<{ items: RecoveryItem[] }>("recovery.list", project ? { project } : {}).catch(() => ({ items: [] as RecoveryItem[] })),
+      ]);
+      setSpecs([...listed.specs].reverse());
+      setRecoveries(recovery.items);
       setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }, [project]);
@@ -20,7 +26,8 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
   useEffect(() => { void load(); }, [load]);
   useFallbackPoll(live, load);
   useWatch((w) => {
-    if (w.kind === "trace" && w.event.kind.startsWith("spec.") && (!project || w.event.project === project)) void load();
+    if (w.kind === "trace" && (w.event.kind.startsWith("spec.") || w.event.kind.startsWith("recovery."))
+        && (!project || w.event.project === project)) void load();
   });
 
   const spec = specs?.find((s) => s.id === selected) ?? null;
@@ -58,7 +65,8 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
             ))}
           </div>
           <div className="detail">
-            {spec ? <SpecDetail key={spec.id} spec={spec} onChanged={load} /> : <div className="dim pad">Select a Spec to see its details and diff.</div>}
+            {spec ? <SpecDetail key={spec.id} spec={spec} recovery={recoveries.find((r) => r.target === spec.id)} onChanged={load} />
+              : <div className="dim pad">Select a Spec to see its details and diff.</div>}
           </div>
         </div>
       )}
@@ -66,7 +74,7 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
   );
 }
 
-function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) {
+function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: RecoveryItem; onChanged: () => void }) {
   const [diff, setDiff] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const reviewable = spec.status === "needs-review";
@@ -86,6 +94,21 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
         // A cancelled Spec's changed files stay reviewable: accept or discard them like any other.
         : r.status === "needs-review" ? `Cancelled. Its ${r.files?.length ?? 0} changed file(s) wait for your review.`
         : r.status === "running" ? "Cancelling: the Runner has not stopped yet." : "Cancelled. Nothing had changed." });
+      onChanged();
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
+
+  const resume = async () => {
+    try {
+      const r = await call<{ id: string; status: string }>("recovery.resume", { id: spec.id });
+      setMsg({ ok: true, text: `Resumed. ${r.id} is ${r.status}.` });
+      onChanged();
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
+  const setAtReset = async (atReset: boolean) => {
+    try {
+      await call("recovery.set", { target: spec.id, atReset });
+      setMsg({ ok: true, text: atReset ? "Will resume at the reset time." : "Resume at reset is off." });
       onChanged();
     } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
   };
@@ -110,6 +133,21 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
         <ConfirmButton label="Accept" tone="ok" disabled={!reviewable} confirm={`Apply ${spec.id}'s changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
         <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || ["failed", "cancelled", "held"].includes(spec.status))} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
       </div>
+      {spec.limited && (
+        <div className="checkpoint">
+          <div><b>{spec.status === "held" ? `Held by its Limit: ${spec.limited.why}` : "Its Runner hit its usage limit"}</b>
+            <span className="dim"> · {resetLabel(recovery?.resetsAt ?? spec.limited.resetsAt)}</span></div>
+          <div className="row wrap">
+            <button className="btn btn-accent" onClick={resume}>Resume now</button>
+            <label className="check" title={(recovery?.resetsAt ?? spec.limited.resetsAt) === null ? "The reset time is unknown" : undefined}>
+              <input type="checkbox" checked={recovery?.atReset ?? false} disabled={!recovery || recovery.resetsAt === null}
+                onChange={(e) => void setAtReset(e.target.checked)} />
+              <span>Resume at reset</span>
+            </label>
+            {recovery?.note && <span className="dim small">{recovery.note}</span>}
+          </div>
+        </div>
+      )}
       {msg && <div className={msg.ok ? "ok pad" : "error pad"}>{msg.text}</div>}
       <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
       <h3>Brief</h3>
@@ -120,4 +158,12 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
       {diff !== null && <DiffView diff={diff} />}
     </div>
   );
+}
+
+function resetLabel(at: string | null): string {
+  if (at === null) return "reset time unknown";
+  const d = new Date(at), now = new Date();
+  if (Number.isNaN(d.getTime())) return `resets ${at}`;
+  const minutes = Math.max(0, Math.ceil((d.getTime() - now.getTime()) / 60_000));
+  return `resets ${clock(at, now).replace(/:\d{2}$/, "")} (in ${Math.floor(minutes / 60)} h ${minutes % 60} min)`;
 }

@@ -71,8 +71,8 @@ handle(Channel.openSignIn, async (url: unknown) => {
   await shell.openExternal(url);
   return true;
 });
-handle(Channel.ask, (askId: unknown, project: unknown, prompt: unknown) => outcome(() => {
-  const req = checkAsk(askId, project, prompt);
+handle(Channel.ask, (askId: unknown, project: unknown, prompt: unknown, continuationOf?: unknown) => outcome(() => {
+  const req = checkAsk(askId, project, prompt, continuationOf);
   return link.ask(req.params, (event) => win?.webContents.send(Channel.event, req.askId, event));
 }));
 
