@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -52,6 +52,10 @@ export type Spec = SpecInput & { id: string; project: string; status: SpecStatus
   turn?: string;                 // the Controller turn that made it (T-n)
   delivery?: SpecDelivery;
   summaries?: string[];          // the Runner's own words at the end of each round; the first is never rewritten
+  // A usage limit stopped it: its Limit held it before it started (status held), or its Runner hit
+  // the provider's usage limit (status failed, its copy kept). resetsAt is never guessed: null when
+  // unknown. Gone once it runs again.
+  limited?: { resetsAt: string | null; at: string; why: string };
 };
 
 /** What a Home Controller may propose; govd creates it only when the user chooses Create. */
@@ -126,6 +130,9 @@ export const Settings = z.object({
   // so a budget cannot see use outside GovernCode: set it below the real plan. When the provider
   // also reports its own usage, both are checked and the stricter one decides.
   budgets: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), Budget).default({}),
+  // Usage limits (#226): autoResume makes "resume at the reset time" the choice for each newly
+  // limited Spec or turn (off: only when you choose it; resume now is always available).
+  recovery: z.object({ autoResume: z.boolean().default(false) }).default({ autoResume: false }),
 });
 export type SettingsValue = z.infer<typeof Settings>;
 
@@ -148,6 +155,9 @@ export const Crew = z.object({
 });
 export type CrewValue = z.infer<typeof Crew>;
 
+/** A limited Spec or Controller turn that may be resumed (#226). */
+const RecoveryTarget = z.string().regex(/^(S-\d{4,}|T-\d+)$/);
+
 export const Params = {
   hello: z.object({ client: z.string().max(40), protocol: z.number().int() }),
   "project.list": z.object({}),
@@ -158,7 +168,8 @@ export const Params = {
   // after: the events after that seq, oldest first, instead of the newest (an export pages with it).
   "trace.list": z.object({ project: ProjectName.optional(), limit: z.number().int().min(1).max(1000).default(50),
     kinds: z.array(z.string().regex(/^[a-z.]{1,40}$/)).max(20).optional(), after: z.number().int().min(0).optional() }),
-  ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000) }),
+  // continuationOf: the user continues a turn a usage limit stopped (T-n), with their own prompt.
+  ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000), continuationOf: z.string().regex(/^T-\d+$/).optional() }),
   "gate.list": z.object({}),
   "spec.list": z.object({ project: ProjectName.optional() }),
   "turn.list": z.object({ project: ProjectName }),
@@ -171,6 +182,15 @@ export const Params = {
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.cancel": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
+  // Usage limits (#226). A target is a limited Spec (S-n) or Controller turn (T-n). recovery.list
+  // gives { items: Array<{ target, project, kind: "held" | "spec" | "turn", provider, resetsAt (null:
+  // unknown), since, why, atReset, due, note? }> }: held = its Limit held it before it started;
+  // spec = its Runner hit the provider's limit (its copy kept); due = at reset, and the reset passed;
+  // note = why it is not resumed by itself. A turn is continued with ask { continuationOf }.
+  "recovery.list": z.object({ project: ProjectName.optional() }),
+  "recovery.set": z.object({ target: RecoveryTarget, atReset: z.boolean() }),
+  "recovery.resume": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
+  "recovery.clear": z.object({ target: RecoveryTarget }),
   // remember: also allow this kind of step for the rest of this turn / Spec / project. It only
   // skips the question; the sandbox still applies to every step.
   "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]),
@@ -233,6 +253,7 @@ export type TraceEvent = {
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.discarded" | "spec.undone" | "spec.cancel" | "spec.cancelled" | "spec.followup"
+    | "recovery.set" | "recovery.resumed" | "recovery.cleared"
     | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared" | "crew.set" | "plan.proposed" | "plan.answered" | "spec.step";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;
