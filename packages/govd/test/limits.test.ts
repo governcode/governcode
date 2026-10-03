@@ -567,3 +567,15 @@ test("setBudget: one window at a time; switching the unit drops the other unit's
   b = setBudget(b, "fakecloud", "weekly", null);
   assert.deepEqual(b, {});
 });
+
+test("a reservation dropped before its Runner started owes nothing (abandon), unlike a finished one (release)", async () => {
+  const src = native("fakecloud", () => ({ provider: "fakecloud", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 50, resetsAt: null }] }));
+  const gate = new LimitGate();
+  await measured(gate, src);
+  assert.ok(gate.admit("S-A", "fakecloud", 20).ok);
+  gate.abandon("S-A");                                // its copy could not be made: nothing ran
+  assert.equal(gate.view("fakecloud").owedPercent, 0);
+  assert.ok(gate.admit("S-B", "fakecloud", 20).ok);
+  gate.release("S-B");                                // it ran: owed until the provider's report catches up
+  assert.equal(gate.view("fakecloud").owedPercent, 20);
+});

@@ -266,7 +266,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   openSocket(handle: (method: string, params: unknown) => Promise<unknown>): { path: string; close(): void } }): Promise<void> {
   let finished = false;
   const cleanups: Array<() => void> = [];
-  const finish = (r: { ok: boolean; summary: string; usage?: unknown }) => {
+  const finish = (r: { ok: boolean; summary: string; usage?: unknown; started?: false }) => {
     if (finished) return; finished = true;
     for (const c of cleanups.reverse()) { try { c(); } catch { /* best effort */ } }
     o.hooks.done(r);
@@ -325,7 +325,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   let stderr = "";
   // The run's home goes once govern-sup has exited (every process of the run gone).
   child.on("close", () => rh.finish());
-  child.on("error", (e) => { rh.finish(); finish({ ok: false, summary: `agy did not start: ${e.message}` }); });
+  child.on("error", (e) => { rh.finish(); finish({ ok: false, summary: `agy did not start: ${e.message}`, started: false }); });
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
   let result: any = null;
   createInterface({ input: child.stdout }).on("line", (line) => {
@@ -339,13 +339,15 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   // Stopping ends the process group and waits for govern-sup to report it gone before anything is
   // recorded (a snapshot taken earlier could miss a last write).
   let stopped: string | null = null;
-  o.signal?.addEventListener("abort", () => {
+  const stop = () => {
     stopped = String(o.signal?.reason ?? "aborted");
     try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ }
     // govern-sup reaps every descendant itself (up to 30 s) and only then exits; a SIGKILL after
     // 60 s is the last resort, and even then nothing is recorded until it reports closed.
     setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } }, 60_000).unref();
-  }, { once: true });
+  };
+  // A stop that came while it was starting fires no listener: checked here too.
+  if (o.signal?.aborted) stop(); else o.signal?.addEventListener("abort", stop, { once: true });
   child.on("close", (code) => {
     if (stopped) return finish({ ok: false, summary: `stopped: ${stopped}` });
     // A Runner that created Antigravity customizations could switch the Gate off for later runs.

@@ -99,7 +99,7 @@ test("limits: the Controller's budget is clamped, and unmetered is an explicit o
 test("specs: created, moved through statuses, all in the Trace", () => {
   const L = new Ledger(":memory:");
   const s = L.createSpec("tidepool", { to: "codex", brief: "write tests", result: "cargo test passes",
-    scope: { read: ["crates/api"], write: ["crates/api/tests"] }, budgetPercent: 15, workspace: "worktree",
+    scope: { read: ["crates/api"], write: ["crates/api/tests"] }, budgetPercent: 15, workspace: "worktree", mode: "async", waitSeconds: 600,
     model: "gpt-5.5", effort: "medium", reason: "idle and within its Limit" }, "controller · claude-code");
   assert.equal(s.id, "S-0001");
   L.updateSpec(s.id, { status: "running", checkpoints: { before: "abc", after: null } }, "govd");

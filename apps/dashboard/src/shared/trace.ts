@@ -18,7 +18,7 @@ export const KIND_LABEL: Record<ProtocolTraceEvent["kind"], string> = {
   "spec.undone": "Spec discarded",   // what older records call a discarded Spec
   "tool.connected": "Tool connected", "tool.disconnected": "Tool disconnected", "notes.updated": "Notes updated",
   "context.shared": "Context shared", "crew.set": "Crew card saved", "plan.proposed": "Plan proposed", "plan.answered": "Plan answered",
-  "spec.step": "Spec step",
+  "spec.step": "Spec step", "spec.cancel": "Cancel asked", "spec.cancelled": "Spec cancelled", "spec.followup": "Spec follow-up",
 };
 
 /** The event's label; a kind this Dashboard does not know reads as itself. */

@@ -55,7 +55,8 @@ export type TurnHooks = {
   text(chunk: string): void;
   tool(name: string, input: Record<string, unknown>): void;
   gate(req: GateRequest): Promise<"allow" | "deny">;
-  done(result: { ok: boolean; summary: string; usage?: unknown }): void;
+  // started false: no process of the tool got going (it could not start), so nothing was used.
+  done(result: { ok: boolean; summary: string; usage?: unknown; started?: false }): void;
 };
 
 /** The exact bytes a Gate shows and a phone will later sign: sorted keys, ASCII-escaped. */
@@ -223,7 +224,7 @@ export function runTurn(opts: {
       "--strict-mcp-config"] : []),
     // Proposing a project creates nothing (the user's Create does), so it needs no Gate of its own;
     // listing the Runners and reading a Spec's status only read.
-    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status,mcp__governcode__project_notes,mcp__governcode__conversation_read,mcp__governcode__plan,mcp__governcode__delegate,mcp__governcode__spec_discard",
+    "--allowedTools", opts.mcp?.mode === "home" ? "mcp__governcode__propose_project" : "mcp__governcode__crew,mcp__governcode__spec_status,mcp__governcode__project_notes,mcp__governcode__conversation_read,mcp__governcode__plan,mcp__governcode__delegate,mcp__governcode__spec_discard,mcp__governcode__spec_cancel,mcp__governcode__spec_followup",
     // The Crew card's "no subagents": Claude Code's subagent tool is not available at all.
     ...(opts.noSubagents ? ["--disallowedTools", "Task,Agent"] : [])];
   // A clean environment: govd's own variables (and anything else in the user's shell) are
@@ -242,7 +243,8 @@ export function runTurn(opts: {
   // The run's home is finished (login put back, folder removed) only once govern-sup has exited,
   // which it does after every process of the run is gone.
   child.on("close", () => rh.finish());
-  child.on("error", () => rh.finish());
+  // A sandbox that could not even start ends the turn too (no exit event may follow).
+  child.on("error", (e) => { rh.finish(); finish({ ok: false, summary: `the sandbox could not start: ${e.message}` }); });
   const send = (obj: unknown) => child.stdin.write(JSON.stringify(obj) + "\n");
   send({ type: "user", message: { role: "user", content: [{ type: "text", text: opts.prompt }] } });
 

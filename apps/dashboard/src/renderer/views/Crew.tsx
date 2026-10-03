@@ -6,11 +6,17 @@ import { Empty, Pill, SpecPill } from "../ui.tsx";
 import { buildBoard, type Board } from "../../shared/board.ts";
 
 type Crew = { controllerWorks: boolean; handoff: "ask" | "plan" | "off"; runners: string[] | null;
-  maxPercent: Record<string, number>; subagents: { controller: boolean; runners: boolean } };
+  maxPercent: Record<string, number>; subagents: { controller: boolean; runners: boolean };
+  wake?: "auto" | "tell" | "off" };   // an older govd has no wake
 const HANDOFF: Array<[Crew["handoff"], string, string]> = [
   ["ask", "Ask me each time (default)", "Each handoff to a paid Runner waits for your yes at a Gate. A local model is a kind of step you can allow for the project."],
   ["plan", "Follow the approved plan", "The Controller posts a game plan first; handoffs you approve there run without asking again. Anything not in the plan asks."],
   ["off", "Off", "The Controller works alone: no Runners for this project."],
+];
+const WAKE: Array<[NonNullable<Crew["wake"]>, string, string]> = [
+  ["auto", "Report it right away (default)", "GovernCode starts a short Controller turn by itself to read the result and tell you, only while the Dashboard is open; it uses the Controller's allowance and changes nothing. Otherwise the Controller hears with your next message."],
+  ["tell", "Tell it with my next message", "The Controller hears which Specs finished when you next write to it."],
+  ["off", "Don't tell the Controller", "It is not told. The Spec still waits for you in the Pipeline."],
 ];
 
 /** Who is doing what right now, from the Trace: the Controller, its subagents, each Spec and its Runner. */
@@ -105,6 +111,15 @@ export function CrewView({ project }: { project: string | null }) {
           <label key={v} className="policy-option"><input type="radio" checked={draft.handoff === v} onChange={() => setDraft({ ...draft, handoff: v })} />
             <span><b>{title}</b><span className="dim small"> · {text}</span></span></label>
         ))}
+
+        {draft.wake !== undefined && <>
+          <h2>When a Spec finishes</h2>
+          <p className="dim small">When a Runner finishes a Spec and the Controller did not wait for it.</p>
+          {WAKE.map(([v, title, text]) => (
+            <label key={v} className="policy-option"><input type="radio" checked={draft.wake === v} onChange={() => setDraft({ ...draft, wake: v })} />
+              <span><b>{title}</b><span className="dim small"> · {text}</span></span></label>
+          ))}
+        </>}
 
         {draft.handoff !== "off" && <>
           <h2>Runners</h2>

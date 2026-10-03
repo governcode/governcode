@@ -156,9 +156,10 @@ export class Ledger {
     });
   }
 
-  updateSpec(id: string, change: Partial<Pick<Spec, "status" | "checkpoints" | "files" | "note">>, actor: string): Spec {
+  updateSpec(id: string, change: Partial<Pick<Spec, "status" | "checkpoints" | "files" | "note" | "turn" | "delivery" | "summaries">>, actor: string): Spec {
     const kinds: Partial<Record<SpecStatus, TraceEvent["kind"]>> = { held: "spec.held", running: "spec.started",
-      "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", discarded: "spec.discarded" };
+      "needs-review": "spec.done", failed: "spec.failed", accepted: "spec.accepted", discarded: "spec.discarded", cancelled: "spec.cancelled" };
+    // (Who asked for a cancel, and why, is recorded when they ask: spec.cancel.)
     return this.tx(() => {
       const spec = this.spec(id);
       if (!spec) throw new Error(`no spec ${id}`);

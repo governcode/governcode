@@ -386,7 +386,8 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
     return { ask: false, quiet: kinds.length === 0, kinds };
   }
   // Handing a job to a local model costs no quota: a kind like any other. A paid Runner always asks.
-  if (/^(mcp__governcode__delegate|governcode delegate)$/.test(tool)) {
+  // A follow-up is another round of the same handoff: the same rule.
+  if (/^(mcp__governcode__delegate|governcode delegate|mcp__governcode__spec_followup|governcode spec_followup)$/.test(tool)) {
     return LOCAL_RUNNERS.includes(String(req.input.to ?? "")) ? { ask: false, quiet: false, kinds: [runner({ key: "delegate:local", label: "handing jobs to a local model" })] }
       : { ask: true, quiet: false, kinds: [] };
   }
@@ -462,9 +463,15 @@ export class Allows {
     return rule;
   }
 
-  /** Turn and Spec rules end with the Controller turn they were made in (Specs run inside it). */
-  endTurn(turn: string): void {
-    this.rules = this.rules.filter((r) => r.scope === "project" || r.turn !== turn);
+  /** Turn rules end with the Controller turn they were made in; so do Spec rules, unless their
+   *  Spec is still running (it outlives the turn; endSpec ends them). */
+  endTurn(turn: string, running: (spec: string) => boolean = () => false): void {
+    this.rules = this.rules.filter((r) => r.scope === "project" || r.turn !== turn || (r.scope === "spec" && !!r.spec && running(r.spec)));
+  }
+
+  /** A Spec's round ended: its Spec rules end too. */
+  endSpec(spec: string): void {
+    this.rules = this.rules.filter((r) => !(r.scope === "spec" && r.spec === spec));
   }
 
   list(project?: string): AllowRule[] {

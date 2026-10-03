@@ -77,10 +77,15 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
   };
   useEffect(() => { if (spec.checkpoints.after) void showDiff(); }, [spec.id]);
 
-  const act = async (method: "spec.accept" | "spec.discard") => {
+  const act = async (method: "spec.accept" | "spec.discard" | "spec.cancel") => {
+    if (method === "spec.cancel") setMsg({ ok: true, text: "Cancelling…" });   // its Runner may take a few seconds to stop
     try {
-      const r = await call<{ applied?: string[] }>(method, { id: spec.id });
-      setMsg({ ok: true, text: method === "spec.accept" ? `Applied ${r.applied?.length ?? 0} file(s): ${(r.applied ?? []).join(", ")}` : "Discarded." });
+      const r = await call<{ applied?: string[]; status?: string; files?: string[] }>(method, { id: spec.id });
+      setMsg({ ok: true, text: method === "spec.accept" ? `Applied ${r.applied?.length ?? 0} file(s): ${(r.applied ?? []).join(", ")}`
+        : method === "spec.discard" ? "Discarded."
+        // A cancelled Spec's changed files stay reviewable: accept or discard them like any other.
+        : r.status === "needs-review" ? `Cancelled. Its ${r.files?.length ?? 0} changed file(s) wait for your review.`
+        : r.status === "running" ? "Cancelling: the Runner has not stopped yet." : "Cancelled. Nothing had changed." });
       onChanged();
     } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
   };
@@ -101,8 +106,9 @@ function SpecDetail({ spec, onChanged }: { spec: Spec; onChanged: () => void }) 
   return (
     <div className="spec-detail">
       <div className="row wrap"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
+        {spec.status === "running" && <ConfirmButton label="Cancel Spec" tone="danger" confirm={`Stop ${spec.id}'s Runner? Work it already did stays for review.`} onConfirm={() => act("spec.cancel")} />}
         <ConfirmButton label="Accept" tone="ok" disabled={!reviewable} confirm={`Apply ${spec.id}'s changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
-        <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || spec.status === "failed")} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
+        <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || ["failed", "cancelled", "held"].includes(spec.status))} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
       </div>
       {msg && <div className={msg.ok ? "ok pad" : "error pad"}>{msg.text}</div>}
       <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>

@@ -54,7 +54,7 @@ export class GovdLink {
           const w = e as WatchEvent;
           if (w && (w.kind === "gates" || (w.kind === "trace" && typeof w.event?.seq === "number"))) for (const f of this.watchListeners) f(w);
         });
-        await c.call("watch", {});
+        await c.call("watch", { wake: true });   // this app shows wake turns (Terminal)
       }
       this.conn = c;
       c.onClose(() => {

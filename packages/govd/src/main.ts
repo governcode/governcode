@@ -28,4 +28,11 @@ if (test.ok) {
   const pc = daemon.policyCheck();
   console.log(pc.ok ? "govd: Claude policy verified on this machine" : `govd: Claude policy FAILED, starting nothing: ${pc.problems.join("; ")}`);
 }
-for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { daemon.close(); process.exit(0); });
+// Stopping gives running Runners a few seconds to end, so their Specs are recorded as stopped; a
+// second signal does not wait.
+let stopping = false;
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => {
+  if (stopping) process.exit(0);
+  stopping = true;
+  void daemon.stop().finally(() => process.exit(0));
+});

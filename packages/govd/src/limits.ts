@@ -255,6 +255,12 @@ export class LimitGate {
     return Math.max(0, ...[...windows].map((w) => this.owed(provider, w)));
   }
 
+  /** A reserved Spec that never started a Runner (its copy failed, it was stopped first): nothing was
+   *  spent, so nothing is owed. */
+  abandon(spec: string): void {
+    this.inflight.delete(spec);
+  }
+
   release(spec: string): void {
     const f = this.inflight.get(spec);
     this.inflight.delete(spec);
@@ -341,6 +347,13 @@ export class CountedStore {
   begin(spec: string, provider: string, required = true): void {
     this.open[spec] = { provider, at: this.now() };
     try { this.save(); } catch (e) { if (required) { delete this.open[spec]; throw e; } }
+  }
+
+  /** A run written down that never got going (its tool could not start): not counted. */
+  drop(spec: string): void {
+    if (!this.open[spec]) return;
+    delete this.open[spec];
+    try { this.save(); } catch (e) { this.broken ??= `could not be written (${(e as NodeJS.ErrnoException).code ?? e})`; }
   }
 
   /** A Runner run ended (or was found open after a restart): count it, once. */

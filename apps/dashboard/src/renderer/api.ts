@@ -20,7 +20,7 @@ export type Controller = { provider: string; model: string; effort: string | nul
 export type Project = { name: string; path: string; created: string; controller: Controller };
 export type Turn = { id: string; at: string; files: string[]; undone?: boolean };
 export type Gate = { id: string; project: string | null; tool: string; canonical: string; opened: string; covers?: string | null; scopes?: string[]; suggest?: string | null };
-export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "discarded" | "failed";
+export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "discarded" | "failed" | "cancelled";
 export type Spec = {
   id: string; project: string; status: SpecStatus; created: string; to: string; brief: string; result: string;
   scope: { read: string[]; write: string[] }; budgetPercent: number; workspace: string; model: string;

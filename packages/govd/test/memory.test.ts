@@ -344,3 +344,16 @@ test("review: when no earlier item fits the budget, the record is empty but says
   assert.deepEqual([r.record, r.shown, r.omitted], ["", 0, 2]);
   L.close();
 });
+
+test("conversation: a wake turn's message is GovernCode's, never the user's, and never the first message", () => {
+  const L = new Ledger(":memory:");
+  L.append("p", "turn.started", "govd", { prompt: "Specs you handed off finished: S-0001 (codex, needs-review).", controller: { provider: "claude-code", model: "sonnet" }, origin: "wake", specs: ["S-0001"] });
+  L.append("p", "turn.text", "controller · claude-code", { text: "S-0001 is ready for review." });
+  L.append("p", "turn.completed", "controller · claude-code", { summary: "done" });
+  turn(L, "thanks, what next?", "next steps");
+  const rec = JSON.parse(conversationRecord(L, "p", { current: "claude-code" }).record);
+  assert.deepEqual(rec.map((i: { from: string }) => i.from), ["GovernCode (not the user)", "you (claude-code · sonnet)", "user", "you (claude-code · sonnet)"]);
+  // With a small budget, "the first message" kept is the user's, not GovernCode's.
+  const small = JSON.parse(conversationRecord(L, "p", { current: "claude-code", budget: 200 }).record);
+  assert.ok(small.every((i: { from: string }) => i.from !== "GovernCode (not the user)"), JSON.stringify(small));
+});

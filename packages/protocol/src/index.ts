@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -36,11 +36,23 @@ export const SpecInput = z.object({
   model: z.string().max(80).default(""),
   effort: Effort.nullable().default(null),
   reason: z.string().min(1).max(2_000),                  // why this Runner, shown to the user
+  // async: the call returns at once and the Spec runs on its own (the Controller is told when it
+  // finishes); wait: the call returns the result, or after waitSeconds says it is still running.
+  mode: z.enum(["async", "wait"]).default("async"),
+  waitSeconds: z.number().int().min(10).max(3300).default(600),
 });
 export type SpecInput = z.infer<typeof SpecInput>;
-export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "discarded" | "failed";
+export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accepted" | "discarded" | "failed" | "cancelled";
+/** Whether the Controller still has to hear about a finished Spec: pending (not yet), claimed (a
+ *  turn is telling it), delivered (told), acknowledged (it read the result or got it inline),
+ *  disposed (it will not be told: cancelled, or the user already accepted or discarded it). */
+export type SpecDelivery = "pending" | "claimed" | "delivered" | "acknowledged" | "disposed";
 export type Spec = SpecInput & { id: string; project: string; status: SpecStatus; created: string;
-  checkpoints: { before: string | null; after: string | null }; files: string[]; note?: string };
+  checkpoints: { before: string | null; after: string | null }; files: string[]; note?: string;
+  turn?: string;                 // the Controller turn that made it (T-n)
+  delivery?: SpecDelivery;
+  summaries?: string[];          // the Runner's own words at the end of each round; the first is never rewritten
+};
 
 /** What a Home Controller may propose; govd creates it only when the user chooses Create. */
 export const ProjectProposal = z.object({
@@ -98,6 +110,9 @@ export const Settings = z.object({
   // How much of the recent conversation each Controller turn gets, in characters: whole items only,
   // the rest left out whole and readable with conversation_read.
   memory: z.object({ conversationChars: z.number().int().min(2000).max(48_000).default(16_000) }).default({ conversationChars: 16_000 }),
+  // How many Specs may run at once, in one project and for one Runner (on top of each Limit).
+  specs: z.object({ maxPerProject: z.number().int().min(1).max(10).default(3), maxPerRunner: z.number().int().min(1).max(10).default(2) })
+    .default({ maxPerProject: 3, maxPerRunner: 2 }),
   // The user's own instructions for each Controller (CLAUDE.md, skills, agents and hooks for
   // Claude Code; AGENTS.md for Codex). null: not asked yet, treated as off.
   personal: z.object({ claude: z.boolean().nullable().default(null), codex: z.boolean().nullable().default(null) })
@@ -126,6 +141,10 @@ export const Crew = z.object({
   runners: z.array(z.string().regex(/^[a-z0-9-]{1,40}$/)).max(20).nullable().default(null),
   maxPercent: z.record(z.string().regex(/^[a-z0-9-]{1,40}$/), z.number().int().min(1).max(25)).default({}),
   subagents: z.object({ controller: z.boolean().default(true), runners: z.boolean().default(true) }).default({ controller: true, runners: true }),
+  // When Specs finish and the Controller is not working: auto = govd starts a turn for it to review
+  // them (only while a client is connected, else as tell); tell = it hears on your next message;
+  // off = neither (the project record still lists them).
+  wake: z.enum(["auto", "tell", "off"]).default("auto"),
 });
 export type CrewValue = z.infer<typeof Crew>;
 
@@ -151,6 +170,7 @@ export const Params = {
   "spec.diff": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
+  "spec.cancel": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   // remember: also allow this kind of step for the rest of this turn / Spec / project. It only
   // skips the question; the sandbox still applies to every step.
   "gate.answer": z.object({ id: z.string().regex(/^G-\d+$/), answer: z.enum(["allow", "deny"]),
@@ -161,7 +181,9 @@ export const Params = {
   "proposal.answer": z.object({ id: z.string().regex(/^P-\d+$/), answer: z.enum(["create", "cancel"]) }),
   // After `watch`, the connection also receives `event` notifications: {kind:"trace", event}
   // for every Trace append, and {kind:"gates"} whenever a Gate opens or is settled.
-  watch: z.object({}),
+  // wake true: this client shows wake turns (the Dashboard), so a finished Spec may start one while
+  // it is connected. Opt-in: a client that does not say so (gov, an older Dashboard) is not counted.
+  watch: z.object({ wake: z.boolean().default(false) }),
   // Connect (2026-09-28): every tool joins the same way. connect.start runs the tool's own
   // sign-in in GovernCode's private home for it and streams {kind:"connect", id, text | url}
   // events; connect.input passes what the user pastes (a sign-in code); it resolves when the
@@ -210,7 +232,7 @@ export type TraceEvent = {
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
-    | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.discarded" | "spec.undone"
+    | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.discarded" | "spec.undone" | "spec.cancel" | "spec.cancelled" | "spec.followup"
     | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared" | "crew.set" | "plan.proposed" | "plan.answered" | "spec.step";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;

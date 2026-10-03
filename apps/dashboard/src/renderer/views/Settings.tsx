@@ -12,13 +12,14 @@ type Reserves = Record<string, Record<string, number>>;
 type Effort = "low" | "medium" | "high" | "max" | null;
 type SettingsValue = { reserves: Reserves; runners: Record<string, { model: string; effort: Effort }>; specModels: "free" | "within" | "defaults";
   gates: { quietReads: boolean; level: "relaxed" | "balanced" | "strict" }; local: { maxRunning: number; maxMinutes: number };
-  memory: { conversationChars: number };
+  memory: { conversationChars: number }; specs: { maxPerProject: number; maxPerRunner: number };
   personal: { claude: boolean | null; codex: boolean | null }; budgets: Record<string, Budget> };
 type Budget = { unit: "tokens" | "turns"; windows: Partial<Record<BudgetWindow, number>> };
 type BudgetWindow = "5-hour" | "daily" | "weekly" | "monthly";
 const BUDGET_WINDOWS: BudgetWindow[] = ["5-hour", "daily", "weekly", "monthly"];
 const EMPTY: SettingsValue = { reserves: {}, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" },
-  local: { maxRunning: 1, maxMinutes: 10 }, memory: { conversationChars: 16_000 }, personal: { claude: null, codex: null }, budgets: {} };
+  local: { maxRunning: 1, maxMinutes: 10 }, memory: { conversationChars: 16_000 }, specs: { maxPerProject: 3, maxPerRunner: 2 },
+  personal: { claude: null, codex: null }, budgets: {} };
 const LEVELS: Array<[SettingsValue["gates"]["level"], string, string]> = [
   ["relaxed", "Relaxed", "Only risky steps ask: deleting, git commands that change the repository, installing packages, network tools, sudo, interpreters, and handing work to a paid Runner. Everything else runs and is recorded in the Trace."],
   ["balanced", "Balanced (default)", "Each new kind of command asks once; answer \u201cAllow for this project\u201d and that kind stops asking here. Risky steps always ask."],
@@ -168,6 +169,20 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
             </div>
           );
         })}
+        <h2>Specs at once</h2>
+        <p className="dim small">How many Specs may run at the same time in one project, and for one Runner across all projects, on top of each Runner's Limits. Past that, a new handoff is refused and the Controller is told to wait for one to finish.</p>
+        <div className="row reserve-row">
+          {([["maxPerProject", "per project"], ["maxPerRunner", "per Runner"]] as const).map(([k, label]) => (
+            <label key={k} className="field inline">
+              <span className="dim small">at most</span>
+              <input type="number" min={1} max={10} step={1} value={draft.specs[k]} aria-label={`Specs at once ${label}`}
+                onChange={(e) => setDraft((d) => ({ ...d, specs: { ...d.specs, [k]: Math.round(Number(e.target.value)) || 0 } }))}
+                onBlur={() => setDraft((d) => ({ ...d, specs: { ...d.specs, [k]: Math.min(10, Math.max(1, d.specs[k])) } }))} />
+              <span className="dim small">{label}</span>
+            </label>
+          ))}
+        </div>
+
         <h2>Local models</h2>
         <p className="dim small">A local model has no usage to measure, so its Limit is your machine's. It runs no commands: it proposes whole files, GovernCode checks them against the Spec's scope, and you review them like any other Spec.</p>
         <div className="row reserve-row">

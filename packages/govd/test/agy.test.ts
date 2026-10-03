@@ -105,7 +105,7 @@ function setup(answer: "allow" | "deny", calls: (work: string) => object[], extr
   return t;
 }
 
-const SPEC = { to: "agy", brief: "add notes/hello.txt", result: "it says ok", scope: { read: [], write: ["notes"] },
+const SPEC = { mode: "wait", to: "agy", brief: "add notes/hello.txt", result: "it says ok", scope: { read: [], write: ["notes"] },
   budgetPercent: 5, model: "", effort: null, reason: "test" };
 const write = (work: string, rel: string, content = "ok\n") => ({ name: "write_to_file", args: { TargetFile: join(work, rel), CodeContent: content } });
 

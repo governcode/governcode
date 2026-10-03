@@ -2,7 +2,7 @@
 // current screen, and the status bar. Holds what outlives a screen: connection status,
 // projects, open Gates and the Terminal's conversations.
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AskEvent, Status } from "../shared/contract.ts";
+import type { AskEvent, Status, TraceEvent } from "../shared/contract.ts";
 import { api, call, controllerLabel, personalKey, START_GOVD, useFallbackPoll, useWatch, type Controller, type Gate, type Project } from "./api.ts";
 import { Empty, Pill } from "./ui.tsx";
 import { PersonalDialog } from "./views/PersonalDialog.tsx";
@@ -35,6 +35,7 @@ export function App() {
   const [threads, setThreads] = useState<Record<string, Thread>>({});
   const [dialog, setDialog] = useState<"new" | "open" | "controller" | null>(null);
   const askThread = useRef(new Map<string, string>());
+  const waking = useRef(new Set<string>());   // projects whose Controller is in a wake turn now
 
   const up = status?.state === "up";
   const hello = status?.state === "up" ? status.hello : null;
@@ -78,6 +79,9 @@ export function App() {
       push(w.event.project, (t) => w.event.kind === "checkpoint.taken"
         ? { ...t, entries: [...t.entries, { t: "checkpoint", id: turn, files }] }
         : { ...t, entries: t.entries.map((e) => e.t === "checkpoint" && e.id === turn ? { ...e, undone: true } : e) });
+    } else if (w.event.project && w.event.kind.startsWith("turn.")) {
+      const entry = wakeEntry(w.event, waking.current);
+      if (entry) push(w.event.project, (t) => ({ ...t, entries: [...t.entries, entry] }));
     }
   });
 
@@ -238,6 +242,28 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
       return found ? next : [...entries, { t: "spec", id: String(e.id), to: "", brief: "", lines: [line] }];
     }
     default: return entries;
+  }
+}
+
+/**
+ * A wake turn (Crew card: report right away) has no ask stream: GovernCode started it to report
+ * finished Specs. Its Controller's words reach that project's Terminal from the Trace, from its
+ * turn.started to its end; other turns' events are left to their own ask streams.
+ */
+function wakeEntry(ev: TraceEvent, waking: Set<string>): Entry | null {
+  const key = ev.project!, d = ev.data;
+  if (ev.kind === "turn.started") {
+    if (d.origin !== "wake") { waking.delete(key); return null; }
+    waking.add(key);
+    return { t: "wake", specs: Array.isArray(d.specs) ? d.specs.map(String) : [] };
+  }
+  if (!waking.has(key)) return null;
+  switch (ev.kind) {
+    case "turn.text": return { t: "text", text: String(d.text) };
+    case "turn.tool": return { t: "tool", name: String(d.name) };
+    case "turn.completed":
+    case "turn.failed": waking.delete(key); return { t: "done", ok: ev.kind === "turn.completed", summary: String(d.summary ?? "") };
+    default: return null;
   }
 }
 

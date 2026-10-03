@@ -16,7 +16,7 @@ test("crew card: defaults, the latest setting wins, and what the Controller is t
   const L = new Ledger(":memory:");
   L.addProject("p", "/tmp/p", "project.created");
   assert.deepEqual(crewOf(L, "p"), DEFAULT_CREW);
-  assert.deepEqual(DEFAULT_CREW, { controllerWorks: true, handoff: "ask", runners: null, maxPercent: {}, subagents: { controller: true, runners: true } });
+  assert.deepEqual(DEFAULT_CREW, { controllerWorks: true, handoff: "ask", runners: null, maxPercent: {}, subagents: { controller: true, runners: true }, wake: "auto" });
   setCrew(L, "p", { ...DEFAULT_CREW, controllerWorks: false, handoff: "off" });
   assert.equal(crewOf(L, "p").handoff, "off");
   assert.match(crewBrief(crewOf(L, "p")), /plan and hand off only.*Handing off is off/);
@@ -38,7 +38,7 @@ function socketFor(L: Ledger, root: string, crew: () => any) {
   });
   return { sock, call };
 }
-const SPEC = { to: "codex", brief: "b", result: "r", scope: { read: [], write: ["x"] }, budgetPercent: 20, model: "", effort: null, reason: "r" };
+const SPEC = { mode: "wait", to: "codex", brief: "b", result: "r", scope: { read: [], write: ["x"] }, budgetPercent: 20, model: "", effort: null, reason: "r" };
 
 test("crew card: handing off off, and Runners not on the card, are refused before anything runs; crew lists only the card's", async () => {
   const root = scratch("gc-crew-");

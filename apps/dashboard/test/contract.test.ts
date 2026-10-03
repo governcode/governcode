@@ -33,6 +33,8 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.deepEqual(checkCall("gate.answer", { id: "G-3", answer: "allow" }), { method: "gate.answer", params: { id: "G-3", answer: "allow" } });
   assert.throws(() => checkCall("gate.answer", { id: "G-3", answer: "always" }));
   assert.throws(() => checkCall("spec.accept", { id: "../x" }));
+  assert.deepEqual(checkCall("spec.cancel", { id: "S-0001" }).params, { id: "S-0001" });
+  assert.throws(() => checkCall("spec.cancel", { id: "T-1" }));
   assert.deepEqual(checkCall("trace.list", undefined).params, { limit: 50 });
   assert.ok(!CALLABLE.includes("ask" as never), "ask streams on its own channel");
   // Projects and the Controller, checked against the protocol's schemas.
@@ -54,7 +56,7 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.deepEqual(checkCall("proposal.answer", { id: "P-2", answer: "create" }).params, { id: "P-2", answer: "create" });
   for (const bad of [{ id: "P-2", answer: "yes" }, { id: "G-2", answer: "create" }]) assert.throws(() => checkCall("proposal.answer", bad));
   // Settings: reserves are whole percents from 0 to 90, keyed by Runner and window.
-  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, memory: { conversationChars: 16_000 }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null }, budgets: {} });
+  assert.deepEqual(checkCall("settings.set", { reserves: { codex: { weekly: 20 } } }).params, { reserves: { codex: { weekly: 20 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, memory: { conversationChars: 16_000 }, specs: { maxPerProject: 3, maxPerRunner: 2 }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null }, budgets: {} });
   assert.throws(() => checkCall("settings.set", { specModels: "anything" }));
   assert.throws(() => checkCall("settings.set", { runners: { codex: { model: "m", effort: "huge" } } }));
   for (const bad of [{ codex: { weekly: 91 } }, { codex: { weekly: 1.5 } }, { "../x": { weekly: 5 } }]) assert.throws(() => checkCall("settings.set", { reserves: bad }));

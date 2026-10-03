@@ -268,17 +268,18 @@ export async function runGrokTurn(o: Opts & { worktree: string; writePaths: stri
   prompt: string; hooks: TurnHooks; signal?: AbortSignal }): Promise<void> {
   let finished = false;
   const cleanups: Array<() => void> = [];
-  const finish = (r: { ok: boolean; summary: string; usage?: unknown }) => {
+  const finish = (r: { ok: boolean; summary: string; usage?: unknown; started?: false }) => {
     if (finished) return; finished = true;
     for (const c of cleanups.reverse()) { try { c(); } catch { /* best effort */ } }
     o.hooks.done(r);
   };
   try {
+    // Refused before anything starts: nothing used (started false).
     let bin: string;
-    try { bin = grokBinary(); } catch (e) { return finish({ ok: false, summary: String(e instanceof Error ? e.message : e) }); }
-    if (!isConnected(o.stateDir, "grok")) return finish({ ok: false, summary: "Grok is not connected: run gov connect grok" });
+    try { bin = grokBinary(); } catch (e) { return finish({ ok: false, summary: String(e instanceof Error ? e.message : e), started: false }); }
+    if (!isConnected(o.stateDir, "grok")) return finish({ ok: false, summary: "Grok is not connected: run gov connect grok", started: false });
     const found = grokSettings(o.worktree);
-    if (found.length) return finish({ ok: false, summary: `the project has settings Grok would read (${found.slice(0, 3).join(", ")}); GovernCode does not run a Grok Runner with a project's own permission rules, hooks, MCP servers or instructions` });
+    if (found.length) return finish({ ok: false, started: false, summary: `the project has settings Grok would read (${found.slice(0, 3).join(", ")}); GovernCode does not run a Grok Runner with a project's own permission rules, hooks, MCP servers or instructions` });
     cleanups.push(hold(o.stateDir, "grok"));
     mkdirSync(o.policyDir, { recursive: true, mode: 0o700 });
     const tmp = mkdtempSync(join(tmpdir(), "governcode-grok-"));

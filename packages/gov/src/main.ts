@@ -19,12 +19,12 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|cancel S|turns|undo T|limits|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
   "turns", "undo", "settings", "budget", "local", "memory", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
-  "limits", "specs", "diff", "accept", "discard", "trace", "ask", "demo"]);
+  "limits", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "ask", "demo"]);
 
 /** A Runner name, checked before anything is saved (govd checks too): a typo would be saved and never used. */
 function runner(name: string): string {
@@ -175,6 +175,7 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
   const failed = (id: string) => (e: Error) => console.log(dim(`${id}: ${e.message}`));
   const PLAN_ANSWERS: Record<string, string> = { approve: "approved", "just-you": "answered just you", reject: "rejected" };
   const proposals: Promise<void>[] = [];   // a proposal outlives the turn (govd keeps it until answered)
+  const handed = new Set<string>();        // Specs this turn handed off (they may outlive it)
   const proposal = async (ev: any) => {
     console.log(warn(`\nThe Controller proposes a new project: ${ev.name} at ${ev.path}${ev.git ? " (git init, branch main)" : ""}`));
     if (ev.reason) console.log(dim(ev.reason));
@@ -186,7 +187,7 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
   api.onEvent(async (ev) => {
     if (ev.kind === "text") process.stdout.write(ev.text + "\n");
     else if (ev.kind === "tool") console.log(dim(`· ${ev.name}`));
-    else if (ev.kind === "spec") console.log(warn(`\n${ev.id} → Runner · ${ev.to}: ${ev.brief}`));
+    else if (ev.kind === "spec") { handed.add(ev.id); console.log(warn(`\n${ev.id} → Runner · ${ev.to}: ${ev.brief}`)); }
     else if (ev.kind === "spec.text") console.log(dim(`  ${ev.id} · ${ev.text.slice(0, 200)}`));
     else if (ev.kind === "spec.tool") console.log(dim(`  ${ev.id} · ${ev.name}`));
     else if (ev.kind === "gate") {
@@ -239,10 +240,18 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
     }
   });
   // Every Trace event from here on, for the answers given elsewhere (an older govd: none are seen).
-  await api.call("watch", {}).catch(() => {});
+  // (wake false: gov shows no wake turns, so it is not someone there to see one.)
+  await api.call("watch", { wake: false }).catch(() => {});
   let r;
   try { r = await api.call("ask", { project, prompt }); }
   finally { for (const [id, w] of open) if (!id.startsWith("P-")) { open.delete(id); w?.abort(); } }   // the turn's Gates and plans end with it
+  // Specs this turn handed off may still be running: they go on after gov exits.
+  if (handed.size && project) {
+    const { specs } = await api.call("spec.list", { project }).catch(() => ({ specs: [] }));
+    const running = specs.filter((x: any) => handed.has(x.id) && ["running", "queued"].includes(x.status)).map((x: any) => `${x.id} (${x.to})`);
+    if (running.length) console.log(dim(`\nStill running: ${running.join(", ")}. They go on without this terminal: gov specs shows them, ` +
+      "gov gates lists any step waiting for your answer, gov cancel stops one; the Controller hears how they went (with the Dashboard open, by itself; else with your next message)."));
+  }
   // A proposal's question stays after the turn, shown again below the Controller's last words.
   tty.reshow();
   await Promise.all(proposals);
@@ -339,12 +348,13 @@ async function main(argv: string[]): Promise<number> {
       }
       case "crew": {
         // gov crew: this project's Crew card. Set a part: works on|off, handoff ask|plan|off,
-        // runners all|codex,agy, max RUNNER N|none, subagents controller|runners on|off.
+        // runners all|codex,agy, max RUNNER N|none, subagents controller|runners on|off,
+        // wake auto|tell|off (how the Controller hears that a Spec finished).
         const project = await currentProject(api);
         if (!project) throw new Error("run this inside a project folder");
         const { crew } = await api.call("crew.get", { project });
         const [what, a, b] = rest;
-        const usage = "usage: gov crew [works on|off | handoff ask|plan|off | runners all|R1,R2 | max RUNNER 1-25|none | subagents controller|runners on|off]";
+        const usage = "usage: gov crew [works on|off | handoff ask|plan|off | runners all|R1,R2 | max RUNNER 1-25|none | subagents controller|runners on|off | wake auto|tell|off]";
         if (what) {
           if (what === "works" && ["on", "off"].includes(a)) crew.controllerWorks = a === "on";
           else if (what === "handoff" && ["ask", "plan", "off"].includes(a)) crew.handoff = a;
@@ -352,6 +362,7 @@ async function main(argv: string[]): Promise<number> {
           else if (what === "max" && a && b === "none") delete crew.maxPercent[a];
           else if (what === "max" && a && Number.isInteger(Number(b)) && Number(b) >= 1 && Number(b) <= 25) crew.maxPercent[runner(a)] = Number(b);
           else if (what === "subagents" && ["controller", "runners"].includes(a) && ["on", "off"].includes(b)) crew.subagents[a] = b === "on";
+          else if (what === "wake" && ["auto", "tell", "off"].includes(a) && crew.wake !== undefined) crew.wake = a;
           else throw new Error(usage);
           await api.call("crew.set", { project, crew });
         }
@@ -363,6 +374,8 @@ async function main(argv: string[]): Promise<number> {
         const caps = Object.entries(crew.maxPercent).map(([r, n]) => `${r} ${n}%`).join(", ");
         console.log(`  Most per Spec  ${caps || "the Runner's Limit (25% at most)"}`);
         console.log(`  Subagents      Controller ${crew.subagents.controller ? "on" : "off"} · Runners ${crew.subagents.runners ? "on" : "off"}`);
+        const WAKE: Record<string, string> = { auto: "the Controller reports it by itself while the Dashboard is open", tell: "the Controller hears with your next message", off: "the Controller is not told" };
+        if (crew.wake !== undefined) console.log(`  Spec finished  ${WAKE[crew.wake]}`);
         if (!what) console.log(dim(usage));
         return 0;
       }
@@ -477,6 +490,7 @@ async function main(argv: string[]): Promise<number> {
         }
         console.log(`local models: at most ${settings.local.maxRunning} at once, ${settings.local.maxMinutes} min each`);
         console.log(`recent conversation: up to ${settings.memory.conversationChars} characters per turn`);
+        if (settings.specs) console.log(`Specs at once: up to ${settings.specs.maxPerProject} per project, ${settings.specs.maxPerRunner} per Runner`);
         return 0;
       }
       case "memory": {
@@ -620,6 +634,17 @@ async function main(argv: string[]): Promise<number> {
         console.log(`new conversation${project ? ` in ${project}` : " at Home"}`);
         return 0;
       }
+      case "spec-caps": {
+        // gov spec-caps 3 2: at most 3 Specs running at once in a project, 2 for one Runner.
+        const usage = "usage: gov spec-caps PER-PROJECT PER-RUNNER   (1-10 each, e.g. gov spec-caps 3 2)";
+        const [a, b] = rest.map(Number);
+        if (rest.length !== 2 || ![a, b].every((n) => Number.isInteger(n) && n >= 1 && n <= 10)) throw new Error(usage);
+        const { settings } = await api.call("settings.get", {});
+        if (!settings.specs) throw new Error("this govd runs one Spec at a time (update GovernCode)");
+        await api.call("settings.set", { ...settings, specs: { maxPerProject: a, maxPerRunner: b } });
+        console.log(`Specs at once: up to ${a} per project, ${b} per Runner`);
+        return 0;
+      }
       case "spec-models": {
         // gov spec-models free|within|defaults: how far a Controller may depart from the defaults per Spec.
         const policy = rest[0];
@@ -674,6 +699,15 @@ async function main(argv: string[]): Promise<number> {
         if (!/^S-\d{4,}$/.test(rest[0] ?? "")) throw new Error("usage: gov accept S-NNNN (see gov specs)");
         const r = await api.call("spec.accept", { id: rest[0] });
         console.log(`${r.id}: applied ${r.applied.length} file(s) to the project: ${r.applied.join(", ")}`);
+        return 0;
+      }
+      case "cancel": {
+        // gov cancel S-0003: stop a running Spec; what it changed so far stays for review.
+        if (!/^S-\d{4,}$/.test(rest[0] ?? "")) throw new Error("usage: gov cancel S-NNNN (see gov specs)");
+        const r = await api.call("spec.cancel", { id: rest[0] });
+        console.log(r.status === "running" ? `${r.id}: asked to stop; it has not ended yet (gov specs shows when it has)`
+          : r.files.length ? `${r.id}: cancelled; ${r.files.length} changed file(s) kept for review (possibly incomplete): gov diff ${r.id}`
+          : `${r.id}: cancelled before it changed anything`);
         return 0;
       }
       case "discard": {

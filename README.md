@@ -171,11 +171,13 @@ gov ask "Use the governcode delegate tool to have codex write tests for src/tide
 gov specs            # the Spec: Runner, model, status, files
 gov diff S-0001      # exactly what the Runner changed
 gov accept S-0001    # apply it to your project (or: gov discard S-0001)
+gov cancel S-0002    # stop a Spec that is still running (what it changed stays for review)
 gov limits           # each Runner's measured usage against its Limit
 gov reserve codex weekly 15   # keep 15% of Codex's weekly window back (default 10)
 gov budget codex daily 20 turns   # also: at most 20 Runner turns a day, counted by GovernCode
 gov runner codex --model gpt-5.5 --effort medium   # the Runner's defaults
 gov spec-models within        # Controller keeps to them: free | within | defaults
+gov spec-caps 3 2             # at most 3 Specs at once in a project, 2 for one Runner (the default)
 ```
 
 GovernCode checks Codex's measured usage against your Limit first, runs it in a workspace
@@ -185,6 +187,18 @@ as it is: your uncommitted edits, and the files of Specs you accepted, are in it
 commit between Specs. Other new files you have not committed come in only if the Spec's scope
 names them (the Spec says which stayed out); files git ignores, and new files that look like
 secrets (`.env`, keys) or hold a private key, never do.
+
+A Spec runs on its own: the Controller's turn can end while it works, and several can run side by
+side, each in its own copy (up to the caps above; the Limit counts them all together). A Runner's
+Gates belong to its Spec, not to the turn or the terminal that started it: they wait in every
+client (`gov gates`, the Dashboard) for up to an hour, and are denied if nobody answers or the
+Spec ends. The Controller can ask for the result in the same call instead (it then waits up to
+ten minutes by default), stop a Spec (`spec_cancel`; what it changed so far stays for your review),
+or send its Runner back to it with a follow-up (`spec_followup`: the same copy and scope, a new
+Gate and Limit check; the diff and your Accept then cover every round). When a Spec finishes, the
+Controller hears of it as the Crew card says (below). If govd stops while Specs run, they are
+marked failed when it starts again, with their copy kept for review (`gov diff`), and your next
+message tells the Controller; nothing starts by itself after a restart.
 
 An honest limit that applies to every Runner: a Runner can read its own login (the sign-in it
 works with, in its run's home) inside the sandbox, and reading is a quiet step, so no Gate asks
@@ -322,6 +336,12 @@ enforces it, and the Controller is told it each turn:
 - **Handing off**: *ask me each time* (default: a handoff to a paid Runner waits at a Gate),
   *follow the approved plan*, or *off* (the Controller works alone).
 - **Runners**: which ones this project may use, and the most one job may reserve of each.
+- **When a Spec finishes** (`gov crew wake auto|tell|off`): *auto* (default) starts a short
+  Controller turn by itself to read the result and tell you, only while the Dashboard is open (it
+  uses the Controller's allowance; a message you send meanwhile goes right after it); *tell*
+  passes it to the Controller with your next message; *off* does not tell the Controller. The
+  Controller gets the Spec's id and state from GovernCode, never the Runner's words as a message:
+  it reads those with `spec_status`, as data. Whatever the setting, only you accept a Spec.
 - **Subagents**, for the Controller and for Runners: off removes Claude Code's subagent tool,
   switches Codex's multi-agent features off (Grok's are off in every run, whatever the card
   says), and refuses Antigravity's subagent tools. That covers

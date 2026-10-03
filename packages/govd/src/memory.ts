@@ -66,7 +66,7 @@ export function mayShare(L: Ledger, project: string, provider: string): boolean 
 // not fit is left out whole, and the Controller can read it with conversation_read. Each reply says
 // which Controller wrote it, and whether its turn ended early.
 
-export type ConversationItem = { seq: number; from: "user" | "controller"; provider: string | null; model: string | null;
+export type ConversationItem = { seq: number; from: "user" | "govd" | "controller"; provider: string | null; model: string | null;
   endedEarly: boolean; text: string };
 
 const TURN_KINDS: TraceEvent["kind"][] = ["turn.started", "turn.text", "turn.completed", "turn.failed"];
@@ -90,7 +90,8 @@ function itemsOf(events: TraceEvent[], onlyProvider?: string): ConversationItem[
       const provider = typeof c.provider === "string" ? c.provider : null;
       turn = null;
       if (onlyProvider && provider !== onlyProvider) continue;
-      out.push({ seq: e.seq, from: "user", provider: null, model: null, endedEarly: false, text: String(e.data.prompt ?? "") });
+      // A wake turn's message is GovernCode's (Specs finished), not the user's.
+      out.push({ seq: e.seq, from: e.data.origin === "wake" ? "govd" : "user", provider: null, model: null, endedEarly: false, text: String(e.data.prompt ?? "") });
       turn = { provider, model: typeof c.model === "string" ? c.model : null, texts: [] };
     } else if (!turn) continue;
     else if (e.kind === "turn.text") turn.texts.push(String(e.data.text ?? ""));
@@ -108,6 +109,7 @@ export type ShownItem = { seq: number; from: string; status?: string; text: stri
 /** An item as the Controller reads it: who said it ("you" for the provider taking this turn). */
 function shown(i: ConversationItem, current: string | undefined, text = i.text): ShownItem {
   if (i.from === "user") return { seq: i.seq, from: "user", text };
+  if (i.from === "govd") return { seq: i.seq, from: "GovernCode (not the user)", text };
   const who = [i.provider, i.model].filter(Boolean).join(" · ") || "a Controller";
   return { seq: i.seq, from: i.provider !== null && i.provider === current ? `you (${who})` : `another Controller (${who})`,
     ...(i.endedEarly ? { status: "the turn ended early: this may be partial" } : {}), text };
@@ -165,7 +167,7 @@ function itemsBefore(L: Ledger, project: string | null, floor: number, before: n
 function firstMessage(L: Ledger, project: string | null, floor: number, onlyProvider?: string): ConversationItem | undefined {
   for (let lo = floor, scanned = 0; scanned < MAX_SCAN;) {
     const starts = L.eventsOfKindIn(project, ["turn.started"], lo, NEWEST, 500, true);
-    const hit = starts.find((e) => !onlyProvider || (e.data.controller as { provider?: unknown } | undefined)?.provider === onlyProvider);
+    const hit = starts.find((e) => e.data.origin !== "wake" && (!onlyProvider || (e.data.controller as { provider?: unknown } | undefined)?.provider === onlyProvider));
     if (hit) return itemsOf([hit], onlyProvider)[0];
     if (starts.length < 500) return undefined;
     lo = starts.at(-1)!.seq; scanned += starts.length;

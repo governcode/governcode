@@ -207,7 +207,7 @@ test("delegate to ollama: crew lists its models; the Spec's change is offered fo
     const o = crew.result.runners.find((r: any) => r.provider === "ollama");
     assert.equal(o.available, true);
     assert.deepEqual(o.models, ["qwen3.5:9b"]);
-    const r = await call("controller.delegate", { to: "ollama", brief: "add a Usage section", result: "README has ## Usage",
+    const r = await call("controller.delegate", { mode: "wait", to: "ollama", brief: "add a Usage section", result: "README has ## Usage",
       scope: { read: [], write: ["README.md"] }, budgetPercent: 5, model: "qwen3.5:9b", effort: null, reason: "small docs job" });
     assert.equal(r.result.status, "needs-review", JSON.stringify(r));
     assert.deepEqual(r.result.files, ["README.md"]);

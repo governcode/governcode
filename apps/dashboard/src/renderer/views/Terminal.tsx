@@ -14,6 +14,7 @@ export type Entry =
   | { t: "checkpoint"; id: string; files: string[]; undone?: boolean }
   | { t: "proposal"; id: string; name: string; path: string; git: boolean; reason: string }
   | { t: "plan"; id: string; items: Array<{ who: string; what: string; scope?: string[] }>; note: string; handoff: string }
+  | { t: "wake"; specs: string[] }   // a turn GovernCode started to report finished Specs
   | { t: "done"; ok: boolean; summary: string }
   | { t: "error"; text: string };
 export type Thread = { entries: Entry[]; busy: boolean };
@@ -77,6 +78,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
             );
             case "proposal": return <ProposalCard key={i} {...e} onOpen={props.onOpenProject} />;
             case "plan": return <PlanCard key={i} {...e} />;
+            case "wake": return <div key={i} className="checkpoint-line dim">GovernCode told the Controller that {listed(e.specs)} finished:</div>;
             case "done": return <div key={i} className={`done ${e.ok ? "dim" : "error"}`}>{e.ok ? "— done" : `— failed: ${e.summary}`}</div>;
             case "error": return <div key={i} className="done error">— {e.text}</div>;
           }
@@ -89,6 +91,11 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
       </div>
     </section>
   );
+}
+
+/** "S-0001", "S-0001 and S-0002", "S-0001, S-0002 and S-0003". */
+function listed(ids: string[]): string {
+  return ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}` : ids[0] ?? "a Spec";
 }
 
 /** A project the Home Controller proposed. govd creates it only when you choose Create. */

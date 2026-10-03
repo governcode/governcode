@@ -169,7 +169,7 @@ function setup(answer: "allow" | "deny", calls: (work: string) => object[], extr
   return t;
 }
 
-const SPEC = { to: "grok", brief: "add notes/hello.txt", result: "it says ok", scope: { read: [], write: ["notes"] },
+const SPEC = { mode: "wait", to: "grok", brief: "add notes/hello.txt", result: "it says ok", scope: { read: [], write: ["notes"] },
   budgetPercent: 5, model: "", effort: null, reason: "test" };
 const write = (work: string, rel: string, content = "ok\n") => ({ kind: "edit", title: `Write ${rel}`, write: join(work, rel), rawInput: { path: join(work, rel), content } });
 

@@ -54,7 +54,7 @@ export function codexPolicy(worktree: string, sessionTmp: string, codexHome: str
 }
 
 type Rpc = { request(method: string, params: unknown): Promise<any>; onRequest(f: (m: any) => Promise<unknown>): void;
-  onNotify(f: (m: any) => void): void; close(): void; exited: Promise<string> };
+  onNotify(f: (m: any) => void): void; close(): void; kill(): void; exited: Promise<string> };
 
 function start(supervisor: string, policyFile: string, bin: string, env: Record<string, string>, cwd: string): Rpc {
   const child = spawn(supervisor, ["run", "--policy", policyFile, "--", bin, "app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -77,15 +77,20 @@ function start(supervisor: string, policyFile: string, bin: string, env: Record<
       if (m.error) w?.fail(new Error(m.error.message ?? "codex error")); else w?.ok(m.result);
     } else if (m.method) onNote(m);
   });
-  const exited = new Promise<string>((res) => child.on("exit", (code) => {
-    for (const w of waiting.values()) w.fail(new Error(`codex exited ${code}: ${stderr.trim().split("\n").slice(-2).join(" | ")}`));
-    res(stderr);
-  }));
+  const exited = new Promise<string>((res) => {
+    child.on("exit", (code) => {
+      for (const w of waiting.values()) w.fail(new Error(`codex exited ${code}: ${stderr.trim().split("\n").slice(-2).join(" | ")}`));
+      res(stderr);
+    });
+    // The sandbox could not start at all: no exit follows, so this ends it.
+    child.on("error", (e) => { for (const w of waiting.values()) w.fail(new Error(`the sandbox could not start: ${e.message}`)); res(e.message); });
+  });
   return {
     request: (method, params) => new Promise((ok, fail) => { const id = next++; waiting.set(id, { ok, fail }); send({ id, method, params }); }),
     onRequest: (f) => (onReq = f),
     onNotify: (f) => (onNote = f),
     close: () => { child.stdin.end(); try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } },
+    kill: () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } },
     exited,
   };
 }
@@ -211,7 +216,7 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   try {
     s = await session(o);   // o.mcp widens its policy for GovernCode's MCP server
   } catch (e) {
-    o.hooks.done({ ok: false, summary: `codex did not start: ${e instanceof Error ? e.message : e}` });
+    o.hooks.done({ ok: false, summary: `codex did not start: ${e instanceof Error ? e.message : e}`, started: false });
     return;
   }
   const { rpc, cleanup } = s;
@@ -221,8 +226,13 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
   const tokens = codexTokenTally();
   // Every ending reports the tokens seen so far: a failed or stopped run still counts them, as a
   // floor only (it may have used more after its last update).
+  // Reported only once the sandbox has gone (govern-sup exits after every process of the run): a
+  // snapshot taken earlier could miss a last write. A SIGKILL after 40 s is the last resort.
   const finish = (r: { ok: boolean; summary: string }) => {
-    if (finished) return; finished = true; cleanup(); o.hooks.done({ ...r, usage: tokens.usage(r.ok) });
+    if (finished) return; finished = true; cleanup();
+    const last = setTimeout(() => rpc.kill(), 40_000);
+    last.unref?.();
+    void rpc.exited.then(() => { clearTimeout(last); o.hooks.done({ ...r, usage: tokens.usage(r.ok) }); });
   };
   rpc.onRequest(async (m) => {
     const p = m.params ?? {};
@@ -258,8 +268,9 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     // Claude (whose allowedTools lists the same ones).
     if (tool === "propose_project" && o.mcp?.mode === "home") return { action: "accept", content: {} };
     // (plan is itself a question to the user, answered in GovernCode.)
-    // delegate and spec_discard: govd decides them inside the call (a Gate of its own), as for Claude.
-    if (["crew", "spec_status", "project_notes", "conversation_read", "plan", "delegate", "spec_discard"].includes(tool) && o.mcp?.mode !== "home") return { action: "accept", content: {} };
+    // delegate, spec_followup and spec_discard: govd decides them inside the call (a Gate of its
+    // own), as for Claude. spec_cancel stops only a Runner's work, which stays for the user to review.
+    if (["crew", "spec_status", "project_notes", "conversation_read", "plan", "delegate", "spec_discard", "spec_cancel", "spec_followup"].includes(tool) && o.mcp?.mode !== "home") return { action: "accept", content: {} };
     const input = (announced.args ?? {}) as Record<string, unknown>;
     const req: GateRequest = { id: `mcp-${Date.now()}`, tool: `governcode ${tool}`, input, canonical: canonical({ tool: `governcode ${tool}`, input }) };
     return { action: (await o.hooks.gate(req)) === "allow" ? "accept" : "decline", content: {} };
@@ -285,8 +296,10 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
     }
   });
   void rpc.exited.then((err) => finish({ ok: false, summary: `codex exited: ${err.trim().split("\n").slice(-2).join(" | ")}` }));
-  // Stopped from outside (a Limit crossed mid-run): end the process, report why.
-  o.signal?.addEventListener("abort", () => finish({ ok: false, summary: `stopped: ${String(o.signal?.reason ?? "aborted")}` }), { once: true });
+  // Stopped from outside (a Limit crossed mid-run, a cancel): end the process, report why. A stop
+  // that came while it was starting fires no listener, so it is checked here too.
+  const stop = () => finish({ ok: false, summary: `stopped: ${String(o.signal?.reason ?? "aborted")}` });
+  if (o.signal?.aborted) stop(); else o.signal?.addEventListener("abort", stop, { once: true });
   try {
     const t = await rpc.request("thread/start", { cwd: o.worktree, ...(o.model ? { model: o.model } : {}), ephemeral: true,
       approvalPolicy: "untrusted", sandbox: o.readOnly ? "read-only" : "workspace-write",
