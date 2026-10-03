@@ -95,6 +95,9 @@ export const Settings = z.object({
   // at every level.
   gates: z.object({ quietReads: z.boolean().default(true), level: z.enum(["relaxed", "balanced", "strict"]).default("balanced") })
     .default({ quietReads: true, level: "balanced" }),
+  // How much of the recent conversation each Controller turn gets, in characters: whole items only,
+  // the rest left out whole and readable with conversation_read.
+  memory: z.object({ conversationChars: z.number().int().min(2000).max(48_000).default(16_000) }).default({ conversationChars: 16_000 }),
   // The user's own instructions for each Controller (CLAUDE.md, skills, agents and hooks for
   // Claude Code; AGENTS.md for Codex). null: not asked yet, treated as off.
   personal: z.object({ claude: z.boolean().nullable().default(null), codex: z.boolean().nullable().default(null) })

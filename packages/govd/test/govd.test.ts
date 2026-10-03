@@ -325,7 +325,7 @@ test("settings: reserves are validated, reach the Limit gate, and survive a rest
   let c = client(join(root, "settings", "govd.sock"));
   assert.ok((await c.call("settings.set", { reserves: { codex: { weekly: 95 } } })).error, "over 90% is refused");
   assert.ok((await c.call("settings.set", { reserves: { "Bad Name": { weekly: 5 } } })).error);
-  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null }, budgets: {} });
+  assert.deepEqual((await c.call("settings.set", { reserves: { codex: { weekly: 25 } } })).result.settings, { reserves: { codex: { weekly: 25 } }, runners: {}, specModels: "free", gates: { quietReads: true, level: "balanced" }, memory: { conversationChars: 16_000 }, local: { maxRunning: 1, maxMinutes: 10 }, personal: { claude: null, codex: null }, budgets: {} });
   (d as any).limits.record({ provider: "codex", measuredAt: Date.now(), readings: [{ window: "weekly", usedPercent: 70, resetsAt: null }] });
   const view = (await c.call("limits.list", {})).result.providers[0];
   assert.deepEqual([view.reserves, view.verdict.ok], [{ weekly: 25 }, true]);   // 70 + 1 <= 75

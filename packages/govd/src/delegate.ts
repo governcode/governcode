@@ -16,7 +16,7 @@ import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
 import { runGrokTurn } from "./grok.ts";
-import { mayShare, notesOf, setNotes } from "./memory.ts";
+import { mayShare, notesOf, setNotes, readConversation } from "./memory.ts";
 import { runnerAllowed } from "./crew.ts";
 import type { CrewValue } from "@governcode/protocol";
 
@@ -134,6 +134,12 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
       const r = setNotes(ctx.ledger, ctx.project.name, w, "controller");
       ctx.notify({ kind: "notes", project: ctx.project.name, chars: r.chars });
       return { saved: true, chars: r.chars };
+    }
+    if (method === "controller.conversation_read") {
+      // Only what this Controller's turn record could show: since the user's last reset, and only its
+      // own turns if the user chose to start it fresh here.
+      const fresh = !!ctx.provider && !mayShare(ctx.ledger, ctx.project.name, ctx.provider);
+      return readConversation(ctx.ledger, ctx.project.name, params, { current: ctx.provider, onlyProvider: fresh ? ctx.provider : undefined });
     }
     if (method === "controller.spec_status") {
       const s = ctx.ledger.spec(String((params as any)?.id));

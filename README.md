@@ -137,8 +137,11 @@ so you can switch Controllers without losing the story. Each turn the Controller
   kept, and they stay in GovernCode, never in your repository;
 - the project's **record**, built from the Trace with no AI: recent Specs, Checkpoints and what
   you have allowed for the project;
-- the **recent conversation**: the last 10 exchanges, up to about 12,000 characters (long
-  messages shortened), until you start a new one (`gov reset`, or **New conversation** in the Dashboard).
+- the **recent conversation**, until you start a new one (`gov reset`, or **New conversation** in
+  the Dashboard): whole messages only, never cut, within about 16,000 characters (a setting). Your
+  latest message, the latest reply and your first message go first, then the rest newest to oldest;
+  each reply says which Controller wrote it. Whatever does not fit is left out whole, and the
+  Controller can read it with GovernCode's `conversation_read` tool (never before a reset).
 
 All of it goes into the message as information, never as instructions. When you switch a
 project to a Controller from another provider (`gov controller codex`, or Change in the

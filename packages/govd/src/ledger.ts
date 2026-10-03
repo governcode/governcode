@@ -69,6 +69,16 @@ export class Ledger {
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
+  /** A project's events of some kinds strictly between `after` and `before` (seq numbers): the
+   *  newest `limit` of them, or with `oldest` the first `limit`, newest last either way. */
+  eventsOfKindIn(project: string | null, kinds: TraceEvent["kind"][], after: number, before: number, limit: number, oldest = false): TraceEvent[] {
+    const where = project === null ? "project IS NULL" : "project = ?";
+    const rows = this.db.prepare(`SELECT * FROM events WHERE ${where} AND kind IN (${kinds.map(() => "?").join(",")}) AND seq > ? AND seq < ?
+      ORDER BY seq ${oldest ? "ASC" : "DESC"} LIMIT ?`)
+      .all(...(project === null ? [] : [project]), ...kinds, after, before, limit) as Array<Record<string, unknown>>;
+    return (oldest ? rows : rows.reverse()).map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
+  }
+
   /** The newest event of a kind in any project (all of history). */
   lastOfKind(kind: TraceEvent["kind"]): TraceEvent | undefined {
     const r = this.db.prepare("SELECT * FROM events WHERE kind = ? ORDER BY seq DESC LIMIT 1").get(kind) as Record<string, unknown> | undefined;
