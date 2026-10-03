@@ -65,7 +65,9 @@ export function Pipeline({ project, live, recoveryEnabled }: { project: string |
             ))}
           </div>
           <div className="detail">
-            {spec ? <SpecDetail key={spec.id} spec={spec} recovery={recoveryEnabled ? recoveries.find((r) => r.target === spec.id) : undefined} onChanged={load} />
+            {/* A new round keeps its Spec id. Reset the diff and any pending confirmation when
+                its snapshots change, so the review always starts from the new result. */}
+            {spec ? <SpecDetail key={JSON.stringify([spec.id, spec.checkpoints.before, spec.checkpoints.after])} spec={spec} recovery={recoveryEnabled ? recoveries.find((r) => r.target === spec.id) : undefined} onChanged={load} />
               : <div className="dim pad">Select a Spec to see its details and diff.</div>}
           </div>
         </div>
