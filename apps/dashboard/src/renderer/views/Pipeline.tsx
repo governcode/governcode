@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { call, clock, dotted, modelLabel, useFallbackPoll, useWatch, type RecoveryItem, type Spec } from "../api.ts";
 import { ConfirmButton, DiffView, Empty, SpecPill } from "../ui.tsx";
 
-export function Pipeline({ project, live }: { project: string | null; live: boolean }) {
+export function Pipeline({ project, live, recoveryEnabled }: { project: string | null; live: boolean; recoveryEnabled: boolean }) {
   const [specs, setSpecs] = useState<Spec[] | null>(null);
   const [recoveries, setRecoveries] = useState<RecoveryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -14,14 +14,14 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
     try {
       const [listed, recovery] = await Promise.all([
         call<{ specs: Spec[] }>("spec.list", project ? { project } : {}),
-        // (an older govd has no recovery: no limited items, the Specs still show)
-        call<{ items: RecoveryItem[] }>("recovery.list", project ? { project } : {}).catch(() => ({ items: [] as RecoveryItem[] })),
+        recoveryEnabled ? call<{ items: RecoveryItem[] }>("recovery.list", project ? { project } : {}).catch(() => ({ items: [] as RecoveryItem[] }))
+          : Promise.resolve({ items: [] as RecoveryItem[] }),
       ]);
       setSpecs([...listed.specs].reverse());
       setRecoveries(recovery.items);
       setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  }, [project]);
+  }, [project, recoveryEnabled]);
 
   useEffect(() => { void load(); }, [load]);
   useFallbackPoll(live, load);
@@ -65,7 +65,7 @@ export function Pipeline({ project, live }: { project: string | null; live: bool
             ))}
           </div>
           <div className="detail">
-            {spec ? <SpecDetail key={spec.id} spec={spec} recovery={recoveries.find((r) => r.target === spec.id)} onChanged={load} />
+            {spec ? <SpecDetail key={spec.id} spec={spec} recovery={recoveryEnabled ? recoveries.find((r) => r.target === spec.id) : undefined} onChanged={load} />
               : <div className="dim pad">Select a Spec to see its details and diff.</div>}
           </div>
         </div>
@@ -99,18 +99,28 @@ function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: Reco
   };
 
   const resume = async () => {
+    if (!recovery) return;
     try {
-      const r = await call<{ id: string; status: string }>("recovery.resume", { id: spec.id });
+      const r = await call<{ id: string; status: string }>("recovery.resume", { id: spec.id, since: recovery.since });
       setMsg({ ok: true, text: `Resumed. ${r.id} is ${r.status}.` });
       onChanged();
-    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); onChanged(); }
   };
   const setAtReset = async (atReset: boolean) => {
+    if (!recovery) return;
     try {
-      await call("recovery.set", { target: spec.id, atReset });
+      await call("recovery.set", { target: recovery.target, since: recovery.since, atReset });
       setMsg({ ok: true, text: atReset ? "Will resume at the reset time." : "Resume at reset is off." });
       onChanged();
-    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); onChanged(); }
+  };
+  const clear = async () => {
+    if (!recovery) return;
+    try {
+      await call("recovery.clear", { target: recovery.target, since: recovery.since });
+      setMsg({ ok: true, text: "Forgot the recovery choice. The Spec stays." });
+      onChanged();
+    } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); onChanged(); }
   };
 
   const rows: Array<[string, string]> = [
@@ -137,15 +147,16 @@ function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: Reco
         <div className="checkpoint">
           <div><b>{spec.status === "held" ? `Held by its Limit: ${spec.limited.why}` : "Its Runner hit its usage limit"}</b>
             <span className="dim"> · {resetLabel(recovery?.resetsAt ?? spec.limited.resetsAt)}</span></div>
-          <div className="row wrap">
+          {recovery && <div className="row wrap">
             <button className="btn btn-accent" onClick={resume}>Resume now</button>
-            <label className="check" title={(recovery?.resetsAt ?? spec.limited.resetsAt) === null ? "The reset time is unknown" : undefined}>
-              <input type="checkbox" checked={recovery?.atReset ?? false} disabled={!recovery || recovery.resetsAt === null}
+            <label className="check" title={recovery.resetsAt === null ? "The reset time is unknown" : undefined}>
+              <input type="checkbox" checked={recovery.atReset} disabled={recovery.resetsAt === null}
                 onChange={(e) => void setAtReset(e.target.checked)} />
               <span>Resume at reset</span>
             </label>
-            {recovery?.note && <span className="dim small">{recovery.note}</span>}
-          </div>
+            <button className="btn" title="The Spec itself stays" onClick={clear}>Forget it</button>
+            {recovery.note && <span className="dim small">{recovery.note}</span>}
+          </div>}
         </div>
       )}
       {msg && <div className={msg.ok ? "ok pad" : "error pad"}>{msg.text}</div>}

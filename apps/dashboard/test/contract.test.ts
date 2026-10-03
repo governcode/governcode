@@ -36,13 +36,16 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.deepEqual(checkCall("spec.cancel", { id: "S-0001" }).params, { id: "S-0001" });
   assert.throws(() => checkCall("spec.cancel", { id: "T-1" }));
   assert.deepEqual(checkCall("recovery.list", { project: "demo" }).params, { project: "demo" });
-  assert.deepEqual(checkCall("recovery.set", { target: "T-12", atReset: true }).params, { target: "T-12", atReset: true });
-  assert.deepEqual(checkCall("recovery.resume", { id: "S-0001" }).params, { id: "S-0001" });
-  assert.deepEqual(checkCall("recovery.clear", { target: "S-0001" }).params, { target: "S-0001" });
-  for (const bad of ["S-1", "T-", "../T-12"]) assert.throws(() => checkCall("recovery.set", { target: bad, atReset: true }));
-  assert.throws(() => checkCall("recovery.set", { target: "T-12", atReset: "yes" }));
-  assert.throws(() => checkCall("recovery.resume", { id: "T-12" }));
-  assert.throws(() => checkCall("recovery.clear", { target: "S-12" }));
+  assert.deepEqual(checkCall("recovery.set", { target: "T-12", since: "2026-10-03T00:00:00Z", atReset: true }).params,
+    { target: "T-12", since: "2026-10-03T00:00:00Z", atReset: true });
+  assert.deepEqual(checkCall("recovery.resume", { id: "S-0001", since: "limit-1" }).params, { id: "S-0001", since: "limit-1" });
+  assert.deepEqual(checkCall("recovery.clear", { target: "S-0001", since: "limit-1" }).params, { target: "S-0001", since: "limit-1" });
+  for (const bad of ["S-1", "T-", "../T-12"]) assert.throws(() => checkCall("recovery.set", { target: bad, since: "limit-1", atReset: true }));
+  assert.throws(() => checkCall("recovery.set", { target: "T-12", since: "limit-1", atReset: "yes" }));
+  assert.throws(() => checkCall("recovery.set", { target: "T-12", atReset: true }));
+  assert.throws(() => checkCall("recovery.resume", { id: "T-12", since: "limit-1" }));
+  assert.throws(() => checkCall("recovery.resume", { id: "S-0001" }));
+  assert.throws(() => checkCall("recovery.clear", { target: "S-12", since: "limit-1" }));
   assert.deepEqual(checkCall("trace.list", undefined).params, { limit: 50 });
   assert.ok(!CALLABLE.includes("ask" as never), "ask streams on its own channel");
   // Projects and the Controller, checked against the protocol's schemas.

@@ -17,6 +17,7 @@ import { Limits } from "./views/Limits.tsx";
 import { HomePanel } from "./views/HomePanel.tsx";
 import { Settings } from "./views/Settings.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
+import { hasActiveAsk } from "../shared/pending.ts";
 import mark from "../../../../docs/brand/governcode-mark.svg";
 
 type View = "terminal" | "crew" | "pipeline" | "checkpoints" | "notes" | "gates" | "limits" | "trace" | "settings";
@@ -40,6 +41,7 @@ export function App() {
   const up = status?.state === "up";
   const hello = status?.state === "up" ? status.hello : null;
   const live = !!hello?.features.includes("watch");
+  const recovery = !!hello?.features.includes("recovery");
 
   useEffect(() => {
     void api().status().then(setStatus);
@@ -99,25 +101,8 @@ export function App() {
   // The first message to a Controller asks once whether the user's own instructions come along:
   // about the tool this turn runs (the project's Controller, or Home's), and only once that tool
   // is connected (otherwise govd refuses the turn and says how to connect), as gov ask does.
-  const [personalAsk, setPersonalAsk] = useState<{ provider: "claude" | "codex"; prompt: string; home: boolean; continuationOf?: string } | null>(null);
-  const send = useCallback(async (prompt: string, continuationOf?: string) => {
-    const provider = personalKey(project === HOME ? homeController : projects.find((p) => p.name === project)?.controller);
-    const s = await call<{ settings: { personal?: Record<string, boolean | null> } }>("settings.get").catch(() => null);
-    if (s?.settings.personal?.[provider] === null) {
-      const t = await call<{ tools: Array<{ tool: string; connected: boolean }> }>("tools.list", {}).catch(() => null);
-      if (t?.tools.some((x) => x.tool === provider && x.connected)) { setPersonalAsk({ provider, prompt, home: project === HOME, continuationOf }); return; }
-    }
-    await sendNow(prompt, continuationOf);
-  }, [project, projects, homeController]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const choosePersonal = useCallback(async (use: boolean) => {
-    const ask = personalAsk;
-    if (!ask) return;
-    const s = await call<{ settings: Record<string, any> }>("settings.get");
-    await call("settings.set", { ...s.settings, personal: { ...s.settings.personal, [ask.provider]: use } });
-    setPersonalAsk(null);
-    await sendNow(ask.prompt, ask.continuationOf);
-  }, [personalAsk]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [personalAsk, setPersonalAsk] = useState<{ askId: string; key: string; provider: "claude" | "codex";
+    prompt: string; home: boolean; continuationOf?: string } | null>(null);
 
   const newConversation = useCallback(async () => {
     const key = project;
@@ -125,17 +110,64 @@ export function App() {
     push(key, () => ({ entries: [], busy: false }));
   }, [project, push]);
 
-  const sendNow = useCallback(async (prompt: string, continuationOf?: string) => {
-    const key = project;
+  const finishAsk = useCallback((askId: string, entry?: Entry) => {
+    const key = askThread.current.get(askId);
+    if (key === undefined) return;
+    askThread.current.delete(askId);
+    push(key, (t) => ({ ...t, busy: hasActiveAsk(askThread.current, key), entries: entry ? [...t.entries, entry] : t.entries }));
+  }, [push]);
+
+  const beginAsk = useCallback((key: string): string | null => {
+    if (hasActiveAsk(askThread.current, key)) return null;
     const askId = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     askThread.current.set(askId, key);
-    push(key, (t) => ({ entries: [...t.entries, { t: "you", text: prompt }], busy: true }));
-    const r = await api().ask(askId, key === HOME ? null : key, prompt, continuationOf);
-    askThread.current.delete(askId);
-    push(key, (t) => ({ busy: false, entries: [...t.entries, r.ok
-      ? { t: "done", ok: r.value.ok, summary: r.value.summary }
-      : { t: "error", text: r.error }] }));
-  }, [project, push]);
+    push(key, (t) => ({ ...t, busy: true }));
+    return askId;
+  }, [push]);
+
+  const sendNow = useCallback(async (askId: string, key: string, prompt: string, continuationOf?: string) => {
+    push(key, (t) => ({ ...t, entries: [...t.entries, { t: "you", text: prompt }] }));
+    try {
+      const r = await api().ask(askId, key === HOME ? null : key, prompt, continuationOf);
+      finishAsk(askId, r.ok ? { t: "done", ok: r.value.ok, summary: r.value.summary } : { t: "error", text: r.error });
+    } catch (e) { finishAsk(askId, { t: "error", text: e instanceof Error ? e.message : String(e) }); }
+  }, [finishAsk, push]);
+
+  const send = useCallback(async (prompt: string, continuationOf?: string) => {
+    const key = project;
+    const askId = beginAsk(key);
+    if (!askId) return;
+    try {
+      const provider = personalKey(key === HOME ? homeController : projects.find((p) => p.name === key)?.controller);
+      const s = await call<{ settings: { personal?: Record<string, boolean | null> } }>("settings.get").catch(() => null);
+      if (s?.settings.personal?.[provider] === null) {
+        const t = await call<{ tools: Array<{ tool: string; connected: boolean }> }>("tools.list", {}).catch(() => null);
+        if (t?.tools.some((x) => x.tool === provider && x.connected)) {
+          setPersonalAsk({ askId, key, provider, prompt, home: key === HOME, continuationOf });
+          return;
+        }
+      }
+      await sendNow(askId, key, prompt, continuationOf);
+    } catch (e) { finishAsk(askId, { t: "error", text: e instanceof Error ? e.message : String(e) }); }
+  }, [beginAsk, finishAsk, homeController, project, projects, sendNow]);
+
+  const choosePersonal = useCallback(async (use: boolean) => {
+    const ask = personalAsk;
+    if (!ask) return;
+    setPersonalAsk(null);
+    try {
+      const s = await call<{ settings: Record<string, any> }>("settings.get");
+      await call("settings.set", { ...s.settings, personal: { ...s.settings.personal, [ask.provider]: use } });
+      await sendNow(ask.askId, ask.key, ask.prompt, ask.continuationOf);
+    } catch (e) {
+      finishAsk(ask.askId, { t: "error", text: e instanceof Error ? e.message : String(e) });
+    }
+  }, [finishAsk, personalAsk, sendNow]);
+
+  const closePersonal = useCallback(() => {
+    if (personalAsk) finishAsk(personalAsk.askId);
+    setPersonalAsk(null);
+  }, [finishAsk, personalAsk]);
 
   const markGate = useCallback((key: string, id: string, a: "allow" | "deny") => {
     push(key, (t) => ({ ...t, entries: t.entries.map((e) => e.t === "gate" && e.id === id ? { ...e, answered: a } : e) }));
@@ -187,11 +219,12 @@ export function App() {
               <div className={project === HOME ? "home" : "contents"}>
                 <Terminal key={project} project={current ?? null}
                   thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
+                  recoveryEnabled={recovery}
                   onSend={send} onGate={(id, a) => markGate(project, id, a)} onOpenProject={setProject} onNewConversation={newConversation} />
                 {project === HOME && <HomePanel projects={projects} gates={gates} onOpen={setProject} onGates={() => setView("gates")} />}
               </div>
             )}
-            {view === "pipeline" && <Pipeline project={current?.name ?? null} live={live} />}
+            {view === "pipeline" && <Pipeline key={current?.name ?? "all"} project={current?.name ?? null} live={live} recoveryEnabled={recovery} />}
             {view === "checkpoints" && <Checkpoints project={current?.name ?? null} live={live} />}
             {view === "crew" && <CrewView key={current?.name ?? "home"} project={current?.name ?? null} />}
             {view === "notes" && <Notes key={current?.name ?? "home"} project={current?.name ?? null} />}
@@ -205,7 +238,7 @@ export function App() {
 
       {up && dialog === "new" && <NewProject onClose={() => setDialog(null)} onDone={opened} />}
       {up && dialog === "open" && <OpenFolder onClose={() => setDialog(null)} onDone={opened} />}
-      {up && personalAsk && <PersonalDialog provider={personalAsk.provider} home={personalAsk.home} onChoose={(use) => void choosePersonal(use)} onClose={() => setPersonalAsk(null)} />}
+      {up && personalAsk && <PersonalDialog provider={personalAsk.provider} home={personalAsk.home} onChoose={(use) => void choosePersonal(use)} onClose={closePersonal} />}
       {up && dialog === "controller" && current && <ControllerPicker project={current} onClose={() => setDialog(null)}
         onDone={() => { setDialog(null); void loadProjects(); }} />}
 

@@ -183,12 +183,14 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
           ))}
         </div>
 
-        <h2>Usage limits</h2>
-        <label className="policy-option">
-          <input type="checkbox" checked={draft.recovery.autoResume}
-            onChange={(e) => setDraft((d) => ({ ...d, recovery: { autoResume: e.target.checked } }))} />
-          <span><b>Resume at the reset time by default</b><span className="dim small"> · Resume now is always available. A resume measures usage again first. Unattended resumes run only while the Dashboard is open, and a reset time is never guessed.</span></span>
-        </label>
+        {props.hello?.features.includes("recovery") && <>
+          <h2>Usage limits</h2>
+          <label className="policy-option">
+            <input type="checkbox" checked={draft.recovery.autoResume}
+              onChange={(e) => setDraft((d) => ({ ...d, recovery: { autoResume: e.target.checked } }))} />
+            <span><b>Resume at the reset time by default</b><span className="dim small"> · Resume now is always available. A resume measures usage again first. Unattended resumes run only while the Dashboard is open, and a reset time is never guessed.</span></span>
+          </label>
+        </>}
 
         <h2>Local models</h2>
         <p className="dim small">A local model has no usage to measure, so its Limit is your machine's. It runs no commands: it proposes whole files, GovernCode checks them against the Spec's scope, and you review them like any other Spec.</p>
