@@ -8,6 +8,7 @@ import { promisify, types } from "node:util";
 import type { Duplex, Readable } from "node:stream";
 import { startAcp, type AcpRpc } from "../../src/acp.ts";
 import { inspectAcpArtifactRuntime, type AcpArtifactRuntimeInspection } from "../../src/acp-artifact-runtime.ts";
+import { allocateAcpProbeContext, AcpProbeContextError, type AcpProbeContext } from "../../src/acp-probe-context.ts";
 
 const brand: unique symbol = Symbol("fixture namespace termination");
 export type FixtureNamespaceTermination = Readonly<{ [brand]: true }>;
@@ -40,8 +41,31 @@ export type BoundFixturePreparation = Readonly<{
   observation: Readonly<{ sha256: string; bytes: number; inspection: AcpArtifactRuntimeInspection }>;
 } | { status: "unavailable"; reason: "platform" | "assets" | "image-data" | "image-layout" | "materialization" }>;
 type Prepared = { assets: FixtureAssets; imageA: Buffer; imageB: Buffer; sha256: string;
-  inspection: AcpArtifactRuntimeInspection; deadline: number; used: boolean };
+  inspection: AcpArtifactRuntimeInspection; deadline: number; used: boolean; context?: AcpProbeContext };
 const preparations = new WeakMap<PreparedNativeBoundFixture, Prepared>();
+const contextLeaves = ["cwd", "home", "config", "cache", "data", "state", "runtime", "tmp", "empty"] as const;
+const contextMutations = ["root-replace", "leaf-replace", "ancestor-replace", "root-symlink", "leaf-symlink", "ancestor-symlink",
+  "root-missing", "leaf-missing", "ancestor-missing", "root-mode", "leaf-mode", "ancestor-mode", "nonempty", "extra-root"] as const;
+type ContextMutationScenario = `ctx-${"before-capture" | "before-acquire" | "after-acquire"}-${typeof contextMutations[number]}`;
+const contextFaults = ["ctx-after-landlock-content", "ctx-after-landlock-symlink", "ctx-open", "ctx-stat", "ctx-fchdir", "ctx-rules",
+  "ctx-limits", "ctx-close", "ctx-initial-inventory", "ctx-final-inventory", "ctx-scanner-close", "ctx-deadline-capture",
+  "ctx-deadline-acquire", "ctx-deadline-enumeration", "ctx-deadline-rules", "ctx-deadline-revalidation", "ctx-deadline-closure", "ctx-deadline-exec"] as const;
+export type ContextFixtureScenario = BoundFixtureScenario | ContextMutationScenario | typeof contextFaults[number];
+const contextScenarios: readonly ContextFixtureScenario[] = [...boundScenarios, ...contextFaults,
+  ...(["before-capture", "before-acquire", "after-acquire"] as const).flatMap(stage => contextMutations.map(mutation =>
+    `ctx-${stage}-${mutation}` as ContextMutationScenario))];
+const contextBrand: unique symbol = Symbol("prepared contextual fixture");
+export type PreparedNativeContextBoundFixture = Readonly<{ [contextBrand]: true }>;
+export type ContextFixtureDiagnostics = Readonly<{ root: string; directories: AcpProbeContext["directories"];
+  identities: Readonly<Record<"root" | typeof contextLeaves[number], Readonly<{ dev: string; ino: string }>>> }>;
+export type ContextFixturePreparation = Readonly<{
+  status: "prepared"; fixture: PreparedNativeContextBoundFixture; diagnostics: ContextFixtureDiagnostics;
+} | { status: "unavailable"; reason: "allocation" | "expired" | "cancelled" | "selection";
+  diagnostics?: ContextFixtureDiagnostics; retainedRoot?: string; allocationReason?: string }>;
+type ContextLaunch = Readonly<{ context: AcpProbeContext; identities: readonly string[]; env: Readonly<Record<string, string>> }>;
+type ContextPrepared = { image: Prepared; assets: FixtureAssets; launch: ContextLaunch; deadline: number; used: boolean };
+const contextPreparations = new WeakMap<PreparedNativeContextBoundFixture, ContextPrepared>();
+const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")!.get!;
 function imageDataAdmitted(size: number, diagnostics: number, start: number, now: number): boolean {
   return size >= 64 && size <= 4 * 1024 * 1024 && diagnostics === 0 && now < start + 2000;
 }
@@ -50,11 +74,12 @@ function consumePrepared(fixture: PreparedNativeBoundFixture, scenario: BoundFix
   return consumeAssociation(preparations, fixture, scenario, now);
 }
 function consumeAssociation<T extends { used: boolean; deadline: number }>(
-  map: WeakMap<object, T>, fixture: object, scenario: BoundFixtureScenario, now: number,
+  map: WeakMap<object, T>, fixture: object, scenario: ContextFixtureScenario, now: number,
+  allowed: readonly ContextFixtureScenario[] = boundScenarios,
 ): T {
   // Never inspect caller properties, including proxies, brands or supplied bytes.
   const p = map.get(fixture);
-  if (!p || p.used || now >= p.deadline || !boundScenarios.includes(scenario)) throw new Error("Invalid or consumed bound fixture");
+  if (!p || p.used || now >= p.deadline || !allowed.includes(scenario)) throw new Error("Invalid or consumed bound fixture");
   p.used = true;
   return p;
 }
@@ -93,6 +118,101 @@ export async function prepareNativeBoundFixture(assets: FixtureAssets): Promise<
 export function startNativeBoundFixture(fixture: PreparedNativeBoundFixture, scenario: BoundFixtureScenario): FixtureInvocation {
   const prepared = consumePrepared(fixture, scenario, performance.now());
   return launchOwned(prepared.assets, scenario, "bound-transport-v1");
+}
+
+function contextParent(input: unknown): string {
+  const { parent } = plainSnapshot(input, ["parent"]);
+  if (typeof parent !== "string" || !parent.isWellFormed() || !isAbsolute(parent) || parent === "/" ||
+    Buffer.byteLength(parent) > 3072 || /[\p{Cc}:]/u.test(parent) ||
+    parent.slice(1).split("/").some(p => !p || p === "." || p === ".." || Buffer.byteLength(p) > 255))
+    throw new Error("Invalid context parent");
+  return parent;
+}
+function contextDiagnostics(context: AcpProbeContext): ContextFixtureDiagnostics {
+  const identities = Object.freeze(Object.fromEntries(["root", ...contextLeaves].map(name => {
+    const id = context.identities[name as keyof typeof context.identities];
+    return [name, Object.freeze({ dev: id.dev.toString(), ino: id.ino.toString() })];
+  }))) as ContextFixtureDiagnostics["identities"];
+  return Object.freeze({ root: context.root, directories: context.directories, identities });
+}
+function contextSelection(context: AcpProbeContext, parent: string): ContextLaunch {
+  if (!context.root.startsWith(`${parent}/probe-`) || Buffer.byteLength(context.root) > 3115 ||
+    !/^probe-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(context.root.slice(parent.length + 1)))
+    throw new Error("Invalid context selection");
+  for (const name of contextLeaves) if (context.directories[name] !== `${context.root}/${name}` ||
+    Buffer.byteLength(context.directories[name]) > 3123) throw new Error("Invalid context leaf");
+  const ids = ["root", ...contextLeaves].map(name => context.identities[name as keyof typeof context.identities]);
+  if (ids.some(id => [id.dev, id.ino].some(n => typeof n !== "bigint" || n < 0n || n > 0xffffffffffffffffn)) ||
+    new Set(ids.map(id => `${id.dev}:${id.ino}`)).size !== 10) throw new Error("Invalid context identities");
+  const e = context.env, d = context.directories;
+  // Explicit allocator copy. No ambient merge, caller overrides, or asset-validator widening.
+  const env = Object.freeze({ HOME: e.HOME, XDG_CONFIG_HOME: e.XDG_CONFIG_HOME, XDG_CACHE_HOME: e.XDG_CACHE_HOME,
+    XDG_DATA_HOME: e.XDG_DATA_HOME, XDG_STATE_HOME: e.XDG_STATE_HOME, XDG_RUNTIME_DIR: e.XDG_RUNTIME_DIR,
+    XDG_CONFIG_DIRS: e.XDG_CONFIG_DIRS, XDG_DATA_DIRS: e.XDG_DATA_DIRS, TMPDIR: e.TMPDIR, TMP: e.TMP, TEMP: e.TEMP,
+    PATH: e.PATH, LANG: e.LANG, LC_ALL: e.LC_ALL });
+  const expected = { HOME: d.home, XDG_CONFIG_HOME: d.config, XDG_CACHE_HOME: d.cache, XDG_DATA_HOME: d.data,
+    XDG_STATE_HOME: d.state, XDG_RUNTIME_DIR: d.runtime, XDG_CONFIG_DIRS: d.empty, XDG_DATA_DIRS: d.empty,
+    TMPDIR: d.tmp, TMP: d.tmp, TEMP: d.tmp, PATH: d.empty, LANG: "C", LC_ALL: "C" };
+  if (Object.keys(e).length !== 14 || Object.entries(expected).some(([k, v]) => env[k as keyof typeof env] !== v) ||
+    Object.entries(env).reduce((n, [k, v]) => n + Buffer.byteLength(k) + Buffer.byteLength(v) + 2, 0) > 48 * 1024)
+    throw new Error("Invalid context environment");
+  return Object.freeze({ context, identities: Object.freeze(ids.flatMap(id => [id.dev.toString(), id.ino.toString()])), env });
+}
+function afterAllocation(deadline: number, now: number, cancelled: boolean): "expired" | "cancelled" | undefined {
+  return now >= deadline ? "expired" : cancelled ? "cancelled" : undefined;
+}
+function contextCancelled(signal?: AbortSignal): boolean {
+  if (signal === undefined) return false;
+  // The allocator has already authenticated identity. Recheck data descriptors
+  // after its final await: the intrinsic getter itself reads copyable symbol slots.
+  if (types.isProxy(signal)) throw new Error("Invalid context signal");
+  const descriptors = Object.getOwnPropertyDescriptors(signal);
+  if (Reflect.ownKeys(descriptors).some(key => !("value" in descriptors[key as keyof typeof descriptors])))
+    throw new Error("Invalid context signal");
+  return signalAborted.call(signal);
+}
+
+/** Consumes a private image once, allocates internally, and retains every success. */
+export async function prepareNativeContextBoundFixture(image: PreparedNativeBoundFixture, input: { parent: string },
+  signal?: AbortSignal): Promise<ContextFixturePreparation> {
+  // This must precede both image consumption and the allocator's signal/filesystem work.
+  const parent = contextParent(input);
+  const prepared = consumePrepared(image, "normal", performance.now());
+  let context: AcpProbeContext;
+  try { context = await allocateAcpProbeContext({ parent }, signal); }
+  catch (error) {
+    const retainedRoot = error instanceof AcpProbeContextError && error.cleanup === "retained" && error.allocationName ?
+      `${parent}/${error.allocationName}` : undefined;
+    return Object.freeze({ status: "unavailable", reason: "allocation",
+      ...(retainedRoot ? { retainedRoot } : {}),
+      ...(error instanceof AcpProbeContextError ? { allocationReason: error.reason } : {}) });
+  }
+  prepared.context = context;
+  const diagnostics = contextDiagnostics(context);
+  let launch: ContextLaunch;
+  try {
+    const reason = afterAllocation(prepared.deadline, performance.now(), contextCancelled(signal));
+    if (reason) return Object.freeze({ status: "unavailable", reason, diagnostics, retainedRoot: context.root });
+    launch = contextSelection(context, parent);
+    const finalReason = afterAllocation(prepared.deadline, performance.now(), contextCancelled(signal));
+    if (finalReason) return Object.freeze({ status: "unavailable", reason: finalReason, diagnostics, retainedRoot: context.root });
+  }
+  catch { return Object.freeze({ status: "unavailable", reason: "selection", diagnostics, retainedRoot: context.root }); }
+  const fixture: PreparedNativeContextBoundFixture = Object.freeze({ [contextBrand]: true as const });
+  contextPreparations.set(fixture, { image: prepared, assets: prepared.assets, launch, deadline: prepared.deadline, used: false });
+  return Object.freeze({ status: "prepared", fixture, diagnostics });
+}
+export function startNativeContextBoundFixture(fixture: PreparedNativeContextBoundFixture, scenario: ContextFixtureScenario): FixtureInvocation {
+  const prepared = consumeAssociation(contextPreparations, fixture, scenario, performance.now(), contextScenarios);
+  return launchOwned(prepared.assets, scenario, "context-bound-transport-v1", prepared.launch);
+}
+function launchArguments(a: FixtureAssets, scenario: ContextFixtureScenario,
+  mode: "transport-v1" | "bound-transport-v1" | "context-bound-transport-v1", id: Buffer, context?: ContextLaunch): string[] {
+  if (mode === "context-bound-transport-v1") {
+    if (!context) throw new Error("Missing private context association");
+    return [mode, a.target, scenario, a.cwd, context.context.root, ...context.identities, id.toString("hex")];
+  }
+  return [mode, a.target, scenario, a.cwd, a.policy, id.toString("hex")];
 }
 const associations = new WeakMap<FixtureNamespaceTermination, { owner: object; child: ChildProcess }>();
 type Candidate = { status: "proven"; outcome: Outcome } | Exclude<FixtureTermination, { status: "proven" }>;
@@ -194,7 +314,8 @@ export function startNativeLifetimeFixture(assets: FixtureAssets, scenario: Fixt
   return launchOwned(snapshot(assets, scenario), scenario, "transport-v1");
 }
 
-function launchOwned(a: FixtureAssets, scenario: FixtureScenario | BoundFixtureScenario, mode: "transport-v1" | "bound-transport-v1"): FixtureInvocation {
+function launchOwned(a: FixtureAssets, scenario: ContextFixtureScenario,
+  mode: "transport-v1" | "bound-transport-v1" | "context-bound-transport-v1", context?: ContextLaunch): FixtureInvocation {
   const owner = Object.freeze({}), id = randomBytes(16);
   const launch = performance.now(), state = new Join(id, launch);
   let child: ChildProcess | undefined, control: Duplex | undefined;
@@ -225,8 +346,8 @@ function launchOwned(a: FixtureAssets, scenario: FixtureScenario | BoundFixtureS
   const native = {
     spawn: (() => {
       if (child) throw new Error("Fixture spawn already owned");
-      child = spawn(a.driver, [mode, a.target, scenario, a.cwd, a.policy, id.toString("hex")], {
-        cwd: a.cwd, env: { ...a.env }, detached: false, stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+      child = spawn(a.driver, launchArguments(a, scenario, mode, id, context), {
+        cwd: a.cwd, env: { ...(context?.env ?? a.env) }, detached: false, stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       });
       control = child.stdio[3] as Duplex;
       const proof = child.stdio[4] as Readable;
@@ -245,13 +366,107 @@ function launchOwned(a: FixtureAssets, scenario: FixtureScenario | BoundFixtureS
     }) as typeof process.kill,
   };
   const rpc = startAcp({ supervisor: a.driver, policyFile: a.policy, bin: a.target, args: [],
-    cwd: a.cwd, env: { ...a.env }, outputBudget: { maxBytes: 65_536 } }, native);
+    cwd: context?.context.directories.cwd ?? a.cwd, env: { ...(context?.env ?? a.env) }, outputBudget: { maxBytes: 65_536 } }, native);
   arm();
   return Object.freeze({ rpc, termination, stop });
 }
 
 // Finite internal association/state checks. No returned identity, byte baseline,
 // proof, native seam or launch: metadata cannot be consumed by either entry point.
+export function syntheticContextFixtureChecks(): ReadonlyArray<Readonly<{ name: string; pass: boolean }>> {
+  const rows: Array<Readonly<{ name: string; pass: boolean }>> = [];
+  const put = (name: string, pass: boolean) => rows.push(Object.freeze({ name, pass }));
+  const rejects = (fn: () => unknown) => { try { fn(); return false; } catch { return true; } };
+  // This isolated map has neither image assets nor a route to either live map.
+  const states = new WeakMap<object, { used: boolean; deadline: number; selected: number }>();
+  const first = Object.freeze({}), second = Object.freeze({});
+  states.set(first, { used: false, deadline: 100, selected: 1 });
+  states.set(second, { used: false, deadline: 100, selected: 2 });
+  const consume = (key: object, scenario: ContextFixtureScenario, now: number) =>
+    consumeAssociation(states, key, scenario, now, contextScenarios);
+  let traps = 0;
+  const proxy = new Proxy(first, { get() { traps++; throw new Error("trap"); }, ownKeys() { traps++; throw new Error("trap"); },
+    getPrototypeOf() { traps++; throw new Error("trap"); }, getOwnPropertyDescriptor() { traps++; throw new Error("trap"); } });
+  put("proxy-handle", rejects(() => consume(proxy, "normal", 0)) && traps === 0);
+  put("copy-handle", rejects(() => consume(Object.freeze({ ...first }), "normal", 0)));
+  put("forged-handle", rejects(() => consume(Object.freeze({ [contextBrand]: true }), "normal", 0)));
+  put("caller-completion", rejects(() => consume({ status: "proven", evidence: {}, context: {} }, "normal", 0)));
+  put("invalid-scenario", rejects(() => consume(first, "ctx-arbitrary" as never, 0)) && !states.get(first)!.used);
+  put("single-use", consume(first, "normal", 1).selected === 1);
+  put("reuse", rejects(() => consume(first, "normal", 2)));
+  put("concurrent-reuse", rejects(() => consume(first, "ctx-open", 2)));
+  put("cross-context", states.get(second)!.selected === 2 && !states.get(second)!.used);
+  put("expiry-exact", rejects(() => consume(second, "normal", 100)));
+  put("expiry-late", rejects(() => consume(second, "normal", 101)));
+  put("expiry-not-renewed", states.get(second)!.deadline === 100);
+  put("before-expiry", consume(second, "normal", 99).selected === 2);
+  put("synthetic-cannot-prepare-image", rejects(() => consumePrepared(first as never, "normal", 0)));
+  put("synthetic-cannot-start-context", rejects(() => consumeAssociation(contextPreparations, first, "normal", 0, contextScenarios)));
+  for (const stage of ["before-capture", "before-acquire", "after-acquire"] as const) for (const mutation of contextMutations)
+    put(`finite-${stage}-${mutation}`, contextScenarios.includes(`ctx-${stage}-${mutation}`));
+  for (const fault of contextFaults) put(`finite-${fault}`, contextScenarios.includes(fault));
+  const parent = "/invented/context-parent", root = `${parent}/probe-00000000-0000-0000-0000-000000000001`;
+  const directories = Object.freeze(Object.fromEntries(contextLeaves.map(n => [n, `${root}/${n}`]))) as AcpProbeContext["directories"];
+  const identities = Object.freeze(Object.fromEntries(["root", ...contextLeaves].map((n, i) =>
+    [n, Object.freeze({ dev: 1n, ino: BigInt(i + 1) })]))) as AcpProbeContext["identities"];
+  const env = Object.freeze({ HOME: directories.home, XDG_CONFIG_HOME: directories.config, XDG_CACHE_HOME: directories.cache,
+    XDG_DATA_HOME: directories.data, XDG_STATE_HOME: directories.state, XDG_RUNTIME_DIR: directories.runtime,
+    XDG_CONFIG_DIRS: directories.empty, XDG_DATA_DIRS: directories.empty, TMPDIR: directories.tmp, TMP: directories.tmp,
+    TEMP: directories.tmp, PATH: directories.empty, LANG: "C", LC_ALL: "C" });
+  const context: AcpProbeContext = Object.freeze({ root, directories, identities, env,
+    filesystem: Object.freeze({ cwd: directories.cwd, read: Object.freeze([directories.empty]),
+      write: Object.freeze(contextLeaves.slice(0, -1).map(n => directories[n])), exec: Object.freeze([]) as readonly [] }) });
+  const selection = contextSelection(context, parent), diagnostics = contextDiagnostics(context);
+  put("exact-environment", Object.keys(selection.env).length === 14 && Object.entries(env).every(([k, v]) => selection.env[k] === v));
+  put("environment-copy", selection.env !== context.env && Object.isFrozen(selection.env));
+  put("environment-extra", rejects(() => contextSelection({ ...context, env: { ...env, POISON: "invented" } }, parent)));
+  put("environment-crossed", rejects(() => contextSelection({ ...context, env: { ...env, HOME: "/invented/other" } }, parent)));
+  put("leaf-crossed", rejects(() => contextSelection({ ...context, directories: { ...directories, cwd: directories.home } }, parent)));
+  put("root-crossed", rejects(() => contextSelection(context, "/invented/other")));
+  for (const value of [-1n, 0x10000000000000000n]) put(`identity-range-${value}`, rejects(() => contextSelection({ ...context,
+    identities: { ...identities, root: { dev: value, ino: 1n } } }, parent)));
+  put("identity-alias", rejects(() => contextSelection({ ...context, identities: { ...identities, cwd: identities.root } }, parent)));
+  put("identity-u64-maximum", contextSelection({ ...context, identities: { ...identities,
+    root: { dev: 0xffffffffffffffffn, ino: 0xffffffffffffffffn } } }, parent).identities[0] === "18446744073709551615");
+  put("canonical-u64", selection.identities.length === 20 && selection.identities.every(s => /^(0|[1-9][0-9]*)$/.test(s)));
+  const assets: FixtureAssets = { driver: "/invented/driver", target: "/invented/image", policy: "/invented/policy", cwd: "/invented/bootstrap",
+    env: { HOME: "/invented/home", TMPDIR: "/invented/tmp", PATH: "/usr/bin", LANG: "C", LC_ALL: "C" } };
+  const id = Buffer.alloc(16, 19), otherId = Buffer.alloc(16, 20);
+  const args = launchArguments(assets, "normal", "context-bound-transport-v1", id, selection);
+  put("fixed-argv", args.length === 26 && args[0] === "context-bound-transport-v1" && args[1] === assets.target &&
+    args[3] === assets.cwd && args[4] === root && args.slice(5, 25).join() === selection.identities.join() && args[25] === id.toString("hex"));
+  put("invocation-freshness", launchArguments(assets, "normal", "context-bound-transport-v1", otherId, selection)[25] !== args[25]);
+  put("bootstrap-independent", args[3] !== directories.cwd);
+  put("missing-association", rejects(() => launchArguments(assets, "normal", "context-bound-transport-v1", id)));
+  put("legacy-argv", launchArguments(assets, "normal", "transport-v1", id).length === 6);
+  for (const [name, now, cancelled, expected] of [["normal", 99, false, undefined], ["expiry", 100, false, "expired"],
+    ["late-allocation", 101, false, "expired"], ["cancel", 99, true, "cancelled"], ["expired-cancel", 100, true, "expired"]] as const) {
+    put(`after-allocation-${name}`, afterAllocation(100, now, cancelled) === expected && diagnostics.root === root &&
+      Object.keys(diagnostics.directories).length === 9 && Object.keys(diagnostics.identities).length === 10);
+  }
+  const getter = Object.defineProperty({}, "parent", { get() { traps++; throw new Error("getter"); } });
+  put("parent-getter", rejects(() => contextParent(getter)) && traps === 0);
+  put("parent-proxy", rejects(() => contextParent(proxy)) && traps === 0);
+  put("parent-extra", rejects(() => contextParent({ parent, env })));
+  put("parent-byte-limit", rejects(() => contextParent({ parent: `/${"a/".repeat(1536)}a` })));
+  put("parent-component-limit", rejects(() => contextParent({ parent: `/${"a".repeat(256)}` })));
+  const maximumParent = `/${`${"a".repeat(255)}/`.repeat(11)}${"a".repeat(255)}`;
+  put("parent-maximum", Buffer.byteLength(maximumParent) === 3072 && contextParent({ parent: maximumParent }) === maximumParent);
+  const maximumRoot = `${maximumParent}/${root.slice(parent.length + 1)}`;
+  const maximumDirectories = Object.freeze(Object.fromEntries(contextLeaves.map(n => [n, `${maximumRoot}/${n}`]))) as AcpProbeContext["directories"];
+  const maximumEnv = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, v.startsWith(root) ? maximumRoot + v.slice(root.length) : v]));
+  const maximum = contextSelection({ ...context, root: maximumRoot, directories: maximumDirectories, env: maximumEnv }, maximumParent);
+  put("root-leaf-maximum", Buffer.byteLength(maximum.context.root) === 3115 && Buffer.byteLength(maximum.context.directories.runtime) === 3123);
+  put("environment-bounded", Object.entries(maximum.env).reduce((n, [k, v]) => n + Buffer.byteLength(k) + Buffer.byteLength(v) + 2, 0) <= 48 * 1024);
+  put("failed-selection-retains-diagnostics", rejects(() => contextSelection({ ...context, env: { ...env, LC_ALL: "poison" } }, parent)) &&
+    diagnostics.root === root && Object.keys(diagnostics.identities).length === 10);
+  const lateSlot = Object.defineProperty({}, Symbol("invented late signal slot"), { get() { traps++; throw new Error("getter"); } });
+  put("late-signal-slot-getter", rejects(() => contextCancelled(lateSlot as never)) && traps === 0 && diagnostics.root === root);
+  put("late-signal-proxy", rejects(() => contextCancelled(proxy as never)) && traps === 0 && diagnostics.root === root);
+  put("no-signal", contextCancelled() === false);
+  return Object.freeze(rows);
+}
+
 export function syntheticBoundFixtureChecks(): ReadonlyArray<Readonly<{ name: string; pass: boolean }>> {
   // Isolated state map has no prepared assets and cannot feed the launch map.
   const states = new WeakMap<object, { used: boolean; deadline: number }>();

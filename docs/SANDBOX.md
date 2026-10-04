@@ -343,6 +343,39 @@ not positive acceptance results. Injected build and fixture-availability checks 
 behavior only. Bound-image availability does not gate the legacy pathname lifetime fixtures
 or their native Linux x86_64/aarch64 clone support; aarch64 execution was not tested here.
 
+## Fixture-only context association (development)
+
+The contextual fixture variant consumes its own prepared image and internally allocates a
+private probe context. It accepts no caller context, environment, grant list or validation
+assertion. Native setup checks the allocator's owner and mode requirements outside the new
+user namespace, where host ownership is visible, and captures bounded directory observations.
+This requires a trusted outer namespace, accepted UID/GID maps and creator IDs distinct from
+the actual overflow IDs. Those launch checks do not authenticate the host or directory objects.
+Inside the target, it reacquires matching objects and uses those same held descriptors for
+`fchdir` and eight writable leaf rules plus the read-only empty leaf. No read, write or execute
+grant covers the root, parent, bootstrap, source, system or proc paths; metadata lookup remains
+available for the checks.
+
+The contextual exec branch constructs exactly the allocator's fourteen environment fields in
+private native storage; it does not use ambient environment values. Setup includes fresh rooted
+path checks, held-object checks and bounded emptiness checks. A preopened descriptor scanner
+checks the final inventory before blanket closure. All directory and scanner descriptors close
+before execution, leaving only the CLOEXEC image descriptor alongside stdio. Context work uses
+the image's existing absolute preparation deadline and preserves the separate lifetime bounds.
+
+Capture and revalidation are observations. Descriptors are closed between outside capture and
+target acquisition; identities and timestamps cannot prove continuous object ownership or
+detect every intervening change. User-namespace overflow IDs are not evidence of host root
+ownership. Held cwd and filesystem grants do not freeze directory contents or literal environment
+paths, and a later symlink into another granted leaf may redirect a lookup. Stable trusted local
+storage remains a precondition. Shared ancestor activity may cause conservative refusal.
+Host-owner mutation requiring privilege is outside these fixtures.
+
+Namespace termination evidence remains separate from contextual execution success. A setup
+failure can have valid teardown proof; contextual acceptance also requires the fixed image's
+completed context checks. Every successful allocation remains retained on all outcomes. The
+variant supplies no production context plumbing, stored-agent authority or cleanup permission.
+
 ## Known limits
 
 - Existing Runner policies allow `chmod` (npm and git set file modes), and Landlock does not mediate it, so a

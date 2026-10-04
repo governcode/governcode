@@ -9,6 +9,9 @@ use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
 use crate::probe_artifact::VerifiedFixtureImage;
+use crate::probe_context::{
+    CapturedContext, ContextFailure, ContextFault, ContextStage, FixtureContextPlan,
+};
 
 #[derive(Debug)]
 pub struct NamespaceTermination {
@@ -34,6 +37,33 @@ impl BoundProbeCompletion {
         }
         Ok(self.completion)
     }
+}
+// Constructed only by the fixed contextual run, retaining that run's actual
+// capture, selected plan, sealed image and invocation. Teardown is not execution.
+#[derive(Debug)]
+pub(crate) struct ContextFixtureCompletion {
+    completion: ProbeCompletion,
+    image: VerifiedFixtureImage,
+    context: CapturedContext,
+    invocation: [u8; 16],
+}
+impl ContextFixtureCompletion {
+    pub(crate) fn into_completion(self, invocation: [u8; 16]) -> Result<ProbeCompletion, Failure> {
+        if self.invocation != invocation
+            || !self.image.matches_invocation(invocation)
+            || !self.context.matches_invocation(invocation)
+        {
+            return Err(Failure::InvalidInput);
+        }
+        Ok(self.completion)
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextExecutionFault {
+    None,
+    InitialAlias,
+    FinalAlias,
+    ScannerClose,
 }
 // Bound-only fail-closed seams: none can supply an image or a successful wait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,6 +472,13 @@ struct BoundTarget {
     stdio: [DescriptorIdentity; 3],
     fault: BoundExecutionFault,
     preparation_deadline: Instant,
+    contextual: Option<ContextExecStorage>,
+}
+#[derive(Clone, Copy)]
+struct ContextExecStorage {
+    argv: *const *const libc::c_char,
+    envp: *const *const libc::c_char,
+    fault: ContextExecutionFault,
 }
 #[derive(Clone, Copy)]
 enum Execution {
@@ -504,6 +541,7 @@ fn bound_target(
         stdio,
         fault,
         preparation_deadline: image.preparation_deadline(),
+        contextual: None,
     })
 }
 fn close_owned_checked(fd: RawFd) -> bool {
@@ -534,6 +572,11 @@ fn bound_inventory(target: BoundTarget) -> bool {
     if dir.is_null() {
         return false;
     }
+    bound_inventory_scanned(target, dir, false)
+}
+// A contextual caller preopens this scanner before Landlock. Ownership is
+// consumed here; enumeration precedes blanket closure, and no proc grant exists.
+fn bound_inventory_scanned(target: BoundTarget, dir: *mut libc::DIR, close_fault: bool) -> bool {
     let scan = unsafe { libc::dirfd(dir) };
     let mut seen = [false; 4];
     let mut valid = scan > 3;
@@ -556,7 +599,7 @@ fn bound_inventory(target: BoundTarget) -> bool {
     let closed = unsafe { libc::closedir(dir) } == 0
         && unsafe { libc::fcntl(scan, libc::F_GETFD) } == -1
         && errno() == libc::EBADF;
-    if !valid || !closed || seen != [true; 4] {
+    if !valid || !closed || close_fault || seen != [true; 4] {
         return false;
     }
     for fd in 0..3 {
@@ -574,6 +617,7 @@ fn bound_inventory(target: BoundTarget) -> bool {
 }
 struct ChildContext<'a, R> {
     argv: &'a [CString],
+    argv_ptrs: &'a [*const libc::c_char],
     restrict: Option<R>,
     gate: RawFd,
     parent_gate: RawFd,
@@ -685,6 +729,16 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
                     die(125);
                 }
             }
+            if bound
+                .contextual
+                .is_some_and(|c| c.fault == ContextExecutionFault::InitialAlias)
+            {
+                // A real unexpected alias must be detected by the initial
+                // complete inventory, rather than hidden by close_range.
+                if unsafe { libc::fcntl(3, libc::F_DUPFD_CLOEXEC, 4) } < 4 {
+                    die(125);
+                }
+            }
             if bound.fault == BoundExecutionFault::Inventory || !bound_inventory(bound) {
                 die(125);
             }
@@ -708,15 +762,9 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
         {
             die(125);
         }
-        let argv: Vec<*const libc::c_char> = ctx
-            .argv
-            .iter()
-            .map(|a| a.as_ptr())
-            .chain(std::iter::once(std::ptr::null()))
-            .collect();
         match ctx.execution {
             Execution::Pathname => unsafe {
-                libc::execv(ctx.argv[0].as_ptr(), argv.as_ptr());
+                libc::execv(ctx.argv[0].as_ptr(), ctx.argv_ptrs.as_ptr());
             },
             Execution::Bound(bound) => {
                 expire_preparation_at(ctx.execution, BoundExecutionFault::ExecDeadline);
@@ -724,6 +772,22 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
                     die(125);
                 }
                 if bound.fault == BoundExecutionFault::Exec {
+                    die(125);
+                }
+                if let Some(contextual) = bound.contextual {
+                    // This storage was completed before clone and is owned by
+                    // the captured context throughout the real run. No ambient
+                    // environment or post-fork pointer-array allocation is used.
+                    unsafe {
+                        libc::syscall(
+                            libc::SYS_execveat,
+                            3,
+                            c"".as_ptr(),
+                            contextual.argv,
+                            contextual.envp,
+                            libc::AT_EMPTY_PATH,
+                        );
+                    }
                     die(125);
                 }
                 unsafe extern "C" {
@@ -736,7 +800,7 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
                         libc::SYS_execveat,
                         3,
                         c"".as_ptr(),
-                        argv.as_ptr(),
+                        ctx.argv_ptrs.as_ptr(),
                         environ,
                         libc::AT_EMPTY_PATH,
                     );
@@ -994,6 +1058,121 @@ pub(crate) unsafe fn run_bound_fault<R: FnOnce() -> Result<(), String>>(
     })
 }
 
+// Contextual entry has no caller restriction closure, policy parser or keep-list.
+// The actual outside capture is completed and checked-closed before clone.
+pub(crate) unsafe fn run_context_bound(
+    options: Options<'_>,
+    image: VerifiedFixtureImage,
+    plan: FixtureContextPlan,
+    observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+) -> Result<ContextFixtureCompletion, Failure> {
+    unsafe {
+        run_context_bound_fault(
+            options,
+            image,
+            plan,
+            observer,
+            ContextFault::None,
+            BoundExecutionFault::None,
+            ContextExecutionFault::None,
+            |_| Ok(()),
+        )
+    }
+}
+
+/// # Safety
+/// Call in the same fresh single-threaded fixture process as run_bound, with its
+/// exact owned transport layout. Finite seams can mutate retained fixture data or
+/// force failure; none can supply captured metadata, grants or completion.
+pub(crate) unsafe fn run_context_bound_fault(
+    options: Options<'_>,
+    image: VerifiedFixtureImage,
+    plan: FixtureContextPlan,
+    observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+    context_fault: ContextFault,
+    image_fault: BoundExecutionFault,
+    execution_fault: ContextExecutionFault,
+    mut context_observer: impl FnMut(ContextStage) -> Result<(), ContextFailure>,
+) -> Result<ContextFixtureCompletion, Failure> {
+    let invocation = plan.invocation();
+    if image_fault == BoundExecutionFault::EntryDeadline {
+        while Instant::now() < image.preparation_deadline() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    if Instant::now() >= image.preparation_deadline()
+        || ready(options.stop.as_raw_fd()) != Ok(false)
+    {
+        return Err(Failure::Admission);
+    }
+    validate(&options)?;
+    let mut target = bound_target(&options, &image, invocation, image_fault)?;
+    let context = crate::probe_context::capture_context_observed(
+        plan,
+        options.stop,
+        image.preparation_deadline(),
+        context_fault,
+        &mut context_observer,
+    )
+    .map_err(|failure| match failure {
+        ContextFailure::InvalidInput => Failure::InvalidInput,
+        _ => Failure::Admission,
+    })?;
+    // Capture owns the immutable CString allocations and pointer arrays. It
+    // outlives run_inner; fork receives independent copies of that address space.
+    target.contextual = Some(ContextExecStorage {
+        argv: context.argv_ptrs().as_ptr(),
+        envp: context.envp().as_ptr(),
+        fault: execution_fault,
+    });
+    let restrict = || {
+        // This dedicated scanner is preopened while proc is still accessible;
+        // it receives no Landlock grant and is consumed by the final inventory.
+        let scan = unsafe { libc::opendir(c"/proc/self/fd".as_ptr()) };
+        if scan.is_null() {
+            return Err("context descriptor scanner unavailable".into());
+        }
+        let scan_number = unsafe { libc::dirfd(scan) };
+        if scan_number <= 3 {
+            unsafe {
+                libc::closedir(scan);
+            }
+            return Err("context descriptor scanner overlaps reserved image".into());
+        }
+        let result = context.setup_observed(
+            image.preparation_deadline(),
+            context_fault,
+            &mut context_observer,
+        );
+        if result.is_err() {
+            let _closed = unsafe { libc::closedir(scan) } == 0
+                && unsafe { libc::fcntl(scan_number, libc::F_GETFD) } == -1
+                && errno() == libc::EBADF;
+            return Err("context restriction or revalidation failed".into());
+        }
+        if execution_fault == ContextExecutionFault::FinalAlias
+            && unsafe { libc::fcntl(3, libc::F_DUPFD_CLOEXEC, 4) } < 4
+        {
+            let _ = unsafe { libc::closedir(scan) };
+            return Err("context alias fault failed".into());
+        }
+        if !bound_inventory_scanned(
+            target,
+            scan,
+            execution_fault == ContextExecutionFault::ScannerClose,
+        ) {
+            return Err("context final descriptor inventory failed".into());
+        }
+        Ok(())
+    };
+    let completion = unsafe { run_inner(options, restrict, observer, Execution::Bound(target)) }?;
+    Ok(ContextFixtureCompletion {
+        completion,
+        image,
+        context,
+        invocation,
+    })
+}
 unsafe fn run_inner<R: FnOnce() -> Result<(), String>>(
     options: Options<'_>,
     restrict: R,
@@ -1005,6 +1184,11 @@ unsafe fn run_inner<R: FnOnce() -> Result<(), String>>(
         return Err(Failure::Admission);
     }
     let argv = validate(&options)?;
+    let argv_ptrs: Vec<*const libc::c_char> = argv
+        .iter()
+        .map(|a| a.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
     let (uid, gid) = identity()?;
     // Unprivileged single-ID gid_map requires setgroups=deny. Linux prohibits
     // clearing groups both before that mapping and after deny. Preserve the exact
@@ -1037,6 +1221,7 @@ unsafe fn run_inner<R: FnOnce() -> Result<(), String>>(
     }
     let mut context = ChildContext {
         argv: &argv,
+        argv_ptrs: &argv_ptrs,
         restrict: Some(restrict),
         gate: child_gate.as_raw_fd(),
         parent_gate: parent_gate.as_raw_fd(),

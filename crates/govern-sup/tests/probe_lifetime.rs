@@ -1,17 +1,32 @@
 //! Explicit feature-only native integration fixtures. Every launch has an outer
 //! watchdog as well as the native pidfd guard. Unsupported creation is reported
 //! as a skip of live cases, never successful namespace acceptance.
+#[path = "../src/limits.rs"]
+#[allow(dead_code)]
+mod limits;
+#[path = "../src/policy.rs"]
+#[allow(dead_code)]
+mod policy;
 #[path = "../src/probe_artifact.rs"]
 #[allow(dead_code)]
 mod probe_artifact;
+#[path = "../src/probe_context.rs"]
+#[allow(dead_code)]
+mod probe_context;
 #[path = "../src/probe_lifetime.rs"]
 #[allow(dead_code)]
 mod probe_lifetime;
+#[path = "../src/sandbox.rs"]
+#[allow(dead_code)]
+mod sandbox;
+#[path = "../src/supervise.rs"]
+#[allow(dead_code)]
+mod supervise;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -335,6 +350,7 @@ const INVOCATION_HEX: &str = "4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a";
 enum TransportAction {
     None,
     StopData,
+    StopRepeated,
     StopEof,
     StopError,
     StopWriteFailure,
@@ -351,6 +367,10 @@ struct TransportRun {
     proof_bytes: usize,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    proof_ended: bool,
+    elapsed: Duration,
+    stop_requested: Option<Instant>,
+    joined: Instant,
     dir: PathBuf,
 }
 fn nonblocking(fd: i32) {
@@ -414,6 +434,18 @@ impl Fixture {
             "exec":executable,"tcp_connect":[],"cwd":dir.join("work"),
             "child_restrictions":{"deny_network":true,"deny_chmod":true}});
         fs::write(dir.join("policy.json"), policy.to_string()).unwrap();
+        self.transport_prepared(scenario, action, dir, target, bound, None)
+    }
+    fn transport_prepared(
+        &self,
+        scenario: &str,
+        action: TransportAction,
+        dir: PathBuf,
+        target: PathBuf,
+        bound: bool,
+        context: Option<&ContextCase>,
+    ) -> TransportRun {
+        let marker_dir = context.map_or_else(|| dir.join("work"), |c| c.root.join("cwd"));
         let (control, control_peer) = UnixStream::pair().unwrap();
         let (proof, proof_peer) = UnixStream::pair().unwrap();
         // Duplicate above 4 before pre_exec so dup2 cannot clobber either source.
@@ -428,16 +460,25 @@ impl Fixture {
         drop(proof_peer);
         let mut command = Command::new(env!("CARGO_BIN_EXE_probe-lifetime-driver"));
         command
-            .args([if bound {
+            .arg(if context.is_some() {
+                "context-bound-transport-v1"
+            } else if bound {
                 "bound-transport-v1"
             } else {
                 "transport-v1"
-            }])
+            })
             .arg(&target)
             .arg(scenario)
-            .arg(dir.join("work"))
-            .arg(dir.join("policy.json"))
-            .arg(INVOCATION_HEX)
+            .arg(dir.join("work"));
+        if let Some(context) = context {
+            command
+                .arg(&context.root)
+                .args(&context.identities)
+                .arg(&context.invocation_hex);
+        } else {
+            command.arg(dir.join("policy.json")).arg(INVOCATION_HEX);
+        }
+        command
             .env_clear()
             .env("PATH", "/usr/bin")
             .env("HOME", dir.join("work"))
@@ -447,6 +488,32 @@ impl Fixture {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(context) = context {
+            command.current_dir(dir.join("work"));
+            if context.poisoned {
+                // Every ambient selector is deliberately wrong. Contextual exec
+                // must use its own fourteen-field storage and omit extra fields.
+                for name in [
+                    "HOME",
+                    "XDG_CONFIG_HOME",
+                    "XDG_CACHE_HOME",
+                    "XDG_DATA_HOME",
+                    "XDG_STATE_HOME",
+                    "XDG_RUNTIME_DIR",
+                    "XDG_CONFIG_DIRS",
+                    "XDG_DATA_DIRS",
+                    "TMPDIR",
+                    "TMP",
+                    "TEMP",
+                    "PATH",
+                    "LANG",
+                    "LC_ALL",
+                ] {
+                    command.env(name, "/ambient-ungranted-fixture");
+                }
+                command.env("CONTEXT_AMBIENT_POISON", "must-not-reach-A");
+            }
+        }
         unsafe {
             command.pre_exec(move || {
                 for (source, destination) in
@@ -468,6 +535,7 @@ impl Fixture {
                 Ok(())
             });
         }
+        let started = Instant::now();
         let mut running = Running {
             child: command.spawn().unwrap(),
             finished: false,
@@ -506,6 +574,7 @@ impl Fixture {
         let (mut out_bytes, mut err_bytes, mut proof_bytes) = (0, 0, 0);
         let (mut out_eof, mut err_eof) = (false, false);
         let mut status = None;
+        let mut stop_requested = None;
         let deadline = Instant::now() + Duration::from_secs(13);
         loop {
             assert!(
@@ -536,17 +605,25 @@ impl Fixture {
             }
             let ready = match action {
                 TransportAction::StopData
+                | TransportAction::StopRepeated
                 | TransportAction::StopEof
                 | TransportAction::StopError
-                | TransportAction::StopWriteFailure => dir.join("work/descendant-ready").exists(),
-                TransportAction::Hung => dir.join("work/hung-request").exists(),
+                | TransportAction::StopWriteFailure => marker_dir.join("descendant-ready").exists(),
+                TransportAction::Hung => marker_dir.join("hung-request").exists(),
                 TransportAction::OutputBudget => out_bytes + err_bytes > 65_536,
                 _ => false,
             };
             if ready && let Some(mut endpoint) = control.take() {
+                // Start the stop budget at the first actual request/action,
+                // before write/shutdown/EOF. Repeated writes and failed-write
+                // EOF fallback must never restart it; readiness is not proof.
+                stop_requested.get_or_insert_with(Instant::now);
                 match action {
-                    TransportAction::StopData => {
+                    TransportAction::StopData | TransportAction::StopRepeated => {
                         let _ = endpoint.write(b"stop");
+                        if matches!(action, TransportAction::StopRepeated) {
+                            let _ = endpoint.write(b"stop-again");
+                        }
                     }
                     TransportAction::StopError => {
                         endpoint.shutdown(Shutdown::Both).unwrap();
@@ -573,6 +650,7 @@ impl Fixture {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        let joined = Instant::now();
         TransportRun {
             code: status
                 .unwrap()
@@ -582,6 +660,10 @@ impl Fixture {
             proof_bytes,
             stdout: out,
             stderr: err,
+            proof_ended: proof_eof && !matches!(action, TransportAction::CloseProof),
+            elapsed: joined.duration_since(started),
+            stop_requested,
+            joined,
             dir,
         }
     }
@@ -594,6 +676,7 @@ fn frame(kind: u8, detail: u8, value: u32) -> [u8; 32] {
     bytes
 }
 fn exact_record(run: &TransportRun, expected: [u8; 32]) {
+    assert!(run.proof_ended, "owned proof END was not observed");
     assert_eq!(
         run.proof_bytes,
         32,
@@ -1182,4 +1265,826 @@ fn bound_sources_refuse_before_namespace_creation() {
     }
     remove_transport_fixture(&fixture);
     eprintln!("bound source native matrix: 13 zero-target refusals");
+}
+
+// Explicit context acceptance is separate from the pathname/image matrices. All
+// assets and allocations are created before the first capture; nothing here
+// removes a successful allocation, a displaced directory, or bootstrap data.
+const CONTEXT_LEAVES: [&str; 9] = [
+    "cwd", "home", "config", "cache", "data", "state", "runtime", "tmp", "empty",
+];
+const CONTEXT_RETAINED_MANIFEST: &str = "/tmp/gc-context-native-retained-paths.txt";
+
+#[derive(Clone, Copy)]
+enum ContextExpected {
+    Accepted(u8, u32),
+    Refused,
+    Invalid,
+    Unavailable,
+    SetupFailed,
+    Unproven(i32),
+}
+struct ContextSpec {
+    scenario: String,
+    action: TransportAction,
+    expected: ContextExpected,
+    poisoned: bool,
+}
+struct ContextCase {
+    spec: ContextSpec,
+    dir: PathBuf,
+    bootstrap: PathBuf,
+    root: PathBuf,
+    identities: Vec<String>,
+    invocation: [u8; 16],
+    invocation_hex: String,
+    poisoned: bool,
+}
+fn context_random<const N: usize>() -> [u8; N] {
+    let mut bytes = [0; N];
+    assert_eq!(
+        unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), N, 0) },
+        N as isize
+    );
+    bytes
+}
+fn context_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn context_directory(path: &Path) {
+    fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+}
+fn context_frame(case: &ContextCase, kind: u8, detail: u8, value: u32) -> [u8; 32] {
+    let mut record = frame(kind, detail, value);
+    record[8..24].copy_from_slice(&case.invocation);
+    record
+}
+impl ContextCase {
+    fn prepare(base: &Path, index: usize, spec: ContextSpec) -> Self {
+        let dir = base.join(format!("{index:03}-{}", spec.scenario));
+        context_directory(&dir);
+        let bootstrap = dir.join("bootstrap");
+        context_directory(&bootstrap);
+        context_directory(&bootstrap.join("work"));
+        let source = bootstrap.join("artifact");
+        fs::write(&source, probe_artifact::EMBEDDED_A).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = dir.join("parent");
+        context_directory(&parent);
+        // A must deny handled access to an existing regular neighbor. ENOENT
+        // would provide no evidence that this ungranted file is protected.
+        fs::write(parent.join("neighbor"), b"ungranted fixture neighbor\n").unwrap();
+        let root = parent.join(format!("context-{}", context_hex(&context_random::<16>())));
+        context_directory(&root);
+        let mut identities = Vec::with_capacity(20);
+        for path in
+            std::iter::once(root.clone()).chain(CONTEXT_LEAVES.iter().map(|leaf| root.join(leaf)))
+        {
+            if path != root {
+                context_directory(&path);
+            }
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.mode() & 0o7777, 0o700);
+            identities.push(metadata.dev().to_string());
+            identities.push(metadata.ino().to_string());
+        }
+        let invocation = context_random::<16>();
+        let invocation_hex = context_hex(&invocation);
+        let poisoned = spec.poisoned;
+        let case = Self {
+            spec,
+            dir,
+            bootstrap,
+            root,
+            identities,
+            invocation,
+            invocation_hex,
+            poisoned,
+        };
+        fs::write(
+            case.bootstrap.join("selection.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "scenario": case.spec.scenario,
+                "bootstrap": case.bootstrap.join("work"),
+                "root": case.root,
+                "identities": case.identities,
+                "invocation": case.invocation_hex,
+                "ambient_poisoned": case.poisoned
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // Precreate result files too, so recording never mutates an ancestor's
+        // directory entries while a native capture is active.
+        for name in ["result.txt", "driver-out", "driver-err", "proof.bin"] {
+            fs::write(case.bootstrap.join(name), []).unwrap();
+        }
+        case
+    }
+    fn run(&self) -> TransportRun {
+        let fixture = Fixture {
+            dir: self.bootstrap.clone(),
+            binary: self.bootstrap.join("artifact"),
+        };
+        fixture.transport_prepared(
+            &self.spec.scenario,
+            self.spec.action,
+            self.bootstrap.clone(),
+            fixture.binary.clone(),
+            true,
+            Some(self),
+        )
+    }
+    fn cwd(&self) -> PathBuf {
+        self.root.join("cwd")
+    }
+    fn no_context_execution(&self) {
+        fn check(path: &Path, depth: usize, count: &mut usize) {
+            *count += 1;
+            assert!(
+                depth <= 8 && *count < 128,
+                "finite no-execution inventory exceeded"
+            );
+            assert!(
+                ![
+                    "executed",
+                    "image-a-executed",
+                    "image-b-executed",
+                    "context-ok",
+                    "fd-closed",
+                    "descendant-ready",
+                    "late-activity",
+                    "pre-restriction-fds"
+                ]
+                .iter()
+                .any(|name| path.file_name().is_some_and(|actual| actual == *name)),
+                "refusal/setup failure executed A at {}",
+                path.display()
+            );
+            if fs::symlink_metadata(path).unwrap().is_dir() {
+                for child in fs::read_dir(path).unwrap() {
+                    check(&child.unwrap().path(), depth + 1, count);
+                }
+            }
+        }
+        check(&self.dir, 0, &mut 0);
+        for name in [
+            "executed",
+            "image-a-executed",
+            "image-b-executed",
+            "context-ok",
+            "fd-closed",
+            "descendant-ready",
+            "late-activity",
+            "pre-restriction-fds",
+        ] {
+            assert!(
+                !self.cwd().join(name).exists(),
+                "{}: unexpected {name}",
+                self.spec.scenario
+            );
+        }
+        assert!(!self.bootstrap.join("work/executed").exists());
+    }
+    fn accepted_context(&self) {
+        for name in ["executed", "image-a-executed", "fd-closed", "context-ok"] {
+            assert!(
+                self.cwd().join(name).is_file(),
+                "{}: missing {name}",
+                self.spec.scenario
+            );
+        }
+        assert!(!self.cwd().join("image-b-executed").exists());
+        assert!(!self.cwd().join("pre-restriction-fds").exists());
+        assert!(!self.bootstrap.join("work/executed").exists());
+        for (i, leaf) in CONTEXT_LEAVES.iter().enumerate() {
+            let path = self.root.join(leaf);
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            assert_eq!(metadata.dev().to_string(), self.identities[2 * i + 2]);
+            assert_eq!(metadata.ino().to_string(), self.identities[2 * i + 3]);
+            if i < 8 {
+                assert_eq!(fs::read(path.join("context-write")).unwrap(), b"fixture\n");
+            } else {
+                assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+            }
+        }
+        let root = fs::symlink_metadata(&self.root).unwrap();
+        assert_eq!(root.dev().to_string(), self.identities[0]);
+        assert_eq!(root.ino().to_string(), self.identities[1]);
+        assert!(!self.root.join("denied-write").exists());
+        assert!(!self.root.join("empty/denied-write").exists());
+    }
+    fn mutation_observed(&self) {
+        let scenario = &self.spec.scenario;
+        if scenario == "ctx-after-landlock-symlink" {
+            let path = self.cwd().join("context-fault-link");
+            assert!(
+                fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::read_link(path).unwrap(),
+                Path::new("context-fault-entry")
+            );
+            return;
+        }
+        let selected = if scenario.ends_with("ancestor-replace")
+            || scenario.ends_with("ancestor-symlink")
+            || scenario.ends_with("ancestor-missing")
+            || scenario.ends_with("ancestor-mode")
+        {
+            self.root.parent().unwrap().to_path_buf()
+        } else if scenario.ends_with("leaf-replace")
+            || scenario.ends_with("leaf-symlink")
+            || scenario.ends_with("leaf-missing")
+            || scenario.ends_with("leaf-mode")
+        {
+            self.cwd()
+        } else {
+            self.root.clone()
+        };
+        if scenario.ends_with("-replace")
+            || scenario.ends_with("-symlink")
+            || scenario.ends_with("-missing")
+        {
+            let moved = PathBuf::from(format!("{}.moved", selected.display()));
+            assert!(
+                fs::symlink_metadata(&moved).unwrap().is_dir(),
+                "{scenario}: no actual displacement"
+            );
+            if scenario.ends_with("-replace") {
+                assert!(fs::symlink_metadata(&selected).unwrap().is_dir());
+                let old = fs::symlink_metadata(&moved).unwrap();
+                let new = fs::symlink_metadata(&selected).unwrap();
+                assert_ne!((old.dev(), old.ino()), (new.dev(), new.ino()));
+            } else if scenario.ends_with("-symlink") {
+                assert!(
+                    fs::symlink_metadata(&selected)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_eq!(fs::read_link(selected).unwrap(), moved);
+            } else {
+                assert!(
+                    matches!(fs::symlink_metadata(selected), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+                );
+            }
+        } else if scenario.ends_with("-mode") {
+            assert_eq!(
+                fs::symlink_metadata(selected).unwrap().mode() & 0o7777,
+                0o750
+            );
+        } else if scenario.ends_with("-nonempty") || scenario == "ctx-after-landlock-content" {
+            assert!(
+                self.cwd().join("context-fault-entry").is_file(),
+                "{scenario}: mutation not exercised"
+            );
+        } else if scenario.ends_with("-extra-root") {
+            assert!(self.root.join("context-fault-entry").is_file());
+        }
+    }
+    fn record_retention(&self, status: &str, run: Option<&TransportRun>) {
+        // Never follow a replacement symlink. A bounded walk of this one finite
+        // case locates every original directory, including displaced trees.
+        fn visit(path: &Path, depth: usize, entries: &mut Vec<(PathBuf, u64, u64, bool)>) {
+            assert!(
+                depth <= 8 && entries.len() < 128,
+                "finite retention inventory exceeded"
+            );
+            let metadata = fs::symlink_metadata(path).unwrap();
+            entries.push((
+                path.to_path_buf(),
+                metadata.dev(),
+                metadata.ino(),
+                metadata.is_dir(),
+            ));
+            if metadata.is_dir() {
+                let mut children: Vec<_> = fs::read_dir(path)
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .collect();
+                children.sort();
+                for child in children {
+                    visit(&child, depth + 1, entries);
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        visit(&self.dir, 0, &mut entries);
+        for id in self.identities.chunks_exact(2) {
+            assert!(
+                entries.iter().any(|(_, dev, ino, directory)| *directory
+                    && dev.to_string() == id[0]
+                    && ino.to_string() == id[1]),
+                "{}: original allocation disappeared: {id:?}",
+                self.spec.scenario
+            );
+        }
+        let mut manifest = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(CONTEXT_RETAINED_MANIFEST)
+            .unwrap();
+        writeln!(
+            manifest,
+            "status={status} scenario={} invocation={} bootstrap={} root={}",
+            self.spec.scenario,
+            self.invocation_hex,
+            self.bootstrap.display(),
+            self.root.display()
+        )
+        .unwrap();
+        for (path, dev, ino, _) in entries {
+            writeln!(
+                manifest,
+                "retained dev={dev} ino={ino} path={}",
+                path.display()
+            )
+            .unwrap();
+        }
+        if let Some(run) = run {
+            fs::write(self.bootstrap.join("driver-out"), &run.stdout).unwrap();
+            fs::write(self.bootstrap.join("driver-err"), &run.stderr).unwrap();
+            fs::write(self.bootstrap.join("proof.bin"), &run.proof).unwrap();
+            fs::write(self.bootstrap.join("result.txt"),
+                format!("{status} driver_exit={} proof_bytes={} proof_end={} stdout_end=true stderr_end=true elapsed_ms={} stop_to_join_ms={}\n",
+                    run.code, run.proof_bytes, run.proof_ended, run.elapsed.as_millis(),
+                    run.stop_requested.map_or_else(|| "none".to_owned(),
+                        |stop| run.joined.duration_since(stop).as_millis().to_string()))).unwrap();
+        }
+        eprintln!(
+            "context {}: {status}; retained {}",
+            self.spec.scenario,
+            self.dir.display()
+        );
+    }
+}
+
+fn context_specs() -> Vec<ContextSpec> {
+    use ContextExpected::*;
+    let mut specs = Vec::new();
+    let mut add = |scenario: &str, action, expected, poisoned| {
+        specs.push(ContextSpec {
+            scenario: scenario.to_owned(),
+            action,
+            expected,
+            poisoned,
+        })
+    };
+    add("normal", TransportAction::None, Accepted(1, 7), false);
+    add("normal", TransportAction::None, Accepted(1, 7), true);
+    for stage in ["before-capture", "before-acquire", "after-acquire"] {
+        for mutation in [
+            "root-replace",
+            "leaf-replace",
+            "ancestor-replace",
+            "root-symlink",
+            "leaf-symlink",
+            "ancestor-symlink",
+            "root-missing",
+            "leaf-missing",
+            "ancestor-missing",
+            "root-mode",
+            "leaf-mode",
+            "ancestor-mode",
+            "nonempty",
+            "extra-root",
+        ] {
+            add(
+                &format!("ctx-{stage}-{mutation}"),
+                TransportAction::None,
+                if stage == "before-capture" {
+                    Refused
+                } else {
+                    SetupFailed
+                },
+                false,
+            );
+        }
+    }
+    for scenario in ["ctx-after-landlock-content", "ctx-after-landlock-symlink"] {
+        add(scenario, TransportAction::None, SetupFailed, false);
+    }
+    for scenario in ["ctx-stat", "ctx-deadline-capture"] {
+        add(scenario, TransportAction::None, Refused, false);
+    }
+    for scenario in [
+        "ctx-open",
+        "ctx-fchdir",
+        "ctx-rules",
+        "ctx-limits",
+        "ctx-close",
+        "ctx-initial-inventory",
+        "ctx-final-inventory",
+        "ctx-scanner-close",
+        "ctx-deadline-acquire",
+        "ctx-deadline-enumeration",
+        "ctx-deadline-rules",
+        "ctx-deadline-revalidation",
+        "ctx-deadline-closure",
+        "ctx-deadline-exec",
+        "fault-dup",
+        "fault-close-range",
+        "fault-inventory",
+        "fault-exec",
+        "restrict-failure",
+        "limits-failure",
+        "exec-failure",
+        "map-failure",
+    ] {
+        add(scenario, TransportAction::None, SetupFailed, false);
+    }
+    for scenario in ["image-mismatch", "prep-expired", "prep-stop", "copy-b"] {
+        add(
+            scenario,
+            TransportAction::None,
+            if scenario == "image-mismatch" {
+                Invalid
+            } else {
+                Refused
+            },
+            false,
+        );
+    }
+    add("not-a-scenario", TransportAction::None, Invalid, false);
+    add("clone-failure", TransportAction::None, Unavailable, false);
+    add("pidfd-failure", TransportAction::None, Unavailable, false);
+    for (scenario, action, detail, value) in [
+        ("high-exit", TransportAction::None, 1, 200),
+        ("signal", TransportAction::None, 2, libc::SIGTERM as u32),
+        ("direct", TransportAction::None, 1, 0),
+        ("double", TransportAction::None, 1, 0),
+        ("detach", TransportAction::None, 1, 0),
+        (
+            "signal-tree",
+            TransportAction::None,
+            2,
+            libc::SIGTERM as u32,
+        ),
+        ("hold", TransportAction::StopData, 3, 0),
+        ("hold", TransportAction::StopRepeated, 3, 0),
+        ("hold", TransportAction::StopEof, 3, 0),
+        ("hold", TransportAction::StopWriteFailure, 3, 0),
+        ("forge", TransportAction::None, 1, 0),
+        ("acp", TransportAction::Acp, 1, 0),
+        ("acp-forbidden", TransportAction::Forbidden, 1, 0),
+        ("acp-hang", TransportAction::Hung, 3, 0),
+    ] {
+        add(scenario, action, Accepted(detail, value), false);
+    }
+    for scenario in [
+        "death-pre-admission",
+        "death-post-admission",
+        "death-mid-record",
+        "death-full-record",
+        "death-closed-record",
+        "proof-truncate",
+        "proof-stale",
+        "proof-extra",
+        "proof-missing",
+        "guard-eof",
+        "guard-registration-failure",
+        "wait-failure",
+        "withhold",
+    ] {
+        add(
+            scenario,
+            if scenario == "withhold" {
+                TransportAction::StopEof
+            } else {
+                TransportAction::None
+            },
+            Unproven(match scenario {
+                "proof-truncate" | "proof-stale" | "proof-extra" | "proof-missing" => 0,
+                "wait-failure" | "withhold" => 70,
+                _ => 71,
+            }),
+            false,
+        );
+    }
+    add("normal", TransportAction::CloseProof, Unproven(71), false);
+    add("normal", TransportAction::InvalidLayout, Invalid, false);
+    specs
+}
+
+fn context_join_timing(scenario: &str, run: &TransportRun) {
+    assert!(
+        run.elapsed <= Duration::from_secs(11),
+        "{scenario}: proof/END/exact-exit join exceeded owner budget; retained"
+    );
+    if let Some(stop) = run.stop_requested {
+        assert!(
+            run.joined.duration_since(stop) <= Duration::from_secs(3),
+            "{scenario}: proof/END/exact-exit join exceeded stop budget; retained"
+        );
+    }
+}
+
+fn context_check(case: &ContextCase, run: &TransportRun) -> &'static str {
+    use ContextExpected::*;
+    let scenario = case.spec.scenario.as_str();
+    let expected = |kind, detail, value| context_frame(case, kind, detail, value);
+    match case.spec.expected {
+        Accepted(detail, value) => {
+            context_join_timing(scenario, run);
+            assert_eq!(
+                run.code,
+                0,
+                "{scenario}: {:?}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            exact_record(run, expected(1, detail, value));
+            case.accepted_context();
+            if ["direct", "double", "detach", "signal-tree", "hold"].contains(&scenario) {
+                assert!(case.cwd().join("descendant-ready").exists());
+                assert!(!case.cwd().join("late-activity").exists());
+            }
+            if scenario == "forge" {
+                assert_eq!(
+                    run.stdout,
+                    expected(1, 1, 0),
+                    "ACP forgery is not owned proof"
+                );
+                assert!(case.cwd().join("forge-rejected").exists());
+            }
+            if scenario == "acp" {
+                assert!(String::from_utf8_lossy(&run.stdout).contains("fixture-session"));
+            }
+            if scenario == "acp-forbidden" {
+                assert!(case.cwd().join("forbidden-rejected").exists());
+            }
+            if scenario == "acp-hang" {
+                assert!(case.cwd().join("hung-request").exists());
+            }
+            "pass"
+        }
+        Refused | Invalid | Unavailable => {
+            let (code, detail, status) = match case.spec.expected {
+                Refused => (66, 3, "refusal"),
+                Invalid => (64, 1, "refusal"),
+                Unavailable => (65, 2, "unavailable"),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                run.code,
+                code,
+                "{scenario}: {:?}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            exact_record(run, expected(2, detail, 0));
+            case.no_context_execution();
+            case.mutation_observed();
+            status
+        }
+        SetupFailed => {
+            context_join_timing(scenario, run);
+            assert_eq!(
+                run.code,
+                0,
+                "{scenario}: {:?}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            exact_record(run, expected(1, 4, 0));
+            case.no_context_execution();
+            case.mutation_observed();
+            "setup-failed"
+        }
+        Unproven(code) => {
+            assert_eq!(
+                run.code,
+                code,
+                "{scenario}: {:?}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert!(!case.cwd().join("late-activity").exists());
+            match scenario {
+                "death-pre-admission" | "guard-eof" | "guard-registration-failure" => {
+                    case.no_context_execution()
+                }
+                "death-mid-record" => {
+                    assert_eq!(run.proof_bytes, 16);
+                    assert_eq!(run.proof, expected(1, 1, 7)[..16]);
+                }
+                "proof-truncate" => {
+                    assert_eq!(run.proof_bytes, 31);
+                    assert_eq!(run.proof, expected(1, 1, 7)[..31]);
+                }
+                "death-full-record" | "death-closed-record" => exact_record(run, expected(1, 1, 7)),
+                "proof-stale" => {
+                    let mut stale = expected(1, 1, 7);
+                    stale[8] ^= 1;
+                    exact_record(run, stale);
+                }
+                "proof-extra" => {
+                    assert_eq!(run.proof_bytes, 64);
+                    assert_eq!(run.proof, [expected(1, 1, 7), expected(1, 1, 7)].concat());
+                }
+                "proof-missing" | "normal" => assert_eq!(run.proof_bytes, 0),
+                "wait-failure" | "withhold" => exact_record(run, expected(3, 1, 0)),
+                _ => {}
+            }
+            // Early A/context markers cannot repair a malformed proof or a
+            // nonzero exact producer exit, including a complete 32-byte record.
+            "unproven"
+        }
+    }
+}
+
+#[test]
+fn context_join_rejects_late_owner_stop_and_setup() {
+    // A valid record, END and exact exit cannot excuse a late join. Exercise
+    // the real acceptance branches with synthetic monotonic times, without
+    // launching targets, allocating context roots or exporting runtime helpers.
+    for expected in [
+        ContextExpected::Accepted(1, 7),
+        ContextExpected::SetupFailed,
+    ] {
+        let case = ContextCase {
+            spec: ContextSpec {
+                scenario: "synthetic-timing".to_owned(),
+                action: TransportAction::None,
+                expected,
+                poisoned: false,
+            },
+            dir: PathBuf::new(),
+            bootstrap: PathBuf::new(),
+            root: PathBuf::new(),
+            identities: Vec::new(),
+            invocation: INVOCATION,
+            invocation_hex: INVOCATION_HEX.to_owned(),
+            poisoned: false,
+        };
+        let proof = match expected {
+            ContextExpected::Accepted(detail, value) => frame(1, detail, value),
+            ContextExpected::SetupFailed => frame(1, 4, 0),
+            _ => unreachable!(),
+        };
+        let started = Instant::now();
+        let mut run = TransportRun {
+            code: 0,
+            proof: proof.to_vec(),
+            proof_bytes: 32,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            proof_ended: true,
+            elapsed: Duration::from_secs(11),
+            stop_requested: None,
+            joined: started + Duration::from_secs(11),
+            dir: PathBuf::new(),
+        };
+        context_join_timing(&case.spec.scenario, &run); // Inclusive overall bound.
+        run.stop_requested = Some(run.joined - Duration::from_secs(3));
+        context_join_timing(&case.spec.scenario, &run); // Inclusive stop bound.
+        for (elapsed, since_stop, budget) in [
+            (
+                Duration::from_secs(11) + Duration::from_nanos(1),
+                None,
+                "owner",
+            ),
+            (
+                Duration::from_secs(4),
+                Some(Duration::from_secs(3) + Duration::from_nanos(1)),
+                "stop",
+            ),
+        ] {
+            run.elapsed = elapsed;
+            run.joined = started + elapsed;
+            run.stop_requested = since_stop.map(|since| run.joined - since);
+            let panic = std::panic::catch_unwind(|| context_check(&case, &run))
+                .expect_err("late acceptance/setup join must be rejected before marker checks");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .expect("timing assertion must explain rejection");
+            assert!(message.contains(&format!("join exceeded {budget} budget")));
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit retained context matrix; launches an isolated single-test process"]
+fn context_bound_native_matrix() {
+    const ISOLATED: &str = "GC_CONTEXT_NATIVE_ISOLATED";
+    if std::env::var_os(ISOLATED).is_none() {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "context_bound_native_matrix",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(ISOLATED, "1")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let status = Running {
+            child,
+            finished: false,
+        }
+        .wait(Duration::from_secs(240));
+        assert!(
+            status.success(),
+            "isolated context matrix failed; all fixtures retained"
+        );
+        return;
+    }
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        || !probe_artifact::fixture_available()
+    {
+        eprintln!(
+            "context native matrix unavailable: fixed Linux x86_64 A/B assets absent; zero context launches"
+        );
+        return;
+    }
+    // Create the shared append-only manifest before capture. Keep its original
+    // contents and every prior fixture untouched.
+    let mut manifest = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(CONTEXT_RETAINED_MANIFEST)
+        .unwrap();
+    let base = Path::new("/tmp").join(format!(
+        "gs-context-{}",
+        context_hex(&context_random::<16>())
+    ));
+    context_directory(&base);
+    writeln!(
+        manifest,
+        "matrix retained base={} dev={} ino={}",
+        base.display(),
+        fs::metadata(&base).unwrap().dev(),
+        fs::metadata(&base).unwrap().ino()
+    )
+    .unwrap();
+    drop(manifest);
+    let cases: Vec<_> = context_specs()
+        .into_iter()
+        .enumerate()
+        .map(|(index, spec)| ContextCase::prepare(&base, index, spec))
+        .collect();
+    for case in &cases {
+        case.record_retention("precreated-unrun", None);
+    }
+    let mut counts = [0usize; 5]; // pass, refusal, unavailable, setup-failed, unproven
+    for (index, case) in cases.iter().enumerate() {
+        let run = case.run();
+        // Environmental facilities/refusals must be reported honestly. A host
+        // refusal cannot stand in for positive contextual acceptance.
+        if index < 2 && matches!(run.code, 65 | 66) {
+            exact_record(
+                &run,
+                context_frame(case, 2, if run.code == 65 { 2 } else { 3 }, 0),
+            );
+            case.no_context_execution();
+            case.record_retention(
+                if run.code == 65 {
+                    "unavailable"
+                } else {
+                    "refusal"
+                },
+                Some(&run),
+            );
+            for unrun in &cases[index + 1..] {
+                unrun.record_retention("unproven-unrun-after-facility-refusal", None);
+            }
+            eprintln!(
+                "context native matrix: accepted={}, refusal={}, unavailable={}, setup-failed=0, unproven-unrun={}; all retained {}; positive acceptance not established",
+                counts[0],
+                usize::from(run.code == 66),
+                usize::from(run.code == 65),
+                cases.len() - index - 1,
+                base.display()
+            );
+            return;
+        }
+        // Save endpoint bytes and retained identities even if an assertion below
+        // detects a regression. Recording occurs only after every endpoint ended.
+        case.record_retention("observed-before-assertion", Some(&run));
+        let status = context_check(case, &run);
+        counts[match status {
+            "pass" => 0,
+            "refusal" => 1,
+            "unavailable" => 2,
+            "setup-failed" => 3,
+            _ => 4,
+        }] += 1;
+        case.record_retention(status, Some(&run));
+    }
+    assert_eq!(counts.iter().sum::<usize>(), cases.len());
+    eprintln!(
+        "context native matrix: pass={}, refusal={}, unavailable={}, setup-failed={}, unproven={}; total={}; all retained {}; identity and ownership changes requiring another UID remain synthetic; ARM/other runtimes/providers unclaimed",
+        counts[0],
+        counts[1],
+        counts[2],
+        counts[3],
+        counts[4],
+        cases.len(),
+        base.display()
+    );
 }

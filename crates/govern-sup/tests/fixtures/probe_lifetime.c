@@ -2,6 +2,7 @@
  * No networking, external artifacts, or host-PID /proc inspection. The transport
  * forgery case attempts only its own /proc descriptor directory. */
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <linux/capability.h>
 #include <signal.h>
@@ -154,8 +155,140 @@ static int forge_transport(const char *invocation) {
     marker("forge-rejected");
     return 0;
 }
+static unsigned long long context_number(const char *text) {
+    if (!*text || (text[0] == '0' && text[1])) _exit(135);
+    for (const char *p = text; *p; ++p) if (*p < '0' || *p > '9') _exit(135);
+    errno = 0;
+    char *end;
+    unsigned long long value = strtoull(text, &end, 10);
+    if (errno || *end) _exit(135);
+    return value;
+}
+static int context_stat_matches(const char *path, unsigned long long device, unsigned long long inode) {
+    struct stat s;
+    return !stat(path, &s) && S_ISDIR(s.st_mode) && s.st_mode == (S_IFDIR | 0700)
+        && (unsigned long long)s.st_dev == device && (unsigned long long)s.st_ino == inode
+        && s.st_uid == getuid();
+}
+static int context_denied(const char *path, int flags) {
+    errno = 0;
+    int fd = open(path, flags | O_CLOEXEC, 0600);
+    if (fd >= 0) { close(fd); return 0; }
+    return errno == EACCES || errno == EPERM;
+}
+static int context_checks(int argc, char **argv) {
+    static const char *leaves[9] = {"cwd", "home", "config", "cache", "data", "state", "runtime", "tmp", "empty"};
+    static const char *names[14] = {"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+        "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
+        "TMPDIR", "TMP", "TEMP", "PATH", "LANG", "LC_ALL"};
+    static const char *env_leaves[12] = {"home", "config", "cache", "data", "state", "runtime",
+        "empty", "empty", "tmp", "tmp", "tmp", "empty"};
+    char path[4096], expected[4096], actual[4096];
+    extern char **environ;
+    if (argc != 25 || strlen(argv[3]) > 3115 || argv[3][0] != '/' || strlen(argv[2]) != 32) return 135;
+    for (int i = 0; i < 32; ++i)
+        if (!((argv[2][i] >= '0' && argv[2][i] <= '9') || (argv[2][i] >= 'a' && argv[2][i] <= 'f'))) return 135;
+    unsigned long long identities[20];
+    for (int i = 0; i < 20; ++i) identities[i] = context_number(argv[4 + i]);
+    for (int i = 0; i < 10; ++i) for (int j = 0; j < i; ++j)
+        if (identities[2*i] == identities[2*j] && identities[2*i+1] == identities[2*j+1]) return 135;
+    if (!context_stat_matches(argv[3], identities[0], identities[1])) return 136;
+    for (int i = 0; i < 9; ++i) {
+        int n = snprintf(path, sizeof(path), "%s/%s", argv[3], leaves[i]);
+        if (n <= 0 || (size_t)n >= sizeof(path)
+            || !context_stat_matches(path, identities[2*i+2], identities[2*i+3])) return 136;
+    }
+    if (!getcwd(actual, sizeof(actual))) return 137;
+    int n = snprintf(expected, sizeof(expected), "%s/cwd", argv[3]);
+    if (n <= 0 || (size_t)n >= sizeof(expected) || strcmp(actual, expected)
+        || !context_stat_matches(".", identities[2], identities[3])) return 137;
+    unsigned seen = 0;
+    for (int count = 0; ; ++count) {
+        if (count > 14) return 138;
+        const char *entry = environ[count];
+        if (!entry) { if (count != 14 || seen != 0x3fff) return 138; break; }
+        int match = -1;
+        for (int i = 0; i < 14; ++i) {
+            const size_t len = strlen(names[i]);
+            if (!strncmp(entry, names[i], len) && entry[len] == '=') { match = i; break; }
+        }
+        if (match < 0 || (seen & (1U << match))) return 138;
+        seen |= 1U << match;
+        n = match < 12 ? snprintf(expected, sizeof(expected), "%s/%s", argv[3], env_leaves[match])
+                       : snprintf(expected, sizeof(expected), "C");
+        if (n <= 0 || (size_t)n >= sizeof(expected) || strcmp(strchr(entry, '=') + 1, expected)) return 138;
+    }
+    for (int fd = 3; fd < 64; ++fd) {
+        errno = 0;
+        if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) return 139;
+    }
+    for (int i = 0; i < 8; ++i) {
+        n = snprintf(path, sizeof(path), "%s/%s/context-write", argv[3], leaves[i]);
+        if (n <= 0 || (size_t)n >= sizeof(path)) return 140;
+        int fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd < 0 || write(fd, "fixture\n", 8) != 8) return 140;
+        char bytes[8];
+        if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, bytes, 8) != 8 || memcmp(bytes, "fixture\n", 8)) return 140;
+        if (close(fd)) return 140;
+    }
+    n = snprintf(path, sizeof(path), "%s/empty", argv[3]);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return 141;
+    DIR *empty = opendir(path);
+    if (!empty) return 141;
+    int empty_ok = 1;
+    for (int i = 0; ; ++i) {
+        errno = 0;
+        struct dirent *entry = readdir(empty);
+        if (!entry) { if (errno) empty_ok = 0; break; }
+        if (i > 2 || (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))) { empty_ok = 0; break; }
+    }
+    if (closedir(empty) || !empty_ok) return 141;
+    snprintf(path, sizeof(path), "%s/empty/denied-write", argv[3]);
+    if (!context_denied(path, O_WRONLY | O_CREAT)) return 141;
+    if (!context_denied(argv[3], O_RDONLY | O_DIRECTORY)) return 142;
+    snprintf(path, sizeof(path), "%s/denied-write", argv[3]);
+    if (!context_denied(path, O_WRONLY | O_CREAT)) return 142;
+    if (snprintf(path, sizeof(path), "%s", argv[3]) <= 0) return 142;
+    char *slash = strrchr(path, '/');
+    if (!slash || slash == path) return 142;
+    *slash = '\0';
+    if (!context_denied(path, O_RDONLY | O_DIRECTORY)) return 142;
+    n = snprintf(expected, sizeof(expected), "%s/neighbor", path);
+    struct stat neighbor;
+    if (n <= 0 || (size_t)n >= sizeof(expected) || stat(expected, &neighbor)
+        || !S_ISREG(neighbor.st_mode) || !context_denied(expected, O_RDONLY)
+        || !context_denied(expected, O_WRONLY)) return 142;
+    if (!context_denied("/etc/passwd", O_RDONLY) || !context_denied("/proc/self/fd", O_RDONLY | O_DIRECTORY)) return 143;
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) || limit.rlim_cur > 32 || limit.rlim_max > 32
+        || getrlimit(RLIMIT_CPU, &limit) || limit.rlim_cur > 2 || limit.rlim_max > 2
+        || getrlimit(RLIMIT_AS, &limit) || limit.rlim_cur > 67108864 || limit.rlim_max > 67108864) return 144;
+    for (int family = 0; family < 3; ++family) {
+        errno = 0;
+        if (socket(family == 0 ? AF_INET : family == 1 ? AF_INET6 : AF_UNIX, SOCK_STREAM, 0) != -1 || errno != EPERM) return 145;
+    }
+    int sockets[2];
+    errno = 0;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != -1 || errno != EPERM) return 145;
+    errno = 0;
+    if (chmod("context-write", 0700) != -1 || errno != EPERM) return 146;
+    errno = 0;
+    if (syscall(SYS_unshare, 0x20000000) != -1 || errno != EPERM) return 147;
+    errno = 0;
+    if (syscall(SYS_setns, -1, 0) != -1 || errno != EPERM) return 147;
+    errno = 0;
+    if (syscall(SYS_memfd_create, "context-denied", 3) != -1 || errno != EPERM) return 148;
+    void *memory = mmap(NULL, 128 * 1024 * 1024, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (memory != MAP_FAILED || errno != ENOMEM) return 149;
+    char *denied_argv[] = {"/bin/true", NULL};
+    execv(denied_argv[0], denied_argv);
+    if (errno != EACCES && errno != EPERM) return 150;
+    marker("context-ok");
+    return 0;
+}
 int main(int argc, char **argv) {
-    if (argc != 2 && argc != 3) return 92;
+    int contextual = argc == 25 && !strcmp(argv[1], "context");
+    if (!contextual && argc != 2 && argc != 3) return 92;
     alarm(5);
     marker("executed");
 #if PROBE_FIXTURE_IMAGE == 1
@@ -178,6 +311,12 @@ int main(int argc, char **argv) {
     if (prctl(PR_CAPBSET_READ, 0, 0, 0, 0) != 0 || prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, 0, 0, 0) != 0) return 111;
     caps[0].effective = caps[0].permitted = 1;
     if (syscall(SYS_capset, &header, caps) != -1 || errno != EPERM) return 112;
+    if (contextual) {
+        int check = context_checks(argc, argv);
+        if (check) return check;
+        argv[1] = argv[24];
+        argc = 3;
+    }
     if (!strcmp(argv[1], "normal")) return PROBE_FIXTURE_IMAGE == 2 ? 17 : 7;
     if (!strcmp(argv[1], "high-exit")) return 200;
     if (!strcmp(argv[1], "cpu")) { volatile unsigned long count = 0; for (;;) { ++count; (void)count; } }

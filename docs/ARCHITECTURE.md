@@ -342,6 +342,15 @@ object is a separate initial execution capability; fixture restrictions addition
 memfd creation. This does not bind production store receipts or grant general runtime access.
 Normal production dispatch, discovery, installer eligibility and context retention are unchanged.
 
+A contextual fixture variant allocates its own private probe context and associates it with
+one consuming launch. Native setup checks host-visible ownership before namespace creation,
+then reacquires matching directory observations inside the target. The held objects supply
+initial cwd and fixed filesystem rules; a private fourteen-field environment supplies the
+allocator's literal paths. Setup descriptors close before sealed-image execution. These checks
+are observations under trusted local storage, rather than uninterrupted ownership or immutable
+environment paths. Termination proof can accompany failed setup, and every allocated context
+remains retained. This variant supplies no production launch or successful-context cleanup.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the

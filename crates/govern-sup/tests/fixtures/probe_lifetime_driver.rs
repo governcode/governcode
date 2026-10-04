@@ -9,6 +9,9 @@ mod policy;
 #[allow(dead_code)]
 #[path = "../../src/probe_artifact.rs"]
 mod probe_artifact;
+#[allow(dead_code)]
+#[path = "../../src/probe_context.rs"]
+mod probe_context;
 #[path = "../../src/probe_lifetime.rs"]
 mod probe_lifetime;
 #[allow(dead_code)]
@@ -453,6 +456,7 @@ fn transport_layout() -> bool {
 enum DriverCompletion {
     Path(probe_lifetime::ProbeCompletion),
     Bound(probe_lifetime::BoundProbeCompletion),
+    Context(probe_lifetime::ContextFixtureCompletion),
 }
 fn write_bound_termination(
     completion: probe_lifetime::BoundProbeCompletion,
@@ -474,6 +478,13 @@ fn write_driver_termination(
     match completion {
         DriverCompletion::Path(c) => write_owned_termination(c, invocation, proof, deadline),
         DriverCompletion::Bound(c) => write_bound_termination(c, invocation, proof, deadline),
+        DriverCompletion::Context(c) => write_owned_termination(
+            c.into_completion(invocation)
+                .map_err(|_| TransportFailure)?,
+            invocation,
+            proof,
+            deadline,
+        ),
     }
 }
 fn inject_driver_emission(
@@ -486,6 +497,9 @@ fn inject_driver_emission(
     let c = match completion {
         DriverCompletion::Path(c) => c,
         DriverCompletion::Bound(c) => c
+            .into_completion(invocation)
+            .map_err(|_| TransportFailure)?,
+        DriverCompletion::Context(c) => c
             .into_completion(invocation)
             .map_err(|_| TransportFailure)?,
     };
@@ -527,6 +541,188 @@ fn bound_scenario(mode: &str) -> bool {
             | "fault-exec"
             | "limits-failure"
     )
+}
+#[derive(Clone, Copy)]
+enum ContextMutation {
+    RootReplace,
+    RootSymlink,
+    RootMissing,
+    RootMode,
+    ExtraRoot,
+    LeafReplace,
+    LeafSymlink,
+    LeafMissing,
+    LeafMode,
+    LeafContent,
+    AncestorReplace,
+    AncestorSymlink,
+    AncestorMissing,
+    AncestorMode,
+    CwdFile,
+    CwdSymlink,
+}
+fn context_mutation(mode: &str) -> Option<(probe_context::ContextStage, ContextMutation)> {
+    use ContextMutation as M;
+    use probe_context::ContextStage as S;
+    if mode == "ctx-after-landlock-content" {
+        return Some((S::AfterLandlock, M::CwdFile));
+    }
+    if mode == "ctx-after-landlock-symlink" {
+        return Some((S::AfterLandlock, M::CwdSymlink));
+    }
+    let (at, name) = [
+        "ctx-before-capture-",
+        "ctx-before-acquire-",
+        "ctx-after-acquire-",
+    ]
+    .iter()
+    .enumerate()
+    .find_map(|(i, prefix)| mode.strip_prefix(prefix).map(|name| (i, name)))?;
+    let kind = match name {
+        "root-replace" => M::RootReplace,
+        "leaf-replace" => M::LeafReplace,
+        "ancestor-replace" => M::AncestorReplace,
+        "root-symlink" => M::RootSymlink,
+        "leaf-symlink" => M::LeafSymlink,
+        "ancestor-symlink" => M::AncestorSymlink,
+        "root-missing" => M::RootMissing,
+        "leaf-missing" => M::LeafMissing,
+        "ancestor-missing" => M::AncestorMissing,
+        "root-mode" => M::RootMode,
+        "leaf-mode" => M::LeafMode,
+        "ancestor-mode" => M::AncestorMode,
+        "nonempty" => M::LeafContent,
+        "extra-root" => M::ExtraRoot,
+        _ => return None,
+    };
+    Some((
+        match at {
+            0 => S::BeforeCapture,
+            1 => S::BeforeAcquisition,
+            _ => S::AfterAcquisition,
+        },
+        kind,
+    ))
+}
+fn context_faults(
+    mode: &str,
+) -> Option<(
+    probe_context::ContextFault,
+    probe_lifetime::ContextExecutionFault,
+)> {
+    use probe_context::{ContextFault as F, ContextStage as S};
+    use probe_lifetime::ContextExecutionFault as E;
+    let failure = match mode {
+        "ctx-open" => F::Open,
+        "ctx-stat" => F::Stat,
+        "ctx-fchdir" => F::Fchdir,
+        "ctx-rules" | "restrict-failure" => F::Rules,
+        "ctx-limits" | "limits-failure" => F::Limits,
+        "ctx-close" => F::CloseFinal,
+        "ctx-deadline-capture" => F::Expire(S::BeforeCapture),
+        "ctx-deadline-acquire" => F::Expire(S::BeforeAcquisition),
+        "ctx-deadline-enumeration" => F::Expire(S::AcquisitionEnumeration),
+        "ctx-deadline-rules" => F::Expire(S::BeforeLandlock),
+        "ctx-deadline-revalidation" => F::Expire(S::RevalidationWalk),
+        "ctx-deadline-closure" => F::Expire(S::BeforeClosure),
+        "ctx-deadline-exec" => F::None,
+        "ctx-initial-inventory" => return Some((F::None, E::InitialAlias)),
+        "ctx-final-inventory" => return Some((F::None, E::FinalAlias)),
+        "ctx-scanner-close" => return Some((F::None, E::ScannerClose)),
+        _ if context_mutation(mode).is_some()
+            || transport_scenario(mode)
+            || bound_scenario(mode) =>
+        {
+            F::None
+        }
+        _ => return None,
+    };
+    Some((failure, E::None))
+}
+// Only finite fixture scenarios select these operations. Every displaced object
+// is retained with a no-replace rename; post-Landlock writes stay within cwd.
+fn mutate_context(root: &str, kind: ContextMutation) -> Result<(), probe_context::ContextFailure> {
+    use ContextMutation as M;
+    use std::ffi::CString;
+    use std::os::fd::IntoRawFd;
+    let path = match kind {
+        M::RootReplace | M::RootSymlink | M::RootMissing | M::RootMode | M::ExtraRoot => {
+            root.to_owned()
+        }
+        M::AncestorReplace | M::AncestorSymlink | M::AncestorMissing | M::AncestorMode => root
+            .rsplit_once('/')
+            .ok_or(probe_context::ContextFailure::InvalidInput)?
+            .0
+            .to_owned(),
+        _ => format!("{root}/cwd"),
+    };
+    let selected =
+        CString::new(path.as_str()).map_err(|_| probe_context::ContextFailure::InvalidInput)?;
+    let result = if matches!(kind, M::RootMode | M::LeafMode | M::AncestorMode) {
+        unsafe { libc::chmod(selected.as_ptr(), 0o750) }
+    } else if matches!(
+        kind,
+        M::ExtraRoot | M::LeafContent | M::CwdFile | M::CwdSymlink
+    ) {
+        let entry = CString::new(format!(
+            "{path}/{}",
+            if matches!(kind, M::CwdSymlink) {
+                "context-fault-link"
+            } else {
+                "context-fault-entry"
+            }
+        ))
+        .unwrap();
+        if matches!(kind, M::CwdSymlink) {
+            unsafe { libc::symlink(c"context-fault-entry".as_ptr(), entry.as_ptr()) }
+        } else {
+            let raw = unsafe {
+                libc::open(
+                    entry.as_ptr(),
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_CLOEXEC
+                        | libc::O_NOFOLLOW,
+                    0o600,
+                )
+            };
+            if raw < 0 {
+                return Err(probe_context::ContextFailure::Filesystem);
+            }
+            let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+            let consumed = fd.into_raw_fd();
+            let closed = unsafe { libc::close(consumed) } == 0 && absent(consumed);
+            if closed { 0 } else { -1 }
+        }
+    } else {
+        let displaced = CString::new(format!("{path}.moved")).unwrap();
+        let renamed = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                selected.as_ptr(),
+                libc::AT_FDCWD,
+                displaced.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if renamed != 0 {
+            return Err(probe_context::ContextFailure::Filesystem);
+        }
+        if matches!(kind, M::RootReplace | M::LeafReplace | M::AncestorReplace) {
+            unsafe { libc::mkdir(selected.as_ptr(), 0o700) }
+        } else if matches!(kind, M::RootSymlink | M::LeafSymlink | M::AncestorSymlink) {
+            unsafe { libc::symlink(displaced.as_ptr(), selected.as_ptr()) }
+        } else {
+            0
+        }
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(probe_context::ContextFailure::Filesystem)
+    }
 }
 fn real_sealed_alias_checks(image: BorrowedFd<'_>) -> bool {
     // Exercise a real alias of the sealed object, then close and check it. Seals
@@ -578,6 +774,7 @@ fn bound_run<R: FnOnce() -> Result<(), String>>(
     mode: &str,
     restrict: R,
     observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+    context: Option<probe_context::FixtureContextPlan>,
 ) -> Result<DriverCompletion, Failure> {
     use probe_artifact::{FixtureImageFault as ImageFault, FixtureImageStage as ImageStage};
     if !probe_artifact::fixture_available() {
@@ -593,7 +790,11 @@ fn bound_run<R: FnOnce() -> Result<(), String>>(
     }
     let deadline = if mode == "prep-expired" {
         Instant::now()
-    } else if matches!(mode, "prep-release-expired" | "prep-exec-expired") {
+    } else if matches!(mode, "prep-release-expired" | "prep-exec-expired")
+        || (context.is_some()
+            && mode.starts_with("ctx-deadline-")
+            && mode != "ctx-deadline-capture")
+    {
         // Fixed failure-only fixtures separate child-side preparation expiry
         // from the independent two-second run-wall stop. Never renew either.
         Instant::now() + Duration::from_secs(1)
@@ -710,6 +911,45 @@ fn bound_run<R: FnOnce() -> Result<(), String>>(
         "fault-exec" | "exec-failure" => probe_lifetime::BoundExecutionFault::Exec,
         _ => probe_lifetime::BoundExecutionFault::None,
     };
+    if let Some(plan) = context {
+        let (context_fault, execution_fault) = context_faults(mode).ok_or(Failure::InvalidInput)?;
+        let context_image_fault = if mode == "ctx-deadline-exec" {
+            probe_lifetime::BoundExecutionFault::ExecDeadline
+        } else {
+            fault
+        };
+        if context_fault == probe_context::ContextFault::None
+            && context_image_fault == probe_lifetime::BoundExecutionFault::None
+            && execution_fault == probe_lifetime::ContextExecutionFault::None
+            && context_mutation(mode).is_none()
+        {
+            return unsafe { probe_lifetime::run_context_bound(options, image, plan, observer) }
+                .map(DriverCompletion::Context);
+        }
+        let root = plan.root().to_owned();
+        let mutation = context_mutation(mode);
+        let hook = |stage| {
+            if let Some((at, kind)) = mutation {
+                if at == stage {
+                    mutate_context(&root, kind)?;
+                }
+            }
+            Ok(())
+        };
+        return unsafe {
+            probe_lifetime::run_context_bound_fault(
+                options,
+                image,
+                plan,
+                observer,
+                context_fault,
+                context_image_fault,
+                execution_fault,
+                hook,
+            )
+        }
+        .map(DriverCompletion::Context);
+    }
     let completion = if fault == probe_lifetime::BoundExecutionFault::None {
         unsafe { probe_lifetime::run_bound(options, image, id, restrict, observer) }
     } else {
@@ -718,11 +958,17 @@ fn bound_run<R: FnOnce() -> Result<(), String>>(
     completion.map(DriverCompletion::Bound)
 }
 fn transport_mode(args: &[String]) -> ExitCode {
-    let bound = args.get(1).is_some_and(|s| s == "bound-transport-v1");
+    let contextual = args
+        .get(1)
+        .is_some_and(|s| s == "context-bound-transport-v1");
+    let bound = contextual || args.get(1).is_some_and(|s| s == "bound-transport-v1");
     if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
         return ExitCode::from(TRANSPORT_PRODUCER);
     }
-    let Some(invocation) = args.get(6).and_then(|s| parse_invocation(s)) else {
+    let Some(invocation) = args
+        .get(if contextual { 26 } else { 6 })
+        .and_then(|s| parse_invocation(s))
+    else {
         return ExitCode::from(TRANSPORT_INVALID);
     };
     let reject = |failure| {
@@ -731,8 +977,12 @@ fn transport_mode(args: &[String]) -> ExitCode {
         let _ = write_bounded(4, &frame, Instant::now() + Duration::from_millis(250));
         ExitCode::from(code)
     };
-    if args.len() != 7
-        || !(transport_scenario(&args[3]) || (bound && bound_scenario(&args[3])))
+    if args.len() != if contextual { 27 } else { 7 }
+        || !(if contextual {
+            context_faults(&args[3]).is_some()
+        } else {
+            transport_scenario(&args[3]) || (bound && bound_scenario(&args[3]))
+        })
         || [&args[2], &args[4], &args[5]]
             .iter()
             .any(|s| !Path::new(s).is_absolute() || s.contains('\0'))
@@ -743,7 +993,9 @@ fn transport_mode(args: &[String]) -> ExitCode {
     if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
         return reject(Failure::Admission);
     }
-    let supplied_policy = if bound {
+    let supplied_policy = if contextual {
+        Ok(String::new())
+    } else if bound {
         Ok(
             serde_json::json!({"version":1,"read":[],"write":[args[4]],"exec":[],
             "tcp_connect":[],"tcp_bind":[],"unix_connect":[],"cwd":args[4],
@@ -862,7 +1114,9 @@ fn transport_mode(args: &[String]) -> ExitCode {
             {
                 "normal"
             }
-            _ if bound && bound_scenario(mode) => "normal",
+            _ if bound && (bound_scenario(mode) || (contextual && mode.starts_with("ctx-"))) => {
+                "normal"
+            }
             _ => "hold",
         };
         let target = if mode == "exec-failure" {
@@ -870,7 +1124,35 @@ fn transport_mode(args: &[String]) -> ExitCode {
         } else {
             args[2].clone()
         };
-        let argv = vec![target, target_mode.into(), args[6].clone()];
+        let argv = vec![
+            target,
+            target_mode.into(),
+            args[if contextual { 26 } else { 6 }].clone(),
+        ];
+        let context = if contextual {
+            let mut context_invocation = invocation;
+            if mode == "image-mismatch" {
+                context_invocation[0] ^= 1;
+            }
+            match probe_context::FixtureContextPlan::parse(
+                &args[5],
+                &args[6..26],
+                context_invocation,
+                target_mode,
+            ) {
+                Ok(plan) => Some(plan),
+                Err(_) => {
+                    let (frame, code) = failure_frame(Failure::InvalidInput, invocation);
+                    let _ = write_bounded(4, &frame, Instant::now() + Duration::from_millis(250));
+                    packet(verifier.as_raw_fd(), b'I', None);
+                    unsafe {
+                        libc::_exit(code as i32);
+                    }
+                }
+            }
+        } else {
+            None
+        };
         let fault = match mode {
             "clone-failure" => Fault::Clone,
             "pidfd-failure" => Fault::CreatorPidfd,
@@ -963,6 +1245,7 @@ fn transport_mode(args: &[String]) -> ExitCode {
                 mode,
                 restrict,
                 observer,
+                context,
             )
         } else {
             unsafe { probe_lifetime::run(options, restrict, observer) }.map(DriverCompletion::Path)
@@ -1040,7 +1323,12 @@ fn transport_mode(args: &[String]) -> ExitCode {
         closed &= absent(fd);
     }
     // Even failure to close denies ACK/admission. The watchdog remains independent.
-    transport_guard(pid, guard, closed, mode, cwd)
+    let target_cwd = if contextual {
+        Path::new(&args[5]).join("cwd")
+    } else {
+        cwd.to_path_buf()
+    };
+    transport_guard(pid, guard, closed, mode, &target_cwd)
 }
 fn transport_guard(pid: i32, guard: OwnedFd, closed: bool, mode: &str, cwd: &Path) -> ExitCode {
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -1236,10 +1524,12 @@ fn main() -> ExitCode {
             };
         }
     }
-    if transport_args
-        .get(1)
-        .is_some_and(|s| matches!(s.as_str(), "transport-v1" | "bound-transport-v1"))
-    {
+    if transport_args.get(1).is_some_and(|s| {
+        matches!(
+            s.as_str(),
+            "transport-v1" | "bound-transport-v1" | "context-bound-transport-v1"
+        )
+    }) {
         return transport_mode(&transport_args);
     }
     if !clear_inherited_capabilities() {
