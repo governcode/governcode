@@ -211,6 +211,29 @@ last wake-capable client leaving stops both unattended Controller turns and auto
 resumed Specs. Such a Spec stays limited for a new user choice. Ordinary async Specs continue
 independently of the client that started them.
 
+## ACP registry discovery
+
+`acp.search` and `acp.inspect` are read-only user-socket operations, exposed through `gov acp`.
+They fetch only the fixed official ACP registry URL. `acp-catalog.ts` rejects redirects, sends
+no credentials, caps the streamed body at 2 MiB, times out after ten seconds, and validates UTF-8
+before decoding. Concurrent reads share a request; validated snapshots are cached in memory for
+ten minutes. Explicit refresh failures invalidate that cache. Results include the source, fetch
+time and SHA-256 of the catalog bytes. Failed HTTP responses release their body and request.
+
+`acp-registry.ts` validates the published v1 shape, with bounded fields and at most 512 agents.
+Decoded metadata is immutable. Search is bounded; inspection picks only an exact platform.
+Plans require an explicit distribution when more than one is available, a binary SHA-256 and
+recognized archive format, or an explicitly pinned npm/uv package matching the advertised version.
+Unsafe sources, executable paths, environment overrides and unsupported encodings are refused.
+Plans describe advertised argv; no command in them is executed.
+
+Eligibility comes from local safety profiles, never registry fields. It requires the exact
+agent/version/platform, verified isolation and permission behavior, subscription authentication,
+and ready counted or provider usage accounting. The OpenCode descriptor is blocked: its ACP
+implementation's HTTP listener conflicts with no-bind, and its runtime isolation has not been
+verified here. All registry agents remain ineligible. There is no installer, probe, sign-in,
+Runner adapter, or Controller-tool exposure for this discovery feature.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the
@@ -241,6 +264,7 @@ the sandbox status; clients check features, not versions. Methods, by area:
   (a project's Checkpoints: id, time, files, whether undone), `turn.undo`;
 - Limits, settings and tools: `limits.list`, `settings.get`, `settings.set`, `tools.list`,
   `connect.start`, `connect.input`, `connect.cancel`, `tools.disconnect`;
+- official ACP catalog inspection: `acp.search`, `acp.inspect`;
 - recovery: `recovery.list`, `recovery.set`, `recovery.resume`, `recovery.clear`; Controller
   turns continue through `ask` with `continuationOf`, not `recovery.resume`;
 - the record: `trace.list`, and `watch`: after it, the connection also receives every Trace
@@ -250,7 +274,7 @@ the sandbox status; clients check features, not versions. Methods, by area:
   at-reset recovery while it stays connected.
 
 The current feature list is `projects`, `trace`, `ask`, `gates`, `home`, `delegate`, `specs`,
-`watch`, `parallel-specs` and `recovery`. Parameters are validated with Zod schemas in
+`watch`, `parallel-specs`, `recovery` and `acp-registry`. Parameters are validated with Zod schemas in
 `packages/protocol`. `settings.set` preserves saved top-level keys omitted by the request,
 so older clients do not erase settings added later.
 

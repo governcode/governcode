@@ -27,6 +27,8 @@ import { Allows, analyze, scopesFor, type AllowRule, type AllowScope, type GateC
 import { openControllerSocket, openTurnSocket, accept, cancelSpec, discard, resumeSpec, resumeSpecIssue, SpecRuns, untold } from "./delegate.ts";
 import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot, specPaths, turnStore } from "./specstore.ts";
 import { recoveryState, recoveryStates, type RecoveryState } from "./recovery.ts";
+import { AcpCatalog } from "./acp-catalog.ts";
+import { acpPlatform, acpRunnerEligibility, inspectAcpAgent, planAcpInstall, searchAcpRegistry } from "./acp-registry.ts";
 
 // ponytail: very large projects skip turn Checkpoints (hashing every file each turn).
 // Raise or make it incremental when a real project hits it.
@@ -73,6 +75,7 @@ export class Daemon {
   private watchers = new Map<Socket, { send: (n: WatchEvent) => void; stop: () => void; wake: boolean }>();
   private sandboxOk = false;
   private connector!: Connector;         // Connect: tools sign in for GovernCode in their own homes
+  private catalog = new AcpCatalog();    // public registry metadata only, loaded on explicit inspection
   private sandboxReason = "self-test not run";
   // Specs run on their own (#227): beside each other, and past the turn that made them.
   private runs = new SpecRuns();
@@ -850,6 +853,22 @@ export class Daemon {
       case "gate.answer":
         if (!this.settle(p.id, p.answer, "user", p.remember)) throw new RpcError(Errors.notFound, `no Gate ${p.id} is waiting`);
         return { ok: true };
+      case "acp.search": {
+        const { registry, ...catalog } = await this.refusingAsync(() => this.catalog.read(p.refresh));
+        const agents = searchAcpRegistry(registry, p.query, p.limit).map((agent) => ({ id: agent.id, name: agent.name,
+          version: agent.version, description: agent.description }));
+        return { catalog, total: registry.agents.length, agents };
+      }
+      case "acp.inspect": {
+        const platform = p.platform ?? acpPlatform(process.platform, process.arch);
+        if (!platform) throw new RpcError(Errors.refused, "this host platform is unsupported; choose an advertised ACP platform explicitly");
+        const { registry, ...catalog } = await this.refusingAsync(() => this.catalog.read(p.refresh));
+        const agent = inspectAcpAgent(registry, p.id);
+        if (!agent) throw new RpcError(Errors.notFound, `no ACP registry agent ${p.id}`);
+        const eligibility = acpRunnerEligibility(agent, { platform, authentication: "subscription", connected: false,
+          countedBudgetReady: false, providerUsageReady: false });
+        return { catalog, agent, platform, installation: planAcpInstall(agent, platform, p.kind), eligibility };
+      }
       case "tools.list": {
         const tools = this.connector.list();
         // Measured: a tool with a usage report is read now; one without (Claude Code) runs its

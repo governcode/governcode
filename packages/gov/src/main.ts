@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, ProjectName, RUNNERS, SpecCheckpoints, SpecDiff, setBudget, type CountedWindow } from "@governcode/protocol";
+import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, Params, ProjectName, RUNNERS, SpecCheckpoints, SpecDiff, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
@@ -19,12 +19,12 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
   "turns", "undo", "settings", "budget", "local", "memory", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
-  "limits", "limited", "resume", "auto-resume", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "ask", "demo"]);
+  "limits", "limited", "resume", "auto-resume", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "ask", "demo", "acp"]);
 
 /** A Runner name, checked before anything is saved (govd checks too): a typo would be saved and never used. */
 function runner(name: string): string {
@@ -597,6 +597,46 @@ async function main(argv: string[]): Promise<number> {
         const { settings } = await api.call("settings.get", {});
         await api.call("settings.set", { ...settings, personal: { ...settings.personal, [provider]: state === "on" } });
         console.log(`${provider}: personal instructions ${state}`);
+        return 0;
+      }
+      case "acp": {
+        const usage = "usage: gov acp search [QUERY] [--refresh] [--json] | inspect ID [--platform P] [--kind binary|npx|uvx] [--refresh] [--json]";
+        const action = rest[0];
+        if (action !== "search" && action !== "inspect") throw new Error(usage);
+        let value: string | undefined, json = false, refresh = false;
+        const flags: Record<string, string> = {};
+        for (let i = 1; i < rest.length; i++) {
+          const word = rest[i];
+          if (word === "--json" && !json) json = true;
+          else if (word === "--refresh" && !refresh) refresh = true;
+          else if (action === "inspect" && ["--platform", "--kind"].includes(word) && flags[word] === undefined
+              && rest[i + 1] && !rest[i + 1].startsWith("--")) flags[word] = rest[++i];
+          else if (!word.startsWith("--") && value === undefined) value = word;
+          else throw new Error(usage);
+        }
+        const method = action === "search" ? "acp.search" : "acp.inspect";
+        const params = action === "search" ? Params["acp.search"].safeParse({ query: value ?? "", refresh }) :
+          Params["acp.inspect"].safeParse({ id: value, platform: flags["--platform"], kind: flags["--kind"], refresh });
+        if (!params.success) throw new Error(usage);
+        const result = await api.call(method, params.data);
+        if (json) { console.log(JSON.stringify(result, null, 2)); return 0; }
+        console.log(dim(`Official ACP catalog · fetched ${result.catalog.fetchedAt} · SHA-256 ${result.catalog.sha256}`));
+        if (action === "search") {
+          for (const agent of result.agents) console.log(`${agent.id} · ${agent.name} ${agent.version}\n  ${agent.description}`);
+          console.log(dim(`${result.agents.length} matching agent(s) of ${result.total}. Inspect with gov acp inspect ID.`));
+        } else {
+          console.log(`${result.agent.name} (${result.agent.id}) ${result.agent.version} · ${result.platform}`);
+          console.log(result.agent.description);
+          if (result.installation.supported) {
+            const plan = result.installation.plan;
+            console.log(`Distribution: ${plan.kind} · ${plan.packageSpec ?? plan.version}\nSource: ${plan.source}`);
+            console.log(`Integrity: ${plan.checksum ? `SHA-256 ${plan.checksum.value}` : "exact package version"}`);
+            console.log(`Advertised command: ${JSON.stringify(plan.command)}`);
+          } else console.log(`Distribution unavailable: ${result.installation.reason}`);
+          console.log("Runner eligibility:");
+          for (const reason of result.eligibility.reasons) console.log(`  ${reason}`);
+          console.log(dim("Read-only inspection. Installation and ACP Runner execution are not enabled."));
+        }
         return 0;
       }
       case "connect": {

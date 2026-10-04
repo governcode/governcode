@@ -62,6 +62,42 @@ async function answer(r: ReturnType<typeof run>, prompt: string, line: string) {
   r.p.stdin!.write(line + "\n");
 }
 
+test("ACP search and inspection send only read-only catalog requests", async () => {
+  const catalog = { fetchedAt: "2026-01-02T03:04:05Z", sha256: "a".repeat(64), source: "https://catalog.example.org/registry.json" };
+  const agent = { id: "fixture-agent", name: "Fixture Agent", version: "1.2.3", description: "Invented fixture" };
+  const inspected = { catalog, agent, platform: "linux-x86_64", installation: { supported: true, plan: {
+    kind: "npx", packageSpec: "fixture-agent@1.2.3", version: "1.2.3", source: "https://registry.npmjs.org/",
+    checksum: null, command: ["npx", "fixture-agent@1.2.3", "acp"] } },
+    eligibility: { eligible: false, reasons: ["No safety profile for this exact agent version"] } };
+  const g = await fakeGovd((method) => method === "acp.search" ? { catalog, total: 2, agents: [agent] } : inspected);
+  const search = await run(g.dir, ["acp", "search", "fixture", "--refresh"]).done;
+  assert.equal(search.code, 0, search.stderr);
+  assert.match(search.stdout, /fixture-agent · Fixture Agent 1.2.3/);
+  assert.deepEqual(g.calls[0], { method: "acp.search", params: { query: "fixture", limit: 50, refresh: true } });
+  const inspect = await run(g.dir, ["acp", "inspect", "fixture-agent", "--platform", "linux-x86_64", "--kind", "npx"]).done;
+  assert.equal(inspect.code, 0, inspect.stderr);
+  assert.match(inspect.stdout, /fixture-agent@1.2.3/);
+  assert.match(inspect.stdout, /No safety profile/);
+  assert.match(inspect.stdout, /Read-only inspection/);
+  assert.deepEqual(g.calls[1], { method: "acp.inspect", params: { id: "fixture-agent", platform: "linux-x86_64", kind: "npx", refresh: false } });
+  const machine = await run(g.dir, ["acp", "inspect", "fixture-agent", "--json"]).done;
+  assert.deepEqual(JSON.parse(machine.stdout), inspected);
+  assert.deepEqual(g.methods(), ["acp.search", "acp.inspect", "acp.inspect"]);
+});
+
+test("ACP rejects unsupported operations and malformed options before requesting a catalog", async () => {
+  const g = await fakeGovd();
+  for (const args of [[], ["install", "fixture"], ["inspect"], ["inspect", "../fixture"],
+    ["search", "one", "two"], ["search", "--kind", "npx"], ["inspect", "fixture", "--platform", "linux-arm64"],
+    ["inspect", "fixture", "--kind", "npm"], ["inspect", "fixture", "--kind"], ["search", "--refresh", "--refresh"],
+    ["inspect", "fixture", "--kind", "npx", "--kind", "uvx"]]) {
+    const result = await run(g.dir, ["acp", ...args]).done;
+    assert.equal(result.code, 1, args.join(" "));
+    assert.match(result.stderr, /usage: gov acp/);
+  }
+  assert.deepEqual(g.calls, []);
+});
+
 test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets it on stderr, without govd too", async () => {
   const none = mkdtempSync(join(root, "none-"));   // no govd listens here
   for (const h of ["help", "--help", "-h"]) {

@@ -343,6 +343,26 @@ Honest limits, for now:
 
 Gemini CLI (for Gemini API keys) comes later, once GovernCode can hold a key safely.
 
+### ACP registry discovery (development)
+
+The development checkout can search the official Agent Client Protocol registry and inspect an
+agent's advertised distribution and Runner eligibility:
+
+```sh
+gov acp search opencode
+gov acp inspect opencode --kind binary
+gov acp inspect opencode --platform linux-x86_64 --kind binary --json
+gov acp search --refresh
+```
+
+Inspection shows the exact version, source, SHA-256 or pinned package version, and the catalog's
+fetch time and digest. Multiple distributions require an explicit `--kind`; unsupported recipes
+explain why they cannot be planned. These commands read metadata only. Installation, sign-in and
+execution for registry agents are not enabled. Registry membership never makes an agent a Runner:
+that requires an audited profile for its exact version and platform, a verified subscription
+connection, and ready usage accounting. OpenCode's current profile is blocked because its ACP
+process starts an HTTP listener, which conflicts with the Runner sandbox's no-bind rule.
+
 ### Crew and delegation
 
 Each project has a **Crew card** (`gov crew`, or the Dashboard's Crew view). You set it; GovernCode

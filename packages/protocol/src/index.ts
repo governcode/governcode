@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -222,6 +222,12 @@ export const Params = {
   // measure: ask each connected tool for its usage now (no quota spent); a login that no longer
   // works then shows as needing sign-in again instead of "connected".
   "tools.list": z.object({ measure: z.boolean().default(false) }),
+  // Read-only official ACP registry discovery. No artifact downloads, installation or execution.
+  "acp.search": z.object({ query: z.string().max(256).regex(/^[^\x00-\x1f\x7f]*$/).default(""),
+    limit: z.number().int().min(1).max(100).default(50), refresh: z.boolean().default(false) }),
+  "acp.inspect": z.object({ id: z.string().max(96).regex(/^[a-z][a-z0-9-]*$/),
+    platform: z.enum(["darwin-aarch64", "darwin-x86_64", "linux-aarch64", "linux-x86_64", "windows-aarch64", "windows-x86_64"]).optional(),
+    kind: z.enum(["binary", "npx", "uvx"]).optional(), refresh: z.boolean().default(false) }),
   "connect.start": z.object({ tool: z.enum(["agy", "claude", "codex", "grok"]) }),
   "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),
   "connect.cancel": z.object({ id: z.string().regex(/^C-\d+$/) }),
