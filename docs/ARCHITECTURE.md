@@ -334,6 +334,14 @@ runtime compatibility or execution authority. It has no production caller and do
 the installer's existing header-only contract. Runtime access, receipt-to-execution binding and
 production lifetime proof transport remain separate prerequisites.
 
+A separate feature-only fixture selects one fixed embedded static image by comparing the complete
+contents of a native-owned, fully sealed memfd, then executes that same object by descriptor.
+It preserves the owned lifetime and Node proof join while keeping image selection, observed toy
+execution and namespace termination distinct. Landlock's internal-filesystem exemption means the
+object is a separate initial execution capability; fixture restrictions additionally deny target
+memfd creation. This does not bind production store receipts or grant general runtime access.
+Normal production dispatch, discovery, installer eligibility and context retention are unchanged.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the

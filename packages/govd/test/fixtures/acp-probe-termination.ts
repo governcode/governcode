@@ -1,11 +1,13 @@
 // Fixture-local owner. Endpoint ownership, not knowledge of the invocation ID,
 // supplies provenance. No production caller or injected stream can create evidence.
-import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { types } from "node:util";
+import { promisify, types } from "node:util";
 import type { Duplex, Readable } from "node:stream";
 import { startAcp, type AcpRpc } from "../../src/acp.ts";
+import { inspectAcpArtifactRuntime, type AcpArtifactRuntimeInspection } from "../../src/acp-artifact-runtime.ts";
 
 const brand: unique symbol = Symbol("fixture namespace termination");
 export type FixtureNamespaceTermination = Readonly<{ [brand]: true }>;
@@ -27,6 +29,71 @@ const scenarios = ["normal", "high-exit", "signal", "direct", "double", "detach"
   "stale-record", "extra-record", "truncated-record", "missing-record", "guard-eof", "guard-registration-failure", "guard-registration-deadline",
   "clone-failure", "pidfd-failure", "map-failure", "restrict-failure", "exec-failure", "wait-failure", "withhold", "control-error", "hold"] as const;
 export type FixtureScenario = typeof scenarios[number];
+const boundScenarios = [...scenarios, "sandbox", "sealed-replace", "sealed-mutate", "before-copy-b", "copy-torn", "copy-truncate", "copy-grow", "copy-b",
+  "image-mismatch", "prep-expired", "prep-entry-expired", "prep-validation-expired", "prep-gate-expired", "prep-release-expired", "prep-exec-expired", "prep-gate-expired-unproven", "prep-stop", "fault-open", "fault-read", "fault-write", "fault-seal", "fault-readback",
+  "fault-compare", "fault-mode", "fault-close", "seal-aliases", "writable-map", "fault-dup", "fault-inventory", "fault-close-range", "fault-exec", "limits-failure"] as const;
+export type BoundFixtureScenario = typeof boundScenarios[number];
+const preparedBrand: unique symbol = Symbol("prepared fixed fixture");
+export type PreparedNativeBoundFixture = Readonly<{ [preparedBrand]: true }>;
+export type BoundFixturePreparation = Readonly<{
+  status: "prepared"; fixture: PreparedNativeBoundFixture;
+  observation: Readonly<{ sha256: string; bytes: number; inspection: AcpArtifactRuntimeInspection }>;
+} | { status: "unavailable"; reason: "platform" | "assets" | "image-data" | "image-layout" | "materialization" }>;
+type Prepared = { assets: FixtureAssets; imageA: Buffer; imageB: Buffer; sha256: string;
+  inspection: AcpArtifactRuntimeInspection; deadline: number; used: boolean };
+const preparations = new WeakMap<PreparedNativeBoundFixture, Prepared>();
+function imageDataAdmitted(size: number, diagnostics: number, start: number, now: number): boolean {
+  return size >= 64 && size <= 4 * 1024 * 1024 && diagnostics === 0 && now < start + 2000;
+}
+
+function consumePrepared(fixture: PreparedNativeBoundFixture, scenario: BoundFixtureScenario, now: number): Prepared {
+  return consumeAssociation(preparations, fixture, scenario, now);
+}
+function consumeAssociation<T extends { used: boolean; deadline: number }>(
+  map: WeakMap<object, T>, fixture: object, scenario: BoundFixtureScenario, now: number,
+): T {
+  // Never inspect caller properties, including proxies, brands or supplied bytes.
+  const p = map.get(fixture);
+  if (!p || p.used || now >= p.deadline || !boundScenarios.includes(scenario)) throw new Error("Invalid or consumed bound fixture");
+  p.used = true;
+  return p;
+}
+
+/** Fixed trusted-driver data modes only. No namespaces or caller byte baseline. */
+export async function prepareNativeBoundFixture(assets: FixtureAssets): Promise<BoundFixturePreparation> {
+  const a = snapshot(assets, "normal");
+  if (new Set([a.driver, a.target, a.policy, a.cwd]).size !== 4) return Object.freeze({ status: "unavailable", reason: "assets" });
+  if (process.platform !== "linux" || process.arch !== "x64") return Object.freeze({ status: "unavailable", reason: "platform" });
+  const emit = async (mode: "fixture-image-a" | "fixture-image-b") => {
+    const start = performance.now();
+    const { stdout, stderr } = await promisify(execFile)(a.driver, [mode], { cwd: a.cwd, env: { ...a.env },
+      encoding: "buffer", timeout: 2000, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 });
+    if (!imageDataAdmitted(stdout.length, stderr.length, start, performance.now()))
+      throw new Error("Unavailable fixed image data");
+    return Buffer.from(stdout);
+  };
+  let imageA: Buffer, imageB: Buffer;
+  try { imageA = await emit("fixture-image-a"); imageB = await emit("fixture-image-b"); }
+  catch { return Object.freeze({ status: "unavailable", reason: "image-data" }); }
+  const inspection = inspectAcpArtifactRuntime(imageA, "linux-x86_64");
+  const other = inspectAcpArtifactRuntime(imageB, "linux-x86_64");
+  if (inspection.status !== "observed" || inspection.elfType !== "ET_EXEC" || other.status !== "observed" ||
+    other.elfType !== "ET_EXEC" || imageA.equals(imageB)) return Object.freeze({ status: "unavailable", reason: "image-layout" });
+  const sha256 = createHash("sha256").update(imageA).digest("hex");
+  try {
+    await writeFile(a.target, imageA, { flag: "wx", mode: 0o700 });
+    await writeFile(a.policy, JSON.stringify({ version: 1, read: [], write: [a.cwd], exec: [], tcp_connect: [], cwd: a.cwd,
+      child_restrictions: { deny_network: true, deny_chmod: true } }), { flag: "wx", mode: 0o600 });
+  } catch { return Object.freeze({ status: "unavailable", reason: "materialization" }); }
+  const fixture: PreparedNativeBoundFixture = Object.freeze({ [preparedBrand]: true as const });
+  preparations.set(fixture, { assets: a, imageA, imageB, sha256, inspection, deadline: performance.now() + 11_000, used: false });
+  return Object.freeze({ status: "prepared", fixture, observation: Object.freeze({ sha256, bytes: imageA.length, inspection }) });
+}
+
+export function startNativeBoundFixture(fixture: PreparedNativeBoundFixture, scenario: BoundFixtureScenario): FixtureInvocation {
+  const prepared = consumePrepared(fixture, scenario, performance.now());
+  return launchOwned(prepared.assets, scenario, "bound-transport-v1");
+}
 const associations = new WeakMap<FixtureNamespaceTermination, { owner: object; child: ChildProcess }>();
 type Candidate = { status: "proven"; outcome: Outcome } | Exclude<FixtureTermination, { status: "proven" }>;
 const unproven = (reason: Extract<FixtureTermination, { status: "unproven" }>["reason"]): Candidate => ({ status: "unproven", reason });
@@ -124,7 +191,11 @@ function snapshot(assets: FixtureAssets, scenario: FixtureScenario): FixtureAsse
 }
 
 export function startNativeLifetimeFixture(assets: FixtureAssets, scenario: FixtureScenario): FixtureInvocation {
-  const a = snapshot(assets, scenario), owner = Object.freeze({}), id = randomBytes(16);
+  return launchOwned(snapshot(assets, scenario), scenario, "transport-v1");
+}
+
+function launchOwned(a: FixtureAssets, scenario: FixtureScenario | BoundFixtureScenario, mode: "transport-v1" | "bound-transport-v1"): FixtureInvocation {
+  const owner = Object.freeze({}), id = randomBytes(16);
   const launch = performance.now(), state = new Join(id, launch);
   let child: ChildProcess | undefined, control: Duplex | undefined;
   let resolve!: (r: FixtureTermination) => void, timer: NodeJS.Timeout | undefined, settled = false;
@@ -154,7 +225,7 @@ export function startNativeLifetimeFixture(assets: FixtureAssets, scenario: Fixt
   const native = {
     spawn: (() => {
       if (child) throw new Error("Fixture spawn already owned");
-      child = spawn(a.driver, ["transport-v1", a.target, scenario, a.cwd, a.policy, id.toString("hex")], {
+      child = spawn(a.driver, [mode, a.target, scenario, a.cwd, a.policy, id.toString("hex")], {
         cwd: a.cwd, env: { ...a.env }, detached: false, stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       });
       control = child.stdio[3] as Duplex;
@@ -177,6 +248,50 @@ export function startNativeLifetimeFixture(assets: FixtureAssets, scenario: Fixt
     cwd: a.cwd, env: { ...a.env }, outputBudget: { maxBytes: 65_536 } }, native);
   arm();
   return Object.freeze({ rpc, termination, stop });
+}
+
+// Finite internal association/state checks. No returned identity, byte baseline,
+// proof, native seam or launch: metadata cannot be consumed by either entry point.
+export function syntheticBoundFixtureChecks(): ReadonlyArray<Readonly<{ name: string; pass: boolean }>> {
+  // Isolated state map has no prepared assets and cannot feed the launch map.
+  const states = new WeakMap<object, { used: boolean; deadline: number }>();
+  const consume = (key: object, scenario: BoundFixtureScenario, now: number) => consumeAssociation(states, key, scenario, now);
+  const out: Array<Readonly<{ name: string; pass: boolean }>> = [];
+  const put = (name: string, pass: boolean) => out.push(Object.freeze({ name, pass }));
+  const rejects = (fn: () => unknown) => { try { fn(); return false; } catch { return true; } };
+  for (const [name, size, diagnostics, now, accepted] of [
+    ["data-empty", 0, 0, 1, false], ["data-prefix", 63, 0, 1, false], ["data-minimum", 64, 0, 1, true],
+    ["data-cap", 4 * 1024 * 1024, 0, 1, true], ["data-over-cap", 4 * 1024 * 1024 + 1, 0, 1, false],
+    ["data-diagnostics", 64, 1, 1, false], ["data-before-deadline", 64, 0, 1999, true],
+    ["data-at-deadline", 64, 0, 2000, false], ["data-late", 64, 0, 2001, false],
+  ] as const) put(name, imageDataAdmitted(size, diagnostics, 0, now) === accepted);
+  const fresh = () => {
+    const key = Object.freeze({});
+    states.set(key, { deadline: 100, used: false });
+    return key;
+  };
+  const first = fresh(), second = fresh();
+  try {
+    put("unknown-object", rejects(() => consume(Object.freeze({}), "normal", 0)));
+    put("forged-brand", rejects(() => consume(Object.freeze({ [preparedBrand]: true }), "normal", 0)));
+    let traps = 0;
+    const proxy = new Proxy(first, { get() { traps++; throw new Error("invented trap"); } });
+    put("proxy-identity", rejects(() => consume(proxy, "normal", 0)) && traps === 0);
+    put("crossed-copy", rejects(() => consume(Object.freeze({ ...first }), "normal", 0)));
+    put("invalid-scenario", rejects(() => consume(first, "caller-selected-mode" as never, 0)));
+    put("invalid-does-not-consume", states.get(first)?.used === false);
+    put("single-use", consume(first, "normal", 1).used);
+    put("reuse", rejects(() => consume(first, "sealed-replace", 2)));
+    put("concurrent-reuse", rejects(() => consume(first, "normal", 2)));
+    put("independent-invocation", states.get(second)?.used === false);
+    put("deadline-exact", rejects(() => consume(second, "normal", 100)));
+    put("stale", rejects(() => consume(second, "normal", 101)));
+    put("before-deadline", consume(second, "normal", 99).used);
+    put("ordinary-proof-has-no-preparation", rejects(() => consume(Object.freeze({ [brand]: true }), "normal", 0)));
+    put("synthetic-is-not-live-preparation", rejects(() => consumePrepared(first as never, "normal", 0)));
+  } finally { states.delete(first); states.delete(second); }
+  for (const row of syntheticLifetimeChecks()) put(`bound-proof-${row.name}`, row.pass);
+  return Object.freeze(out);
 }
 
 // Fixed invented checks return only validation metadata. No caller bytes, process,

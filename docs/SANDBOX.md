@@ -308,6 +308,41 @@ or filesystem grants. Future probing still needs receipt-to-byte and exact-execu
 reviewed runtime access, a narrow policy, context association and native lifetime proof transport.
 No real artifact is executed by this inspection.
 
+## Fixture-only sealed initial images (development)
+
+A separate opt-in fixture binds one locally built static test image to descriptor execution.
+The outside verifier copies a bounded candidate into its own executable memfd, applies and
+checks full content, size and execute-mode seals, then compares the sealed object's complete
+bytes with the fixed embedded image. It executes that same object through `execveat` inside
+the owned namespace lifetime. Source pathname replacement or later source-file writes cannot
+change the selected sealed bytes. Supplied hashes, receipts and passive ELF observations do
+not authorize this execution. The image retains its original absolute preparation deadline;
+validation, namespace admission, target release and descriptor execution cannot renew it.
+Execution and teardown have separate time bounds. Initial unsafe files, noexec source mounts,
+unavailable sealing and unsupported images are refused without a pathname-execution fallback.
+
+The sealed object is an explicit initial execution capability. Landlock exempts internal
+filesystem objects, so an empty filesystem exec list does not itself deny executable memfds;
+see its [special-filesystem limitation](https://docs.kernel.org/userspace-api/landlock.html#special-filesystems).
+The fixture retains the existing filesystem, socket, chmod and child-limit restrictions and
+adds target `memfd_create` denial. This establishes no general executable allowlist or permanent
+one-shot execution guarantee. No interpreter, library, toolchain or source-path exec grant is
+added. The image descriptor has CLOEXEC; other private descriptors and aliases are closed
+before execution.
+
+Image selection, actual test-image behavior and namespace termination remain distinct evidence.
+An exec failure can still be followed by valid teardown proof. Proof framing, verifier ownership,
+stop translation and successful-context retention remain unchanged. The fixture trusts its
+build inputs, compiler, driver, Node owner and storage administration; it does not authenticate
+an arbitrary stored agent or protect a compromised verifier. Production receipt handoff, context
+association, audited runtime policy and real-agent compatibility remain separate prerequisites.
+Actual acceptance is limited to the tested Linux x86_64 host and Node runtime. The fixed
+noexec-source fixture location was not mounted noexec, so that branch was unavailable; missing
+compiler and static-build failure branches were not induced. These are untested conditions,
+not positive acceptance results. Injected build and fixture-availability checks exercise branch
+behavior only. Bound-image availability does not gate the legacy pathname lifetime fixtures
+or their native Linux x86_64/aarch64 clone support; aarch64 execution was not tested here.
+
 ## Known limits
 
 - Existing Runner policies allow `chmod` (npm and git set file modes), and Landlock does not mediate it, so a

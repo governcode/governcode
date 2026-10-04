@@ -12,8 +12,9 @@ for (const row of checks) test(`synthetic lifetime: ${row.name}`, () => {
   assert.equal("evidence" in row, false);
 });
 
-test("fixture owner has only fixed metadata checks and an owned-launch entry point", () => {
-  assert.deepEqual(Object.keys(fixture).sort(), ["startNativeLifetimeFixture", "syntheticLifetimeChecks"]);
+test("fixture owner exposes only owned preparation, launches and fixed metadata checks", () => {
+  assert.deepEqual(Object.keys(fixture).sort(), ["prepareNativeBoundFixture", "startNativeBoundFixture",
+    "startNativeLifetimeFixture", "syntheticBoundFixtureChecks", "syntheticLifetimeChecks"]);
   assert.ok(checks.length >= 100);
 });
 
@@ -55,7 +56,9 @@ test("owned join is the sole evidence factory and stop only closes its private e
   assert.match(owner, /randomBytes\(16\)/);
   assert.match(owner, /proof\.on\("end"/);
   assert.doesNotMatch(owner, /process\.kill\(|child\.kill\(|JSON\.parse|process\.env|cleanup\(/);
-  assert.doesNotMatch(owner, /from .*acp-(?:install|catalog|registry|artifact|download)/);
+  assert.doesNotMatch(owner, /from .*acp-(?:install|catalog|registry|download)/);
+  assert.deepEqual([...owner.matchAll(/\bfrom\s+["']([^"']*\/acp[^"']*\.ts)["']/g)]
+    .map(match => match[1]).sort(), ["../../src/acp-artifact-runtime.ts", "../../src/acp.ts"]);
   const driver = await readFile(new URL("../../../crates/govern-sup/tests/fixtures/probe_lifetime_driver.rs", import.meta.url), "utf8");
   assert.match(driver, /fn write_owned_termination\(/);
   assert.match(driver, /completion: (?:probe_lifetime::)?ProbeCompletion/);

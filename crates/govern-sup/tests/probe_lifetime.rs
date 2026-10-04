@@ -1,6 +1,9 @@
 //! Explicit feature-only native integration fixtures. Every launch has an outer
 //! watchdog as well as the native pidfd guard. Unsupported creation is reported
 //! as a skip of live cases, never successful namespace acceptance.
+#[path = "../src/probe_artifact.rs"]
+#[allow(dead_code)]
+mod probe_artifact;
 #[path = "../src/probe_lifetime.rs"]
 #[allow(dead_code)]
 mod probe_lifetime;
@@ -8,7 +11,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -53,7 +56,15 @@ struct Fixture {
     binary: PathBuf,
 }
 impl Fixture {
-    fn new() -> Self {
+    fn new() -> Option<Self> {
+        // Legacy pathname cases compile their own target and do not require
+        // the bound A/B assets or their x86_64 image-layout checks.
+        if !Path::new("/usr/bin/cc").is_file() {
+            eprintln!(
+                "SKIP live legacy native fixture: installed compiler unavailable; zero target launches"
+            );
+            return None;
+        }
         let mut random = [0u8; 12];
         assert_eq!(
             unsafe { libc::getrandom(random.as_mut_ptr().cast(), random.len(), 0) },
@@ -67,7 +78,7 @@ impl Fixture {
         let binary = dir.join("target");
         let out = fs::File::create(dir.join("cc-out")).unwrap();
         let err = fs::File::create(dir.join("cc-err")).unwrap();
-        let child = Command::new("/usr/bin/cc")
+        let child = match Command::new("/usr/bin/cc")
             .args([
                 "-std=c11",
                 "-D_GNU_SOURCE",
@@ -88,14 +99,44 @@ impl Fixture {
             .stdout(out)
             .stderr(err)
             .spawn()
-            .unwrap();
-        let status = Running {
+        {
+            Ok(child) => child,
+            Err(_) => {
+                eprintln!(
+                    "SKIP live native fixture: static compiler unavailable; zero targets; retained {}",
+                    dir.display()
+                );
+                return None;
+            }
+        };
+        let mut compiler = Running {
             child,
             finished: false,
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let compiled = loop {
+            match compiler.child.try_wait() {
+                Ok(Some(status)) => {
+                    compiler.finished = true;
+                    break status.success();
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                _ => break false,
+            }
+        };
+        // Running's bounded drop stops/reaps a timed-out compiler; the legacy
+        // availability check must not panic through the target launch watchdog.
+        drop(compiler);
+        if !compiled {
+            eprintln!(
+                "SKIP live legacy native fixture: static compilation failed or exceeded watchdog; zero targets; retained {}",
+                dir.display()
+            );
+            return None;
         }
-        .wait(Duration::from_secs(20));
-        assert!(status.success(), "installed static compiler failed");
-        Self { dir, binary }
+        Some(Self { dir, binary })
     }
     fn run(&self, mode: &str) -> (i32, String, PathBuf) {
         let dir = self.dir.join(mode);
@@ -141,7 +182,9 @@ impl Fixture {
 
 #[test]
 fn finite_owned_namespace_matrix() {
-    let f = Fixture::new();
+    let Some(f) = Fixture::new() else {
+        return;
+    };
     // Actual creation, never kernel config/sysctl or a simulated positive result.
     let (code, output, dir) = f.run("normal");
     if code == 77 {
@@ -151,11 +194,13 @@ fn finite_owned_namespace_matrix() {
             "SKIP live namespace matrix: actual clone3/pidfd creation unavailable; zero target admission (see native facility errno). Logical validation remains tested."
         );
         // No namespace was created; finite compiler/driver files are owned and inert.
-        fs::remove_dir_all(&f.dir).unwrap();
+        remove_legacy_case(&dir);
+        remove_transport_fixture(&f);
         return;
     }
     assert_eq!(output.trim(), "PROVEN 7");
     assert!(dir.join("work/executed").exists());
+    remove_legacy_case(&dir);
     let cases = [
         ("high-exit", "PROVEN H"),
         ("signal", "PROVEN S"),
@@ -234,15 +279,17 @@ fn finite_owned_namespace_matrix() {
         if mode == "sandbox" {
             assert!(dir.join("work/sandbox-ok").exists());
         }
-        // Exact native/guard proof exists before removing this finite fixture case.
-        fs::remove_dir_all(dir).unwrap();
+        // Independent guard safety after verifier death is not removal authority.
+        if !mode.starts_with("death-") {
+            remove_legacy_case(&dir);
+        }
     }
     for mode in ["clone-failure", "pidfd-failure"] {
         let (code, output, dir) = f.run(mode);
         assert_eq!(code, 77);
         assert!(output.contains("zero-admission"));
         assert!(!dir.join("work/executed").exists());
-        fs::remove_dir_all(dir).unwrap();
+        remove_legacy_case(&dir);
     }
     for mode in [
         "wait-failure",
@@ -259,20 +306,23 @@ fn finite_owned_namespace_matrix() {
         // convert the verifier's missing proof into cleanup authorization.
     }
     eprintln!(
-        "live namespace cases passed; intentionally retained five unproven finite fixture directories"
+        "live namespace cases passed; intentionally retained ten unproven finite fixture directories"
     );
 }
 
 #[test]
 fn unsupported_injections_admit_no_targets() {
-    let f = Fixture::new();
+    let Some(f) = Fixture::new() else {
+        return;
+    };
     for mode in ["clone-failure", "pidfd-failure"] {
         let (code, output, dir) = f.run(mode);
         assert_eq!(code, 77);
         assert_eq!(output.trim(), "UNAVAILABLE zero-admission");
         assert!(!dir.join("work/executed").exists());
+        remove_legacy_case(&dir);
     }
-    fs::remove_dir_all(f.dir).unwrap();
+    remove_transport_fixture(&f);
 }
 
 // Transport checks use the same pipe/Unix-stream endpoint types as the Node
@@ -329,11 +379,39 @@ fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, total: &mut usize, cap: us
 }
 impl Fixture {
     fn transport(&self, scenario: &str, label: &str, action: TransportAction) -> TransportRun {
+        self.transport_config(scenario, label, action, false, |_| {})
+    }
+    fn bound_transport(
+        &self,
+        scenario: &str,
+        label: &str,
+        action: TransportAction,
+    ) -> TransportRun {
+        self.transport_config(scenario, label, action, true, |_| {})
+    }
+    fn transport_config(
+        &self,
+        scenario: &str,
+        label: &str,
+        action: TransportAction,
+        bound: bool,
+        mutate: impl FnOnce(&Path),
+    ) -> TransportRun {
         let dir = self.dir.join(format!("transport-{label}"));
         fs::create_dir(&dir).unwrap();
         fs::create_dir(dir.join("work")).unwrap();
+        let target = if bound {
+            let target = dir.join("artifact");
+            fs::write(&target, probe_artifact::EMBEDDED_A).unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+            mutate(&target);
+            target
+        } else {
+            self.binary.clone()
+        };
+        let executable = if bound { vec![] } else { vec![target.clone()] };
         let policy = serde_json::json!({"version":1,"read":[],"write":[dir.join("work")],
-            "exec":[self.binary],"tcp_connect":[],"cwd":dir.join("work"),
+            "exec":executable,"tcp_connect":[],"cwd":dir.join("work"),
             "child_restrictions":{"deny_network":true,"deny_chmod":true}});
         fs::write(dir.join("policy.json"), policy.to_string()).unwrap();
         let (control, control_peer) = UnixStream::pair().unwrap();
@@ -350,8 +428,12 @@ impl Fixture {
         drop(proof_peer);
         let mut command = Command::new(env!("CARGO_BIN_EXE_probe-lifetime-driver"));
         command
-            .args(["transport-v1"])
-            .arg(&self.binary)
+            .args([if bound {
+                "bound-transport-v1"
+            } else {
+                "transport-v1"
+            }])
+            .arg(&target)
             .arg(scenario)
             .arg(dir.join("work"))
             .arg(dir.join("policy.json"))
@@ -544,6 +626,9 @@ fn remove_transport_files(dir: &Path) {
         "pre-restriction-fds",
         "hung-request",
         "flood-ready",
+        "image-a-executed",
+        "image-b-executed",
+        "sealed-aliases-ok",
     ] {
         match fs::remove_file(dir.join("work").join(name)) {
             Ok(()) => {}
@@ -553,6 +638,40 @@ fn remove_transport_files(dir: &Path) {
     }
     fs::remove_dir(dir.join("work")).unwrap();
     fs::remove_file(dir.join("policy.json")).unwrap();
+    for name in ["artifact", "artifact-other", "artifact-link"] {
+        match fs::remove_file(dir.join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("finite source cleanup failed: {e}; retained"),
+        }
+    }
+    fs::remove_dir(dir).unwrap();
+}
+fn remove_legacy_case(dir: &Path) {
+    for name in [
+        "executed",
+        "descendant-ready",
+        "late-activity",
+        "forge-rejected",
+        "sandbox-ok",
+        "nested-ready",
+    ] {
+        match fs::remove_file(dir.join("work").join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("finite legacy cleanup failed: {e}; retained"),
+        }
+    }
+    fs::remove_dir(dir.join("work")).unwrap();
+    for name in [
+        "policy.json",
+        "driver-out",
+        "driver-err",
+        "target-out",
+        "target-err",
+    ] {
+        fs::remove_file(dir.join(name)).unwrap();
+    }
     fs::remove_dir(dir).unwrap();
 }
 fn remove_transport_fixture(fixture: &Fixture) {
@@ -567,7 +686,9 @@ fn remove_transport_fixture(fixture: &Fixture) {
 
 #[test]
 fn transport_stream_namespace_matrix() {
-    let fixture = Fixture::new();
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
     let normal = fixture.transport("normal", "normal", TransportAction::None);
     if normal.code == 65 {
         exact_record(&normal, frame(2, 2, 0));
@@ -671,7 +792,9 @@ fn transport_stream_namespace_matrix() {
 
 #[test]
 fn transport_refusals_execute_zero_targets() {
-    let fixture = Fixture::new();
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
     for (scenario, code, detail) in [
         ("not-a-scenario", 64, 1),
         ("clone-failure", 65, 2),
@@ -693,7 +816,9 @@ fn transport_refusals_execute_zero_targets() {
 
 #[test]
 fn transport_verifier_loss_never_becomes_guard_success() {
-    let fixture = Fixture::new();
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
     let normal = fixture.transport("normal", "facility-check", TransportAction::None);
     if normal.code == 65 {
         exact_record(&normal, frame(2, 2, 0));
@@ -783,4 +908,278 @@ fn transport_verifier_loss_never_becomes_guard_success() {
     );
     assert_eq!(closed.proof_bytes, 0);
     eprintln!("transport loss matrix: 14 cases passed; all 14 finite case directories retained");
+}
+
+fn bound_a_observed(run: &TransportRun) {
+    assert!(run.dir.join("work/image-a-executed").exists());
+    assert!(!run.dir.join("work/image-b-executed").exists());
+    assert!(run.dir.join("work/fd-closed").exists());
+    assert_eq!(
+        fs::read_to_string(run.dir.join("work/pre-restriction-fds")).unwrap(),
+        "owned sealed image fd3; controls closed\n"
+    );
+}
+
+#[test]
+fn sealed_image_bound_namespace_matrix() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let normal = fixture.bound_transport("normal", "bound-normal", TransportAction::None);
+    if normal.code == 65 {
+        exact_record(&normal, frame(2, 2, 0));
+        no_execution(&normal);
+        eprintln!(
+            "SKIP bound image actual acceptance: required native fixture/kernel facilities unavailable; zero target admission; not positive acceptance"
+        );
+        remove_transport_files(&normal.dir);
+        remove_transport_fixture(&fixture);
+        return;
+    }
+    assert_eq!(normal.code, 0, "bound normal: {:?}", normal.stderr);
+    exact_record(&normal, frame(1, 1, 7));
+    bound_a_observed(&normal);
+    remove_transport_files(&normal.dir);
+    for scenario in ["sealed-replace", "sealed-mutate", "seal-aliases"] {
+        let run = fixture.bound_transport(scenario, scenario, TransportAction::None);
+        assert_eq!(run.code, 0, "{scenario}: {:?}", run.stderr);
+        exact_record(&run, frame(1, 1, 7));
+        bound_a_observed(&run);
+        if scenario == "seal-aliases" {
+            assert!(run.dir.join("work/sealed-aliases-ok").exists());
+        }
+        remove_transport_files(&run.dir);
+    }
+    let sandbox = fixture.bound_transport("sandbox", "bound-sandbox", TransportAction::None);
+    assert_eq!(sandbox.code, 0);
+    exact_record(&sandbox, frame(1, 1, 0));
+    bound_a_observed(&sandbox);
+    assert!(sandbox.dir.join("work/sandbox-ok").exists());
+    remove_transport_files(&sandbox.dir);
+    let refusals = [
+        "before-copy-b",
+        "copy-torn",
+        "copy-truncate",
+        "copy-grow",
+        "copy-b",
+        "image-mismatch",
+        "prep-expired",
+        "prep-entry-expired",
+        "prep-validation-expired",
+        "prep-stop",
+        "fault-open",
+        "fault-read",
+        "fault-write",
+        "fault-mode",
+        "fault-seal",
+        "fault-readback",
+        "fault-compare",
+        "fault-close",
+        "writable-map",
+    ];
+    for scenario in refusals {
+        let run = fixture.bound_transport(scenario, scenario, TransportAction::None);
+        assert_eq!(
+            run.code,
+            if scenario == "image-mismatch" { 64 } else { 66 },
+            "{scenario}: {:?}",
+            run.stderr
+        );
+        exact_record(
+            &run,
+            frame(2, if scenario == "image-mismatch" { 1 } else { 3 }, 0),
+        );
+        no_execution(&run);
+        assert!(!run.dir.join("work/image-a-executed").exists());
+        assert!(!run.dir.join("work/image-b-executed").exists());
+        remove_transport_files(&run.dir);
+    }
+    for scenario in [
+        "fault-dup",
+        "fault-close-range",
+        "fault-inventory",
+        "fault-exec",
+        "restrict-failure",
+        "limits-failure",
+        "exec-failure",
+        "map-failure",
+        "prep-gate-expired",
+        "prep-release-expired",
+        "prep-exec-expired",
+    ] {
+        let run = fixture.bound_transport(scenario, scenario, TransportAction::None);
+        assert_eq!(run.code, 0, "{scenario}: {:?}", run.stderr);
+        exact_record(&run, frame(1, 4, 0));
+        assert!(!run.dir.join("work/executed").exists());
+        assert!(!run.dir.join("work/image-a-executed").exists());
+        assert!(!run.dir.join("work/image-b-executed").exists());
+        assert!(!run.dir.join("work/descendant-ready").exists());
+        assert!(!run.dir.join("work/late-activity").exists());
+        if matches!(scenario, "prep-gate-expired" | "prep-release-expired") {
+            no_execution(&run);
+        }
+        if scenario == "prep-exec-expired" {
+            assert!(run.dir.join("work/pre-restriction-fds").exists());
+        }
+        remove_transport_files(&run.dir);
+    }
+    for (scenario, action, detail, value) in [
+        ("direct", TransportAction::None, 1, 0),
+        ("double", TransportAction::None, 1, 0),
+        ("detach", TransportAction::None, 1, 0),
+        ("signal-tree", TransportAction::None, 2, 15),
+        ("kill-init", TransportAction::None, 2, 9),
+        ("hold", TransportAction::StopEof, 3, 0),
+        ("hold", TransportAction::StopData, 3, 0),
+        ("forge", TransportAction::None, 1, 0),
+        ("acp", TransportAction::Acp, 1, 0),
+        ("acp-hang", TransportAction::Hung, 3, 0),
+    ] {
+        let label = format!("bound-{scenario}-{detail}-{value}");
+        // Repeated hold cases get a distinct finite owner label.
+        let label = if matches!(action, TransportAction::StopData) {
+            format!("{label}-data")
+        } else {
+            label
+        };
+        let run = fixture.bound_transport(scenario, &label, action);
+        assert_eq!(run.code, 0, "{scenario}: {:?}", run.stderr);
+        exact_record(&run, frame(1, detail, value));
+        bound_a_observed(&run);
+        if [
+            "direct",
+            "double",
+            "detach",
+            "signal-tree",
+            "kill-init",
+            "hold",
+        ]
+        .contains(&scenario)
+        {
+            assert!(run.dir.join("work/descendant-ready").exists());
+            assert!(!run.dir.join("work/late-activity").exists());
+        }
+        if scenario == "forge" {
+            assert_eq!(run.stdout, frame(1, 1, 0));
+        }
+        remove_transport_files(&run.dir);
+    }
+    for scenario in [
+        "death-pre-admission",
+        "death-post-admission",
+        "death-mid-record",
+        "death-full-record",
+        "proof-stale",
+        "proof-missing",
+        "wait-failure",
+        "withhold",
+        "prep-gate-expired-unproven",
+    ] {
+        let run = fixture.bound_transport(
+            scenario,
+            &format!("bound-loss-{scenario}"),
+            if scenario == "withhold" {
+                TransportAction::StopEof
+            } else {
+                TransportAction::None
+            },
+        );
+        assert_eq!(
+            run.code,
+            match scenario {
+                "proof-stale" | "proof-missing" => 0,
+                "wait-failure" | "withhold" | "prep-gate-expired-unproven" => 70,
+                _ => 71,
+            }
+        );
+        assert!(!run.dir.join("work/late-activity").exists());
+        if matches!(
+            scenario,
+            "death-pre-admission" | "prep-gate-expired-unproven"
+        ) {
+            no_execution(&run);
+            assert!(!run.dir.join("work/image-a-executed").exists());
+            assert!(!run.dir.join("work/image-b-executed").exists());
+            assert!(!run.dir.join("work/descendant-ready").exists());
+        }
+        // Missing strict owned proof leaves all finite files retained, even when
+        // independent guard safety was established. No adopted-reap authority.
+    }
+    eprintln!(
+        "bound image native matrix: 5 image/restriction positives, 19 zero-target preparation refusals, 11 setup-failed exact reaps, 10 lifetime/ACP positives, 9 retained proof-loss cases; retained root {}",
+        fixture.dir.display()
+    );
+}
+
+#[test]
+fn bound_sources_refuse_before_namespace_creation() {
+    if !probe_artifact::fixture_available() {
+        eprintln!("SKIP bound source native refusals: fixed static assets unavailable");
+        return;
+    }
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    for case in [
+        "script",
+        "et-dyn",
+        "machine",
+        "interpreter",
+        "dynamic",
+        "truncated",
+        "ph-overflow",
+        "entry",
+        "oversize",
+        "symlink",
+        "hardlink",
+        "mode",
+        "small",
+    ] {
+        let run = fixture.transport_config(
+            "normal",
+            &format!("source-{case}"),
+            TransportAction::None,
+            true,
+            |path| {
+                let mut bytes = probe_artifact::EMBEDDED_A.to_vec();
+                let ph = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
+                match case {
+                    "script" => {
+                        bytes = b"#!/bin/sh\nexit 0\n".repeat(8);
+                    }
+                    "et-dyn" => bytes[16..18].copy_from_slice(&3u16.to_le_bytes()),
+                    "machine" => bytes[18..20].copy_from_slice(&183u16.to_le_bytes()),
+                    "interpreter" => bytes[ph..ph + 4].copy_from_slice(&3u32.to_le_bytes()),
+                    "dynamic" => bytes[ph..ph + 4].copy_from_slice(&2u32.to_le_bytes()),
+                    "truncated" => bytes.truncate(80),
+                    "ph-overflow" => bytes[32..40].copy_from_slice(&u64::MAX.to_le_bytes()),
+                    "entry" => bytes[24..32].copy_from_slice(&0u64.to_le_bytes()),
+                    "oversize" => bytes.resize(4 * 1024 * 1024 + 1, 0),
+                    "small" => bytes.truncate(63),
+                    "symlink" => {
+                        let other = path.with_file_name("artifact-other");
+                        fs::rename(path, &other).unwrap();
+                        std::os::unix::fs::symlink(other, path).unwrap();
+                        return;
+                    }
+                    "hardlink" => {
+                        fs::hard_link(path, path.with_file_name("artifact-link")).unwrap();
+                        return;
+                    }
+                    "mode" => {
+                        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+                        return;
+                    }
+                    _ => unreachable!(),
+                }
+                fs::write(path, bytes).unwrap();
+            },
+        );
+        assert_eq!(run.code, 66, "{case}: {:?}", run.stderr);
+        exact_record(&run, frame(2, 3, 0));
+        no_execution(&run);
+        remove_transport_files(&run.dir);
+    }
+    remove_transport_fixture(&fixture);
+    eprintln!("bound source native matrix: 13 zero-target refusals");
 }

@@ -6,6 +6,9 @@ mod limits;
 #[allow(dead_code)]
 #[path = "../../src/policy.rs"]
 mod policy;
+#[allow(dead_code)]
+#[path = "../../src/probe_artifact.rs"]
+mod probe_artifact;
 #[path = "../../src/probe_lifetime.rs"]
 mod probe_lifetime;
 #[allow(dead_code)]
@@ -444,7 +447,278 @@ fn transport_layout() -> bool {
     }
     extra == 1
 }
+
+// Only this finite bound mode can consume a selected image completion. Pathname
+// completion never becomes a bound completion, even when identifiers match.
+enum DriverCompletion {
+    Path(probe_lifetime::ProbeCompletion),
+    Bound(probe_lifetime::BoundProbeCompletion),
+}
+fn write_bound_termination(
+    completion: probe_lifetime::BoundProbeCompletion,
+    invocation: [u8; 16],
+    proof: OwnedFd,
+    deadline: Instant,
+) -> Result<(), TransportFailure> {
+    let completion = completion
+        .into_completion(invocation)
+        .map_err(|_| TransportFailure)?;
+    write_owned_termination(completion, invocation, proof, deadline)
+}
+fn write_driver_termination(
+    completion: DriverCompletion,
+    invocation: [u8; 16],
+    proof: OwnedFd,
+    deadline: Instant,
+) -> Result<(), TransportFailure> {
+    match completion {
+        DriverCompletion::Path(c) => write_owned_termination(c, invocation, proof, deadline),
+        DriverCompletion::Bound(c) => write_bound_termination(c, invocation, proof, deadline),
+    }
+}
+fn inject_driver_emission(
+    completion: DriverCompletion,
+    invocation: [u8; 16],
+    proof: OwnedFd,
+    deadline: Instant,
+    mode: &str,
+) -> Result<(), TransportFailure> {
+    let c = match completion {
+        DriverCompletion::Path(c) => c,
+        DriverCompletion::Bound(c) => c
+            .into_completion(invocation)
+            .map_err(|_| TransportFailure)?,
+    };
+    inject_owned_emission(c, invocation, proof, deadline, mode)
+}
+fn bound_scenario(mode: &str) -> bool {
+    matches!(
+        mode,
+        "sandbox"
+            | "sealed-replace"
+            | "sealed-mutate"
+            | "before-copy-b"
+            | "copy-torn"
+            | "copy-truncate"
+            | "copy-grow"
+            | "copy-b"
+            | "image-mismatch"
+            | "prep-expired"
+            | "prep-entry-expired"
+            | "prep-validation-expired"
+            | "prep-gate-expired"
+            | "prep-release-expired"
+            | "prep-exec-expired"
+            | "prep-gate-expired-unproven"
+            | "prep-stop"
+            | "fault-open"
+            | "fault-read"
+            | "fault-write"
+            | "fault-seal"
+            | "fault-readback"
+            | "fault-compare"
+            | "fault-mode"
+            | "fault-close"
+            | "seal-aliases"
+            | "writable-map"
+            | "fault-dup"
+            | "fault-close-range"
+            | "fault-inventory"
+            | "fault-exec"
+            | "limits-failure"
+    )
+}
+fn real_sealed_alias_checks(image: BorrowedFd<'_>) -> bool {
+    // Exercise a real alias of the sealed object, then close and check it. Seals
+    // govern the shared inode, rather than granting authority to a raw fd number.
+    let alias = unsafe { libc::fcntl(image.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 20) };
+    if alias < 0 {
+        return false;
+    }
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    let mut ok = unsafe { libc::fstat(alias, &mut stat) == 0 };
+    let byte = [0u8; 1];
+    ok &= unsafe { libc::pwrite(alias, byte.as_ptr().cast(), 1, 0) == -1 };
+    ok &= unsafe { libc::ftruncate(alias, stat.st_size + 1) == -1 };
+    ok &= unsafe { libc::ftruncate(alias, stat.st_size - 1) == -1 };
+    ok &= unsafe {
+        libc::fallocate(
+            alias,
+            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+            0,
+            4096,
+        ) == -1
+    };
+    let memory = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            alias,
+            0,
+        )
+    };
+    ok &= memory == libc::MAP_FAILED;
+    if memory != libc::MAP_FAILED {
+        unsafe {
+            libc::munmap(memory, 4096);
+        }
+    }
+    ok &= unsafe { libc::fchmod(alias, 0o777) == -1 };
+    unsafe {
+        libc::close(alias);
+    }
+    ok && absent(alias)
+}
+fn bound_run<R: FnOnce() -> Result<(), String>>(
+    options: Options<'_>,
+    source: &Path,
+    invocation: [u8; 16],
+    mode: &str,
+    restrict: R,
+    observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+) -> Result<DriverCompletion, Failure> {
+    use probe_artifact::{FixtureImageFault as ImageFault, FixtureImageStage as ImageStage};
+    if !probe_artifact::fixture_available() {
+        return Err(Failure::Unsupported(libc::ENOSYS));
+    }
+    if mode == "before-copy-b" {
+        fs::write(source, probe_artifact::EMBEDDED_B).map_err(|_| Failure::Admission)?;
+    }
+    if mode == "prep-stop" {
+        unsafe {
+            libc::shutdown(options.stop.as_raw_fd(), libc::SHUT_RDWR);
+        }
+    }
+    let deadline = if mode == "prep-expired" {
+        Instant::now()
+    } else if matches!(mode, "prep-release-expired" | "prep-exec-expired") {
+        // Fixed failure-only fixtures separate child-side preparation expiry
+        // from the independent two-second run-wall stop. Never renew either.
+        Instant::now() + Duration::from_secs(1)
+    } else {
+        Instant::now() + Duration::from_secs(2)
+    };
+    let image_fault = match mode {
+        "fault-open" => ImageFault::Open,
+        "fault-read" => ImageFault::Read,
+        "fault-write" => ImageFault::Write,
+        "fault-seal" => ImageFault::Seal,
+        "fault-readback" => ImageFault::Readback,
+        "fault-compare" => ImageFault::Compare,
+        "fault-mode" => ImageFault::Mode,
+        "fault-close" => ImageFault::Close,
+        _ => ImageFault::None,
+    };
+    let mut mapped = std::ptr::null_mut();
+    let mut changed = false;
+    let result = probe_artifact::prepare_fixture_image_observed(
+        source,
+        invocation,
+        deadline,
+        options.stop,
+        image_fault,
+        |stage, image, _deadline| {
+            let operation = (|| -> Result<(), std::io::Error> {
+                if stage == ImageStage::CopyChunk && !changed && mode.starts_with("copy-") {
+                    changed = true;
+                    match mode {
+                        "copy-truncate" => fs::OpenOptions::new()
+                            .write(true)
+                            .open(source)?
+                            .set_len(64)?,
+                        "copy-grow" => fs::OpenOptions::new()
+                            .write(true)
+                            .open(source)?
+                            .set_len(probe_artifact::EMBEDDED_A.len() as u64 + 1)?,
+                        "copy-b" => fs::write(source, probe_artifact::EMBEDDED_B)?,
+                        "copy-torn" => {
+                            use std::os::unix::fs::FileExt;
+                            let file = fs::OpenOptions::new().write(true).open(source)?;
+                            file.write_all_at(&[0xa5; 4096], 4096)?;
+                        }
+                        _ => {}
+                    }
+                }
+                if stage == ImageStage::BeforeSeal && mode == "writable-map" {
+                    mapped = unsafe {
+                        libc::mmap(
+                            std::ptr::null_mut(),
+                            4096,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                            libc::MAP_SHARED,
+                            image.as_raw_fd(),
+                            0,
+                        )
+                    };
+                    if mapped == libc::MAP_FAILED {
+                        return Err(std::io::Error::other("fixture writable map failed"));
+                    }
+                }
+                if stage == ImageStage::Sealed && mode == "seal-aliases" {
+                    if !real_sealed_alias_checks(image) {
+                        return Err(std::io::Error::other("fixture seal enforcement failed"));
+                    }
+                    fs::write(
+                        "sealed-aliases-ok",
+                        b"real sealed alias operations refused\n",
+                    )?;
+                }
+                if stage == ImageStage::Compared
+                    && matches!(mode, "sealed-replace" | "sealed-mutate")
+                {
+                    if mode == "sealed-replace" {
+                        use std::os::unix::fs::PermissionsExt;
+                        let replacement = source.with_extension("replacement");
+                        fs::write(&replacement, probe_artifact::EMBEDDED_B)?;
+                        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o700))?;
+                        fs::rename(replacement, source)?;
+                    } else {
+                        fs::write(source, probe_artifact::EMBEDDED_B)?;
+                    }
+                }
+                Ok(())
+            })();
+            operation.map_err(|_| probe_artifact::FixtureImageFailure::Source)
+        },
+    );
+    if !mapped.is_null() && mapped != libc::MAP_FAILED {
+        unsafe {
+            libc::munmap(mapped, 4096);
+        }
+    }
+    let image = result.map_err(|failure| match failure {
+        probe_artifact::FixtureImageFailure::Unavailable => Failure::Unsupported(libc::ENOSYS),
+        _ => Failure::Admission,
+    })?;
+    let mut id = invocation;
+    if mode == "image-mismatch" {
+        id[0] ^= 1;
+    }
+    let fault = match mode {
+        "prep-entry-expired" => probe_lifetime::BoundExecutionFault::EntryDeadline,
+        "prep-validation-expired" => probe_lifetime::BoundExecutionFault::PreCloneDeadline,
+        "prep-gate-expired" | "prep-gate-expired-unproven" => {
+            probe_lifetime::BoundExecutionFault::GateDeadline
+        }
+        "prep-release-expired" => probe_lifetime::BoundExecutionFault::ReleaseDeadline,
+        "prep-exec-expired" => probe_lifetime::BoundExecutionFault::ExecDeadline,
+        "fault-dup" => probe_lifetime::BoundExecutionFault::Dup,
+        "fault-close-range" => probe_lifetime::BoundExecutionFault::CloseRange,
+        "fault-inventory" => probe_lifetime::BoundExecutionFault::Inventory,
+        "fault-exec" | "exec-failure" => probe_lifetime::BoundExecutionFault::Exec,
+        _ => probe_lifetime::BoundExecutionFault::None,
+    };
+    let completion = if fault == probe_lifetime::BoundExecutionFault::None {
+        unsafe { probe_lifetime::run_bound(options, image, id, restrict, observer) }
+    } else {
+        unsafe { probe_lifetime::run_bound_fault(options, image, id, restrict, observer, fault) }
+    };
+    completion.map(DriverCompletion::Bound)
+}
 fn transport_mode(args: &[String]) -> ExitCode {
+    let bound = args.get(1).is_some_and(|s| s == "bound-transport-v1");
     if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
         return ExitCode::from(TRANSPORT_PRODUCER);
     }
@@ -458,7 +732,7 @@ fn transport_mode(args: &[String]) -> ExitCode {
         ExitCode::from(code)
     };
     if args.len() != 7
-        || !transport_scenario(&args[3])
+        || !(transport_scenario(&args[3]) || (bound && bound_scenario(&args[3])))
         || [&args[2], &args[4], &args[5]]
             .iter()
             .any(|s| !Path::new(s).is_absolute() || s.contains('\0'))
@@ -469,9 +743,29 @@ fn transport_mode(args: &[String]) -> ExitCode {
     if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
         return reject(Failure::Admission);
     }
-    let policy = match policy::read_bounded(Path::new(&args[5])).and_then(|s| policy::parse(&s)) {
+    let supplied_policy = if bound {
+        Ok(
+            serde_json::json!({"version":1,"read":[],"write":[args[4]],"exec":[],
+            "tcp_connect":[],"tcp_bind":[],"unix_connect":[],"cwd":args[4],
+            "child_restrictions":{"deny_network":true,"deny_chmod":true}})
+            .to_string(),
+        )
+    } else {
+        policy::read_bounded(Path::new(&args[5]))
+    };
+    let policy_text = match supplied_policy {
         Ok(p) => p,
         Err(_) => return reject(Failure::InvalidInput),
+    };
+    // Bound policy path handles are opened only inside the trusted restriction
+    // callback, after the exact pre-restriction inventory. No inherited keep-list.
+    let policy = if bound {
+        None
+    } else {
+        match policy::parse(&policy_text) {
+            Ok(p) => Some(p),
+            Err(_) => return reject(Failure::InvalidInput),
+        }
     };
     let mode = args[3].as_str();
     let cwd = Path::new(&args[4]);
@@ -555,9 +849,8 @@ fn transport_mode(args: &[String]) -> ExitCode {
         let proof = unsafe { OwnedFd::from_raw_fd(4) };
         let target_mode = match mode {
             "normal" | "high-exit" | "signal" | "direct" | "double" | "detach" | "signal-tree"
-            | "forge" | "acp" | "acp-forbidden" | "acp-hang" | "stdout-flood" | "stderr-flood" => {
-                mode
-            }
+            | "sandbox" | "forge" | "acp" | "acp-forbidden" | "acp-hang" | "stdout-flood"
+            | "stderr-flood" => mode,
             "kill-init"
             | "death-post-admission"
             | "control-error"
@@ -569,6 +862,7 @@ fn transport_mode(args: &[String]) -> ExitCode {
             {
                 "normal"
             }
+            _ if bound && bound_scenario(mode) => "normal",
             _ => "hold",
         };
         let target = if mode == "exec-failure" {
@@ -581,7 +875,7 @@ fn transport_mode(args: &[String]) -> ExitCode {
             "clone-failure" => Fault::Clone,
             "pidfd-failure" => Fault::CreatorPidfd,
             "map-failure" => Fault::Mapping,
-            "wait-failure" => Fault::Wait,
+            "wait-failure" | "prep-gate-expired-unproven" => Fault::Wait,
             "withhold" => Fault::WithholdWait,
             "control-error" => Fault::ControlError,
             _ => Fault::None,
@@ -590,63 +884,90 @@ fn transport_mode(args: &[String]) -> ExitCode {
         // BEFORE target fork. Target closes stop/gate/creator BEFORE restriction;
         // native's checked close_range then removes its high stdio duplicates.
         let close = [proof.as_raw_fd(), verifier.as_raw_fd()];
-        let result = unsafe {
-            probe_lifetime::run(
-                Options {
-                    argv: &argv,
-                    stop: stop.as_fd(),
-                    stdio: [
-                        duplicates[0].as_fd(),
-                        duplicates[1].as_fd(),
-                        duplicates[2].as_fd(),
-                    ],
-                    wall: Duration::from_millis(2000),
-                    observation: Duration::from_millis(400),
-                    fault,
-                    nested_fixture: false,
-                    close_in_init: &close,
-                },
-                || {
-                    for fd in [stop.as_raw_fd(), proof.as_raw_fd(), verifier.as_raw_fd()] {
-                        if !absent(fd) {
-                            return Err("fixture descriptor retained before restriction".into());
-                        }
-                    }
-                    if mode == "restrict-failure" {
-                        return Err("fixture restriction failure".into());
-                    }
-                    sandbox::apply(&policy)?;
-                    limits::apply(&policy::ChildLimits {
-                        cpu_seconds: 2,
-                        address_space_bytes: 67108864,
-                        open_files: 32,
-                    })?;
-                    fs::write("pre-restriction-fds", b"EBADF before restriction\n")
-                        .map_err(|e| e.to_string())
-                },
-                |stage, init, deadline| {
-                    let byte = match stage {
-                        Stage::Registered => b'R',
-                        Stage::BeforeRegistration => b'B',
-                        Stage::Mapping => b'M',
-                        Stage::Gate => b'G',
-                        Stage::Admitted => b'T',
-                    };
-                    if !packet(
-                        verifier.as_raw_fd(),
-                        byte,
-                        if stage == Stage::Registered {
-                            Some(init)
-                        } else {
-                            None
-                        },
-                    ) {
-                        return Err(Failure::Admission);
-                    }
-                    wait_ack(verifier.as_raw_fd(), deadline)
+        let options = Options {
+            argv: &argv,
+            stop: stop.as_fd(),
+            stdio: [
+                duplicates[0].as_fd(),
+                duplicates[1].as_fd(),
+                duplicates[2].as_fd(),
+            ],
+            wall: Duration::from_millis(2000),
+            observation: Duration::from_millis(400),
+            fault,
+            nested_fixture: false,
+            close_in_init: &close,
+        };
+        let restrict = || {
+            for fd in [proof.as_raw_fd(), verifier.as_raw_fd()] {
+                if !absent(fd) {
+                    return Err("fixture descriptor retained before restriction".into());
+                }
+            }
+            if !bound && !absent(stop.as_raw_fd()) {
+                return Err("fixture stop retained before restriction".into());
+            }
+            if mode == "restrict-failure" {
+                return Err("fixture restriction failure".into());
+            }
+            let bound_policy = if bound {
+                Some(policy::parse(&policy_text)?)
+            } else {
+                None
+            };
+            sandbox::apply(bound_policy.as_ref().or(policy.as_ref()).unwrap())?;
+            if mode == "limits-failure" {
+                return Err("fixture limit failure".into());
+            }
+            limits::apply(&policy::ChildLimits {
+                cpu_seconds: 2,
+                address_space_bytes: 67108864,
+                open_files: 32,
+            })?;
+            fs::write(
+                "pre-restriction-fds",
+                if bound {
+                    b"owned sealed image fd3; controls closed\n".as_slice()
+                } else {
+                    b"EBADF before restriction\n".as_slice()
                 },
             )
+            .map_err(|e| e.to_string())
         };
+        let observer = |stage, init: BorrowedFd<'_>, deadline| {
+            let byte = match stage {
+                Stage::Registered => b'R',
+                Stage::BeforeRegistration => b'B',
+                Stage::Mapping => b'M',
+                Stage::Gate => b'G',
+                Stage::Admitted => b'T',
+            };
+            if !packet(
+                verifier.as_raw_fd(),
+                byte,
+                if stage == Stage::Registered {
+                    Some(init)
+                } else {
+                    None
+                },
+            ) {
+                return Err(Failure::Admission);
+            }
+            wait_ack(verifier.as_raw_fd(), deadline)
+        };
+        let result = if bound {
+            bound_run(
+                options,
+                Path::new(&args[2]),
+                invocation,
+                mode,
+                restrict,
+                observer,
+            )
+        } else {
+            unsafe { probe_lifetime::run(options, restrict, observer) }.map(DriverCompletion::Path)
+        };
+
         // Verifier has no ACP alias during terminal emission. PID1 and target are
         // already reaped on Ok; failures remain governed by the outer pidfd guard.
         drop(duplicates);
@@ -675,12 +996,12 @@ fn transport_mode(args: &[String]) -> ExitCode {
                 ) =>
             {
                 (
-                    inject_owned_emission(completion, invocation, proof, deadline, mode),
+                    inject_driver_emission(completion, invocation, proof, deadline, mode),
                     0,
                 )
             }
             Ok(completion) => (
-                write_owned_termination(completion, invocation, proof, deadline),
+                write_driver_termination(completion, invocation, proof, deadline),
                 0,
             ),
             Err(failure) => {
@@ -895,7 +1216,30 @@ fn transport_guard(pid: i32, guard: OwnedFd, closed: bool, mode: &str, cwd: &Pat
 
 fn main() -> ExitCode {
     let transport_args: Vec<String> = std::env::args().collect();
-    if transport_args.get(1).is_some_and(|s| s == "transport-v1") {
+    if let Some(mode) = transport_args.get(1) {
+        if matches!(mode.as_str(), "fixture-image-a" | "fixture-image-b") {
+            if transport_args.len() != 2 || !probe_artifact::fixture_available() {
+                return ExitCode::from(TRANSPORT_UNSUPPORTED);
+            }
+            let bytes = if mode == "fixture-image-a" {
+                probe_artifact::EMBEDDED_A
+            } else {
+                probe_artifact::EMBEDDED_B
+            };
+            if !(64..=4 * 1024 * 1024).contains(&bytes.len()) {
+                return ExitCode::from(TRANSPORT_UNSUPPORTED);
+            }
+            return if write_bounded(1, bytes, Instant::now() + Duration::from_secs(2)).is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(TRANSPORT_PRODUCER)
+            };
+        }
+    }
+    if transport_args
+        .get(1)
+        .is_some_and(|s| matches!(s.as_str(), "transport-v1" | "bound-transport-v1"))
+    {
         return transport_mode(&transport_args);
     }
     if !clear_inherited_capabilities() {

@@ -14,6 +14,11 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+
+#ifndef PROBE_FIXTURE_IMAGE
+#define PROBE_FIXTURE_IMAGE 0
+#endif
 #include <unistd.h>
 
 static void marker(const char *name) {
@@ -153,6 +158,19 @@ int main(int argc, char **argv) {
     if (argc != 2 && argc != 3) return 92;
     alarm(5);
     marker("executed");
+#if PROBE_FIXTURE_IMAGE == 1
+    marker("image-a-executed");
+#elif PROBE_FIXTURE_IMAGE == 2
+    marker("image-b-executed");
+#endif
+#if PROBE_FIXTURE_IMAGE != 0
+    /* Descriptor exec closes the sealed initial object on successful exec. */
+    for (int fd = 3; fd < 64; ++fd) {
+        errno = 0;
+        if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) return 129;
+    }
+    marker("fd-closed");
+#endif
     struct __user_cap_header_struct header = { .version = _LINUX_CAPABILITY_VERSION_3, .pid = 0 };
     struct __user_cap_data_struct caps[2] = {{0}, {0}};
     if (syscall(SYS_capget, &header, caps) || caps[0].effective || caps[1].effective || caps[0].permitted || caps[1].permitted || caps[0].inheritable || caps[1].inheritable) return 109;
@@ -160,7 +178,7 @@ int main(int argc, char **argv) {
     if (prctl(PR_CAPBSET_READ, 0, 0, 0, 0) != 0 || prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, 0, 0, 0) != 0) return 111;
     caps[0].effective = caps[0].permitted = 1;
     if (syscall(SYS_capset, &header, caps) != -1 || errno != EPERM) return 112;
-    if (!strcmp(argv[1], "normal")) return 7;
+    if (!strcmp(argv[1], "normal")) return PROBE_FIXTURE_IMAGE == 2 ? 17 : 7;
     if (!strcmp(argv[1], "high-exit")) return 200;
     if (!strcmp(argv[1], "cpu")) { volatile unsigned long count = 0; for (;;) { ++count; (void)count; } }
     if (!strcmp(argv[1], "signal")) { raise(SIGTERM); return 93; }
@@ -204,6 +222,23 @@ int main(int argc, char **argv) {
         while (n < 64 && (fds[n] = open("executed", O_RDONLY)) >= 0) ++n;
         if (n == 64 || errno != EMFILE) return 114;
         for (int i = 0; i < n; ++i) close(fds[i]);
+#if PROBE_FIXTURE_IMAGE != 0
+        errno = 0;
+        if (syscall(SYS_memfd_create, "denied", 3) != -1 || errno != EPERM) return 130;
+#if defined(__x86_64__)
+        errno = 0;
+        long x32_result = syscall(0x40000000UL | 319UL, "denied", 3);
+        if (x32_result != -1 || (errno != EPERM && errno != ENOSYS)) return 131;
+#endif
+        errno = 0;
+        if (chmod("executed", 0700) != -1 || errno != EPERM) return 132;
+        errno = 0;
+        int denied_write = open("/tmp/fixture-denied-write", O_WRONLY | O_CREAT, 0600);
+        if (denied_write != -1) { close(denied_write); return 133; }
+        char *denied_argv[] = {"/bin/true", NULL};
+        execv(denied_argv[0], denied_argv);
+        if (errno != EACCES && errno != EPERM) return 134;
+#endif
         marker("sandbox-ok");
         return 0;
     }

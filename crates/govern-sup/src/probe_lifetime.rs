@@ -8,6 +8,8 @@ use std::ffi::CString;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
+use crate::probe_artifact::VerifiedFixtureImage;
+
 #[derive(Debug)]
 pub struct NamespaceTermination {
     _private: (),
@@ -16,6 +18,36 @@ pub struct NamespaceTermination {
 pub struct ProbeCompletion {
     pub outcome: Outcome,
     pub termination: NamespaceTermination,
+}
+// Only run_bound can associate an image with actual owned-init reaping. In
+// particular, a pathname completion has no conversion into this private owner.
+#[derive(Debug)]
+pub(crate) struct BoundProbeCompletion {
+    completion: ProbeCompletion,
+    image: VerifiedFixtureImage,
+    invocation: [u8; 16],
+}
+impl BoundProbeCompletion {
+    pub(crate) fn into_completion(self, invocation: [u8; 16]) -> Result<ProbeCompletion, Failure> {
+        if self.invocation != invocation || !self.image.matches_invocation(invocation) {
+            return Err(Failure::InvalidInput);
+        }
+        Ok(self.completion)
+    }
+}
+// Bound-only fail-closed seams: none can supply an image or a successful wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundExecutionFault {
+    None,
+    Dup,
+    CloseRange,
+    Exec,
+    Inventory,
+    EntryDeadline,
+    PreCloneDeadline,
+    GateDeadline,
+    ReleaseDeadline,
+    ExecDeadline,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -65,12 +97,22 @@ pub struct Options<'a> {
     pub close_in_init: &'a [RawFd],
 }
 
+#[cfg(not(probe_clone_unavailable))]
 unsafe extern "C" {
     fn gs_probe_clone(
         pidfd: *mut i32,
         child: extern "C" fn(*mut libc::c_void),
         context: *mut libc::c_void,
     ) -> libc::c_long;
+}
+#[cfg(probe_clone_unavailable)]
+unsafe fn gs_probe_clone(
+    _pidfd: *mut i32,
+    _child: extern "C" fn(*mut libc::c_void),
+    _context: *mut libc::c_void,
+) -> libc::c_long {
+    unsafe { *libc::__errno_location() = libc::ENOSYS };
+    -1
 }
 
 #[repr(C)]
@@ -370,6 +412,166 @@ fn pdeath(creator: RawFd) -> bool {
             && ready(creator) == Ok(false)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DescriptorIdentity {
+    device: libc::dev_t,
+    inode: libc::ino_t,
+    mode: libc::mode_t,
+    special_device: libc::dev_t,
+}
+fn descriptor_stat(fd: RawFd) -> Option<libc::stat> {
+    let mut stat = unsafe { std::mem::zeroed() };
+    (unsafe { libc::fstat(fd, &mut stat) } == 0).then_some(stat)
+}
+fn descriptor_identity(stat: &libc::stat) -> DescriptorIdentity {
+    DescriptorIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+        mode: stat.st_mode,
+        special_device: stat.st_rdev,
+    }
+}
+const IMAGE_SEALS: i32 =
+    libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL | 0x20; // F_SEAL_EXEC
+#[derive(Clone, Copy)]
+struct BoundTarget {
+    source: RawFd,
+    identity: DescriptorIdentity,
+    size: libc::off_t,
+    seals: i32,
+    stdio: [DescriptorIdentity; 3],
+    fault: BoundExecutionFault,
+    preparation_deadline: Instant,
+}
+#[derive(Clone, Copy)]
+enum Execution {
+    Pathname,
+    Bound(BoundTarget),
+}
+fn preparation_live(execution: Execution) -> bool {
+    match execution {
+        Execution::Pathname => true,
+        Execution::Bound(bound) => Instant::now() < bound.preparation_deadline,
+    }
+}
+// Fixed failure-only parks synchronize with the actual owned deadline. They
+// cannot change it, select a caller delay, or grant successful admission.
+fn expire_preparation_at(execution: Execution, point: BoundExecutionFault) {
+    if let Execution::Bound(bound) = execution {
+        if bound.fault == point {
+            while Instant::now() < bound.preparation_deadline {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+}
+fn bound_target(
+    options: &Options<'_>,
+    image: &VerifiedFixtureImage,
+    invocation: [u8; 16],
+    fault: BoundExecutionFault,
+) -> Result<BoundTarget, Failure> {
+    let source = image.as_fd().as_raw_fd();
+    if !image.matches_invocation(invocation)
+        || source <= 3
+        || options.stop.as_raw_fd() != 3
+        || options.nested_fixture
+        || options.stdio.iter().any(|fd| fd.as_raw_fd() == source)
+        || options.close_in_init.contains(&source)
+    {
+        return Err(Failure::InvalidInput);
+    }
+    let stat = descriptor_stat(source).ok_or(Failure::InvalidInput)?;
+    let seals = unsafe { libc::fcntl(source, libc::F_GET_SEALS) };
+    if stat.st_mode != libc::S_IFREG | 0o700
+        || !(64..=4 * 1024 * 1024).contains(&stat.st_size)
+        || seals < 0
+        || seals & IMAGE_SEALS != IMAGE_SEALS
+        || unsafe { libc::fcntl(source, libc::F_GETFD) } != libc::FD_CLOEXEC
+    {
+        return Err(Failure::InvalidInput);
+    }
+    let mut stdio = [descriptor_identity(&stat); 3];
+    for (slot, fd) in options.stdio.iter().enumerate() {
+        stdio[slot] =
+            descriptor_identity(&descriptor_stat(fd.as_raw_fd()).ok_or(Failure::InvalidInput)?);
+    }
+    Ok(BoundTarget {
+        source,
+        identity: descriptor_identity(&stat),
+        size: stat.st_size,
+        seals,
+        stdio,
+        fault,
+        preparation_deadline: image.preparation_deadline(),
+    })
+}
+fn close_owned_checked(fd: RawFd) -> bool {
+    unsafe {
+        libc::close(fd) == 0 && libc::fcntl(fd, libc::F_GETFD) == -1 && errno() == libc::EBADF
+    }
+}
+fn inventory_entry(name: &[u8], scan: RawFd, seen: &mut [bool; 4]) -> bool {
+    if name == b"." || name == b".." {
+        return true;
+    }
+    match std::str::from_utf8(name)
+        .ok()
+        .and_then(|v| v.parse::<RawFd>().ok())
+    {
+        Some(fd) if fd == scan => true,
+        Some(fd @ 0..=3) if !seen[fd as usize] => {
+            seen[fd as usize] = true;
+            true
+        }
+        _ => false,
+    }
+}
+fn bound_inventory(target: BoundTarget) -> bool {
+    // The directory handle is the only temporary descriptor. Enumerate the
+    // complete table, then close and check that handle before restriction.
+    let dir = unsafe { libc::opendir(c"/proc/self/fd".as_ptr()) };
+    if dir.is_null() {
+        return false;
+    }
+    let scan = unsafe { libc::dirfd(dir) };
+    let mut seen = [false; 4];
+    let mut valid = scan > 3;
+    let mut entries = 0;
+    while valid {
+        unsafe { *libc::__errno_location() = 0 };
+        let entry = unsafe { libc::readdir(dir) };
+        if entry.is_null() {
+            valid = errno() == 0;
+            break;
+        }
+        entries += 1;
+        if entries > 7 {
+            valid = false;
+            break;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        valid = inventory_entry(name, scan, &mut seen);
+    }
+    let closed = unsafe { libc::closedir(dir) } == 0
+        && unsafe { libc::fcntl(scan, libc::F_GETFD) } == -1
+        && errno() == libc::EBADF;
+    if !valid || !closed || seen != [true; 4] {
+        return false;
+    }
+    for fd in 0..3 {
+        if descriptor_stat(fd).map(|stat| descriptor_identity(&stat))
+            != Some(target.stdio[fd as usize])
+            || unsafe { libc::fcntl(fd, libc::F_GETFD) } != 0
+        {
+            return false;
+        }
+    }
+    descriptor_stat(3).is_some_and(|stat| {
+        descriptor_identity(&stat) == target.identity && stat.st_size == target.size
+    }) && unsafe { libc::fcntl(3, libc::F_GETFD) } == libc::FD_CLOEXEC
+        && unsafe { libc::fcntl(3, libc::F_GET_SEALS) } == target.seals
+}
 struct ChildContext<'a, R> {
     argv: &'a [CString],
     restrict: Option<R>,
@@ -381,6 +583,7 @@ struct ChildContext<'a, R> {
     gid: u32,
     deadline: Instant,
     groups: &'a [u32],
+    execution: Execution,
 }
 fn die(status: i32) -> ! {
     unsafe { libc::_exit(status) }
@@ -425,6 +628,10 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
     {
         die(125);
     }
+    expire_preparation_at(ctx.execution, BoundExecutionFault::ReleaseDeadline);
+    if !preparation_live(ctx.execution) {
+        die(125);
+    }
     // Default SIGCHLD and an empty mask ensure waits cannot be silently auto-reaped.
     unsafe {
         if libc::signal(libc::SIGCHLD, libc::SIG_DFL) == libc::SIG_ERR {
@@ -435,6 +642,11 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
         if libc::sigprocmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut()) != 0 {
             die(125);
         }
+    }
+    // Recheck at target release as well as in the outside admission gate:
+    // scheduling between its acknowledgment and this fork grants no extension.
+    if !preparation_live(ctx.execution) {
+        die(125);
     }
     let target = unsafe { libc::fork() };
     if target < 0 {
@@ -454,10 +666,46 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
                 die(125);
             }
         }
-        if ctx.restrict.take().unwrap()().is_err() || !deny_namespace_changes() {
+        if let Execution::Bound(bound) = ctx.execution {
+            // stop3 was closed and checked above. From now on 3 is the image,
+            // so assertions about the old control number being EBADF are invalid.
+            if bound.fault == BoundExecutionFault::Dup
+                || unsafe { libc::dup3(bound.source, 3, libc::O_CLOEXEC) } != 3
+                || !close_owned_checked(bound.source)
+            {
+                die(125);
+            }
+            for (slot, fd) in ctx.options.stdio.iter().enumerate() {
+                let raw = fd.as_raw_fd();
+                if !ctx.options.stdio[..slot]
+                    .iter()
+                    .any(|v| v.as_raw_fd() == raw)
+                    && !close_owned_checked(raw)
+                {
+                    die(125);
+                }
+            }
+            if bound.fault == BoundExecutionFault::Inventory || !bound_inventory(bound) {
+                die(125);
+            }
+        }
+        if !preparation_live(ctx.execution) {
             die(125);
         }
-        if unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) } != 0 {
+        let bound = matches!(ctx.execution, Execution::Bound(_));
+        if ctx.restrict.take().unwrap()().is_err() || !deny_namespace_changes(bound) {
+            die(125);
+        }
+        if matches!(ctx.execution, Execution::Bound(b) if b.fault == BoundExecutionFault::CloseRange)
+            || unsafe {
+                libc::syscall(
+                    libc::SYS_close_range,
+                    if bound { 4u32 } else { 3u32 },
+                    u32::MAX,
+                    0u32,
+                )
+            } != 0
+        {
             die(125);
         }
         let argv: Vec<*const libc::c_char> = ctx
@@ -466,10 +714,43 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
             .map(|a| a.as_ptr())
             .chain(std::iter::once(std::ptr::null()))
             .collect();
-        unsafe {
-            libc::execv(ctx.argv[0].as_ptr(), argv.as_ptr());
+        match ctx.execution {
+            Execution::Pathname => unsafe {
+                libc::execv(ctx.argv[0].as_ptr(), argv.as_ptr());
+            },
+            Execution::Bound(bound) => {
+                expire_preparation_at(ctx.execution, BoundExecutionFault::ExecDeadline);
+                if !preparation_live(ctx.execution) {
+                    die(125);
+                }
+                if bound.fault == BoundExecutionFault::Exec {
+                    die(125);
+                }
+                unsafe extern "C" {
+                    static environ: *const *const libc::c_char;
+                }
+                // The fixture driver clears and installs a literal environment.
+                // A return is always failure; there is no pathname fallback.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_execveat,
+                        3,
+                        c"".as_ptr(),
+                        argv.as_ptr(),
+                        environ,
+                        libc::AT_EMPTY_PATH,
+                    );
+                }
+            }
         }
         die(125);
+    }
+    if let Execution::Bound(bound) = ctx.execution {
+        // The outside verifier still owns its copy through completion/drop.
+        // PID 1 needs no executable alias after giving the target its copy.
+        if !close_owned_checked(bound.source) {
+            die(125);
+        }
     }
     unsafe {
         libc::close(ctx.creator);
@@ -506,7 +787,7 @@ extern "C" fn child_entry<R: FnOnce() -> Result<(), String>>(ptr: *mut libc::c_v
     }
     die(0);
 }
-fn deny_namespace_changes() -> bool {
+fn namespace_filter(bound: bool) -> Option<Vec<libc::sock_filter>> {
     // Complement the existing sandbox: forbid new/joined namespaces even if an
     // unprivileged new user namespace could otherwise restore local capabilities.
     #[cfg(target_arch = "x86_64")]
@@ -514,7 +795,7 @@ fn deny_namespace_changes() -> bool {
     #[cfg(target_arch = "aarch64")]
     let arch = 0xc00000b7;
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    return false;
+    return None;
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     {
         let stmt = |code: u16, k| libc::sock_filter {
@@ -535,6 +816,17 @@ fn deny_namespace_changes() -> bool {
             stmt(0x06, libc::SECCOMP_RET_KILL_PROCESS),
             stmt(0x20, 0),
         ];
+        if bound {
+            filter.extend([
+                jump(libc::SYS_memfd_create as u32, 0, 1),
+                stmt(0x06, libc::SECCOMP_RET_ERRNO | libc::EPERM as u32),
+            ]);
+            #[cfg(target_arch = "x86_64")]
+            filter.extend([
+                jump(libc::SYS_memfd_create as u32 | 0x4000_0000, 0, 1),
+                stmt(0x06, libc::SECCOMP_RET_ERRNO | libc::EPERM as u32),
+            ]);
+        }
         for nr in [libc::SYS_unshare, libc::SYS_setns, libc::SYS_clone3] {
             filter.extend([
                 jump(nr as u32, 0, 1),
@@ -561,19 +853,25 @@ fn deny_namespace_changes() -> bool {
             stmt(0x06, libc::SECCOMP_RET_ERRNO | libc::EPERM as u32),
             stmt(0x06, libc::SECCOMP_RET_ALLOW),
         ]);
-        let program = libc::sock_fprog {
-            len: filter.len() as u16,
-            filter: filter.as_mut_ptr(),
-        };
-        unsafe {
-            libc::prctl(
-                libc::PR_SET_SECCOMP,
-                libc::SECCOMP_MODE_FILTER,
-                &program,
-                0,
-                0,
-            ) == 0
-        }
+        Some(filter)
+    }
+}
+fn deny_namespace_changes(bound: bool) -> bool {
+    let Some(mut filter) = namespace_filter(bound) else {
+        return false;
+    };
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::SECCOMP_MODE_FILTER,
+            &program,
+            0,
+            0,
+        ) == 0
     }
 }
 fn nested_fixture(uid: u32, gid: u32, groups: &[u32], deadline: Instant) {
@@ -636,9 +934,76 @@ fn nested_fixture(uid: u32, gid: u32, groups: &[u32], deadline: Instant) {
 pub unsafe fn run<R: FnOnce() -> Result<(), String>>(
     options: Options<'_>,
     restrict: R,
+    observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+) -> Result<ProbeCompletion, Failure> {
+    unsafe { run_inner(options, restrict, observer, Execution::Pathname) }
+}
+
+/// # Safety
+/// All of run's caller requirements apply. The bound fixture caller must use
+/// stop fd 3, retain no unknown descriptor aliases, and open policy handles only
+/// inside the restriction callback. The driver supplies a cleared literal
+/// environment. Only the verified image is retained for initial execution.
+pub(crate) unsafe fn run_bound<R: FnOnce() -> Result<(), String>>(
+    options: Options<'_>,
+    image: VerifiedFixtureImage,
+    invocation: [u8; 16],
+    restrict: R,
+    observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+) -> Result<BoundProbeCompletion, Failure> {
+    unsafe {
+        run_bound_fault(
+            options,
+            image,
+            invocation,
+            restrict,
+            observer,
+            BoundExecutionFault::None,
+        )
+    }
+}
+
+/// # Safety
+/// Identical to run_bound. This finite fixture seam can force failure only.
+pub(crate) unsafe fn run_bound_fault<R: FnOnce() -> Result<(), String>>(
+    options: Options<'_>,
+    image: VerifiedFixtureImage,
+    invocation: [u8; 16],
+    restrict: R,
+    observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+    fault: BoundExecutionFault,
+) -> Result<BoundProbeCompletion, Failure> {
+    // The image owns the preparation deadline. No run option renews it.
+    if fault == BoundExecutionFault::EntryDeadline {
+        while Instant::now() < image.preparation_deadline() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    if Instant::now() >= image.preparation_deadline()
+        || ready(options.stop.as_raw_fd()) != Ok(false)
+    {
+        return Err(Failure::Admission);
+    }
+    validate(&options)?;
+    let target = bound_target(&options, &image, invocation, fault)?;
+    let completion = unsafe { run_inner(options, restrict, observer, Execution::Bound(target)) }?;
+    Ok(BoundProbeCompletion {
+        completion,
+        image,
+        invocation,
+    })
+}
+
+unsafe fn run_inner<R: FnOnce() -> Result<(), String>>(
+    options: Options<'_>,
+    restrict: R,
     mut observer: impl FnMut(Stage, BorrowedFd<'_>, Instant) -> Result<(), Failure>,
+    execution: Execution,
 ) -> Result<ProbeCompletion, Failure> {
     use std::os::fd::AsFd;
+    if !preparation_live(execution) {
+        return Err(Failure::Admission);
+    }
     let argv = validate(&options)?;
     let (uid, gid) = identity()?;
     // Unprivileged single-ID gid_map requires setgroups=deny. Linux prohibits
@@ -681,8 +1046,16 @@ pub unsafe fn run<R: FnOnce() -> Result<(), String>>(
         gid,
         deadline,
         groups: &groups,
+        execution,
     };
     let mut fd = -1;
+    expire_preparation_at(execution, BoundExecutionFault::PreCloneDeadline);
+    if !preparation_live(execution)
+        || (matches!(execution, Execution::Bound(_))
+            && ready(options.stop.as_raw_fd()) != Ok(false))
+    {
+        return Err(Failure::Admission);
+    }
     let pid = unsafe {
         gs_probe_clone(
             &mut fd,
@@ -719,7 +1092,9 @@ pub unsafe fn run<R: FnOnce() -> Result<(), String>>(
             return Err(Failure::Admission);
         }
         observer(Stage::Gate, init.fd.as_fd(), deadline)?;
-        if Instant::now() >= deadline
+        expire_preparation_at(execution, BoundExecutionFault::GateDeadline);
+        if !preparation_live(execution)
+            || Instant::now() >= deadline
             || ready(options.stop.as_raw_fd()) != Ok(false)
             || !send(parent_gate.as_raw_fd(), b'A')
         {
@@ -807,6 +1182,190 @@ pub unsafe fn run<R: FnOnce() -> Result<(), String>>(
 mod tests {
     use super::*;
     use std::os::fd::AsFd;
+
+    #[test]
+    #[cfg(probe_clone_unavailable)]
+    fn missing_clone_shim_refuses_without_calling_the_child() {
+        extern "C" fn must_not_run(_: *mut libc::c_void) {
+            panic!("unavailable clone shim invoked a child");
+        }
+        let mut pidfd = -1;
+        assert_eq!(
+            unsafe { gs_probe_clone(&mut pidfd, must_not_run, std::ptr::null_mut()) },
+            -1
+        );
+        assert_eq!(pidfd, -1);
+        assert_eq!(errno(), libc::ENOSYS);
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn filter_decision(filter: &[libc::sock_filter], arch: u32, nr: u32, flags: u32) -> u32 {
+        let mut accumulator = 0;
+        let mut pc = 0;
+        for _ in 0..filter.len() {
+            let instruction = filter[pc];
+            match instruction.code {
+                0x20 => {
+                    accumulator = match instruction.k {
+                        0 => nr,
+                        4 => arch,
+                        16 => flags,
+                        _ => panic!("unexpected seccomp load"),
+                    };
+                    pc += 1;
+                }
+                0x15 | 0x45 => {
+                    let condition = if instruction.code == 0x15 {
+                        accumulator == instruction.k
+                    } else {
+                        accumulator & instruction.k != 0
+                    };
+                    pc += 1 + if condition {
+                        instruction.jt
+                    } else {
+                        instruction.jf
+                    } as usize;
+                }
+                0x06 => return instruction.k,
+                _ => panic!("unexpected seccomp instruction"),
+            }
+        }
+        panic!("seccomp program failed to return")
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn bound_filter_denies_memfd_and_preserves_namespace_decisions() {
+        #[cfg(target_arch = "x86_64")]
+        let arch = 0xc000003e;
+        #[cfg(target_arch = "aarch64")]
+        let arch = 0xc00000b7;
+        let unbound = namespace_filter(false).unwrap();
+        let bound = namespace_filter(true).unwrap();
+        let denied = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
+        assert_eq!(unbound.len(), 15);
+        assert_eq!(
+            filter_decision(&unbound, arch, libc::SYS_memfd_create as u32, 0),
+            libc::SECCOMP_RET_ALLOW
+        );
+        assert_eq!(
+            filter_decision(&bound, arch, libc::SYS_memfd_create as u32, 0),
+            denied
+        );
+        let namespace_flags = [
+            libc::CLONE_NEWUSER,
+            libc::CLONE_NEWPID,
+            libc::CLONE_NEWNS,
+            libc::CLONE_NEWUTS,
+            libc::CLONE_NEWIPC,
+            libc::CLONE_NEWNET,
+            libc::CLONE_NEWCGROUP,
+            0x80,
+        ];
+        for filter in [&unbound, &bound] {
+            for syscall in [libc::SYS_unshare, libc::SYS_setns, libc::SYS_clone3] {
+                assert_eq!(filter_decision(filter, arch, syscall as u32, 0), denied);
+            }
+            for flags in namespace_flags {
+                assert_eq!(
+                    filter_decision(filter, arch, libc::SYS_clone as u32, flags as u32),
+                    denied
+                );
+            }
+            for flags in [0, libc::SIGCHLD, libc::CLONE_VM | libc::CLONE_FILES] {
+                assert_eq!(
+                    filter_decision(filter, arch, libc::SYS_clone as u32, flags as u32),
+                    libc::SECCOMP_RET_ALLOW
+                );
+            }
+            assert_eq!(
+                filter_decision(filter, arch, libc::SYS_read as u32, 0),
+                libc::SECCOMP_RET_ALLOW
+            );
+            assert_eq!(
+                filter_decision(filter, arch ^ 1, libc::SYS_memfd_create as u32, 0),
+                libc::SECCOMP_RET_KILL_PROCESS
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn bound_filter_denies_x32_memfd_and_kills_compat_arch() {
+        let filter = namespace_filter(true).unwrap();
+        assert_eq!(
+            filter_decision(&filter, 0xc000003e, 319 | 0x40000000, 0),
+            libc::SECCOMP_RET_ERRNO | libc::EPERM as u32
+        );
+        // i386's own memfd syscall number must never reach the native allow tail.
+        assert_eq!(
+            filter_decision(&filter, 0x40000003, 356, 0),
+            libc::SECCOMP_RET_KILL_PROCESS
+        );
+        assert_eq!(
+            filter_decision(&filter, 0xc00000b7, 279, 0),
+            libc::SECCOMP_RET_KILL_PROCESS
+        );
+    }
+
+    #[test]
+    fn descriptor_identity_tracks_aliases_without_trusting_raw_numbers() {
+        // The native close inventory requires a fresh single-threaded process.
+        // Isolate descriptor-reuse checks from parallel unit-fixture allocations.
+        if std::env::var_os("GS_LIFETIME_ALIAS_CHILD").is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "probe_lifetime::tests::descriptor_identity_tracks_aliases_without_trusting_raw_numbers"])
+                .env("GS_LIFETIME_ALIAS_CHILD", "1")
+                .spawn().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let _ = child.kill();
+            panic!("descriptor inventory unit watchdog expired");
+        }
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let alias = file.try_clone().unwrap();
+        assert_ne!(file.as_raw_fd(), alias.as_raw_fd());
+        assert_eq!(
+            descriptor_identity(&descriptor_stat(file.as_raw_fd()).unwrap()),
+            descriptor_identity(&descriptor_stat(alias.as_raw_fd()).unwrap()),
+        );
+        let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64) };
+        assert!(raw >= 64);
+        assert!(close_owned_checked(raw));
+        assert!(!close_owned_checked(raw));
+    }
+
+    #[test]
+    fn inventory_allows_only_stdio_image_and_temporary_scan_handle() {
+        let mut seen = [false; 4];
+        // Reused fd 3 is the image, and the scan may reuse a closed high alias.
+        for name in [b".".as_slice(), b"..", b"3", b"1", b"9", b"0", b"2"] {
+            assert!(inventory_entry(name, 9, &mut seen));
+        }
+        assert_eq!(seen, [true; 4]);
+        for unexpected in [
+            b"4".as_slice(),
+            b"10",
+            b"-1",
+            b"junk",
+            b"2147483648",
+            b"\xff",
+        ] {
+            assert!(!inventory_entry(unexpected, 9, &mut [false; 4]));
+        }
+        assert!(!inventory_entry(b"3", 9, &mut seen));
+        let mut missing = [false; 4];
+        for name in [b"0".as_slice(), b"1", b"2", b"9"] {
+            assert!(inventory_entry(name, 9, &mut missing));
+        }
+        assert_ne!(missing, [true; 4]);
+    }
     #[test]
     fn rejects_unbounded_or_malformed_input_without_creation() {
         let fd = std::fs::File::open("/dev/null").unwrap();
