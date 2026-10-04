@@ -36,6 +36,15 @@ test("bound preparation validates literal assets before any driver data launch",
 
 test("fixed image preparation retains private bytes and launches only through identity", async () => {
   const owner = await readFile(new URL("./fixtures/acp-probe-termination.ts", import.meta.url), "utf8");
+  const acquisition = owner.slice(owner.indexOf("async function acquireFixedImages"), owner.indexOf("/** Fixed trusted-driver data modes"));
+  const preparation = owner.slice(owner.indexOf("export async function prepareNativeBoundFixture"), owner.indexOf("export function startNativeBoundFixture"));
+  assert.match(preparation, /await acquireFixedImages\(a\)/);
+  assert.match(acquisition, /imageA = await emit\("fixture-image-a"\); imageB = await emit\("fixture-image-b"\)/);
+  assert.match(acquisition, /imageA\.equals\(imageB\)/);
+  assert.doesNotMatch(acquisition, /writeFile|policy|preparations\.set/);
+  assert.match(preparation, /await writeFile\(a\.target, imageA, \{ flag: "wx", mode: 0o700 \}\)/);
+  assert.match(preparation, /await writeFile\(a\.policy/);
+  assert.match(preparation, /deadline: performance\.now\(\) \+ 11_000/);
   assert.match(owner, /const preparations = new WeakMap/);
   assert.match(owner, /consumeAssociation\(preparations, fixture, scenario, now\)/);
   assert.match(owner, /map\.get\(fixture\)/);
@@ -53,7 +62,7 @@ test("fixed image preparation retains private bytes and launches only through id
   assert.match(owner, /flag: "wx", mode: 0o700/);
   assert.doesNotMatch(owner, /process\.env|process\.kill\(|child\.kill\(|JSON\.parse|imageSelection|cleanup\(/);
   assert.equal((owner.match(/associations\.set\(/g) ?? []).length, 1);
-  assert.equal((owner.match(/function launchOwned\(/g) ?? []).length, 1);
+  assert.equal((owner.match(/function launchOwned\(a: FixtureAssets \| StoredLaunchSelection,/g) ?? []).length, 1);
 });
 
 test("bound evidence stays excluded from production and normal native dispatch", async () => {

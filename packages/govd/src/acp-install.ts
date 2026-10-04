@@ -267,6 +267,31 @@ export type AcpStoredRuntimeObservation = Readonly<{
   inspection: AcpArtifactRuntimeInspection;
 }>;
 
+/** Trusted package-internal fixture ownership; never returned by a public probe. */
+export type AcpStoredFixtureBinding = Readonly<{
+  signal: AbortSignal;
+  capture(): Promise<Readonly<{ bytes: Buffer; path: string; observation: AcpStoredRuntimeObservation }>>;
+  release(): Promise<void>;
+}>;
+type StoredFixtureCapture = Awaited<ReturnType<AcpStoredFixtureBinding["capture"]>>;
+type StoredFixtureBindResult = Readonly<
+  | { status: "bound"; binding: AcpStoredFixtureBinding }
+  | { status: "refused"; reason: "installer" | "id" | "stopped" | "path" }
+>;
+// Initialized in the installer's lexical private-field scope. No public dispatch.
+let bindStoredFixture: (installer: unknown, id: unknown) => StoredFixtureBindResult;
+export function bindAcpStoredFixtureInstaller(installer: unknown, id: unknown): StoredFixtureBindResult {
+  return bindStoredFixture(installer, id);
+}
+type StoredFixtureBindingState = {
+  installer?: AcpInstaller; root?: string; id?: string; abort?: AbortController;
+  attempted: boolean; released: boolean; task?: Promise<void>; releasing?: Promise<void>;
+};
+const fixtureBindings = new WeakMap<object, StoredFixtureBindingState>();
+// Only identity remains after release; no installer, root or fulfilled buffer.
+const releasedFixtureBindings = new WeakSet<object>();
+const MAX_FIXTURE_CAPTURE = 4 * 1024 * 1024;
+
 // One process-wide slot; held through settled I/O and every consuming close attempt.
 let runtimeReaderActive = false;
 const RUNTIME_CHUNK = 64 * 1024;
@@ -287,17 +312,19 @@ function rawRuntimeHeader(header: Buffer, platform: AcpInstallPlan["platform"]):
     fail("artifact must be a raw native ELF64 executable");
 }
 
-// Specific to the passive store operation. Own FileHandles/Dir objects, never raw
+// Shared by passive observation and internal fixture capture. Own objects, never raw
 // FD close responsibilities. Trusted runtime/kernel/storage administration required:
 // finite observations cannot exclude hostile same-user changes or inode reuse.
-class StoredRuntimeReader {
+class StoredRuntimeReader<Completion extends "passive" | "fixture"> {
   private readonly owned = new Set<FileHandle | Dir>();
   private readonly root: string;
   private readonly id: string;
   private readonly signal: AbortSignal;
   private readonly deadline: number;
-  constructor(root: string, id: string, signal: AbortSignal, deadline: number) {
+  private readonly completion: Completion;
+  constructor(root: string, id: string, signal: AbortSignal, deadline: number, completion: Completion) {
     this.root = root; this.id = id; this.signal = signal; this.deadline = deadline;
+    this.completion = completion;
   }
 
   private check(): void {
@@ -392,6 +419,8 @@ class StoredRuntimeReader {
     capture: boolean): Promise<Buffer | undefined> {
     if (before.size < 64n || before.size > BigInt(MAX_ARTIFACT) || before.size !== BigInt(receipt.bytes))
       fail("invalid artifact size or receipt byte count");
+    if (capture && this.completion === "fixture" && before.size > BigInt(MAX_FIXTURE_CAPTURE))
+      fail("fixture capture byte limit exceeded");
     const size = Number(before.size), bytes = capture ? Buffer.allocUnsafeSlow(size) : undefined;
     const chunk = Buffer.alloc(RUNTIME_CHUNK), header = Buffer.alloc(64), hash = createHash("sha256");
     let position = 0;
@@ -437,7 +466,7 @@ class StoredRuntimeReader {
     runtimePrivate(artifactStat, false, 0o700n);
     return { dir, manifest, file, dirStat, receiptStat, artifactStat, ...body };
   }
-  private async revalidate(root: FileHandle, id: string, selected: Awaited<ReturnType<StoredRuntimeReader["selected"]>>) {
+  private async revalidate(root: FileHandle, id: string, selected: Awaited<ReturnType<StoredRuntimeReader<Completion>["selected"]>>) {
     const { dir, manifest, file, dirStat, receiptStat, artifactStat } = selected;
     if (canonical(await this.names(dir, 2)) !== canonical([ARTIFACT, RECEIPT])) fail("unexpected artifact directory contents");
     await this.unchanged(dir, dirStat); await this.unchanged(manifest, receiptStat); await this.unchanged(file, artifactStat);
@@ -458,8 +487,9 @@ class StoredRuntimeReader {
     }
     this.check(); const result = new Map(receipts); this.check(); return result;
   }
-  async run(): Promise<AcpStoredRuntimeObservation> {
-    let result: AcpStoredRuntimeObservation | undefined, failure: unknown, failed = false;
+  async run(): Promise<Completion extends "passive" ? AcpStoredRuntimeObservation : StoredFixtureCapture> {
+    let observation: AcpStoredRuntimeObservation | undefined, captured: Buffer | undefined;
+    let failure: unknown, failed = false;
     try {
       this.check();
       const root = await this.walk(), rootStat = await this.stat(root);
@@ -483,25 +513,96 @@ class StoredRuntimeReader {
       await this.revalidate(root, this.id, selected);
       this.check();
       const inspection = inspectAcpArtifactRuntime(bytes, selected.receipt.plan.platform as AcpElfPlatform);
-      this.check(); result = Object.freeze({ receipt: selected.receipt, inspection }); this.check();
+      this.check(); observation = Object.freeze({ receipt: selected.receipt, inspection }); this.check();
+      if (this.completion === "fixture") captured = bytes;
     } catch (error) { failed = true; failure = error; }
     try { await this.closeMany([...this.owned].reverse()); }
     catch (error) { if (!failed) { failed = true; failure = error; } }
     try { this.check(); } catch (error) { if (!failed) { failed = true; failure = error; } }
     if (failed) throw failure;
-    return result!;
+    // Neither completion escapes before every consuming close and final check.
+    return (this.completion === "passive" ? observation! :
+      Object.freeze({ bytes: captured!, path: `${this.root}/${this.id}/${ARTIFACT}`, observation: observation! })) as
+      Completion extends "passive" ? AcpStoredRuntimeObservation : StoredFixtureCapture;
   }
 }
 
 export class AcpInstaller {
   readonly #runtimeRoot: string;
   #runtimeStopped = false;
-  readonly #runtimeActive = new Map<Promise<AcpStoredRuntimeObservation>, AbortController>();
+  readonly #runtimeActive = new Map<Promise<unknown>, AbortController>();
+  readonly #fixtureBindings = new Set<AbortController>();
   private readonly root: string;
   private readonly download: AcpArtifactDownloader;
   private readonly fault?: AcpInstallerOptions["fault"];
   private readonly active = new Map<Promise<AcpInstallReceipt>, AbortController>();
   private stopped = false;
+
+  static {
+    async function capture(this: unknown): Promise<StoredFixtureCapture> {
+      // Weak identity lookup does not invoke proxy traps or inspect properties.
+      const state = fixtureBindings.get(this as object);
+      if (!state) fail("invalid fixture binding receiver");
+      if (state.released) fail("fixture binding is released");
+      if (state.attempted) fail("fixture capture already attempted");
+      state.attempted = true; // Consumed synchronously, even on admission refusal.
+      const installer = state.installer!, abort = state.abort!;
+      abort.signal.throwIfAborted();
+      if (installer.#runtimeStopped) fail("installer is stopped");
+      if (runtimeReaderActive) fail("runtime inspection already active");
+      const reader = new StoredRuntimeReader(state.root!, state.id!, abort.signal, performance.now() + 2000, "fixture");
+      runtimeReaderActive = true;
+      const task = Promise.resolve().then(() => reader.run());
+      installer.#runtimeActive.set(task, abort); // Before any filesystem work.
+      // Settlement bookkeeping must not retain the fulfilled captured bytes.
+      state.task = task.then(() => {}, () => {});
+      void task.finally(() => {
+        installer.#runtimeActive.delete(task);
+        runtimeReaderActive = false;
+      }).catch(() => {});
+      return task;
+    }
+    function release(this: unknown): Promise<void> {
+      const receiver = this as object, state = fixtureBindings.get(receiver);
+      if (!state) {
+        if (releasedFixtureBindings.has(receiver)) return Promise.resolve();
+        return Promise.reject(new Error("ACP install: invalid fixture binding receiver"));
+      }
+      if (state.releasing) return state.releasing;
+      state.released = true;
+      const task = Promise.resolve().then(async () => {
+        try { await state.task; }
+        finally {
+          state.installer!.#fixtureBindings.delete(state.abort!);
+          fixtureBindings.delete(receiver); releasedFixtureBindings.add(receiver);
+          state.installer = undefined; state.root = undefined; state.id = undefined;
+          state.abort = undefined; state.task = undefined; state.releasing = undefined;
+        }
+      });
+      state.releasing = task;
+      // Publish the shared settlement before synchronous abort listeners run.
+      state.abort!.abort(new Error("ACP install: fixture binding is released"));
+      return task;
+    }
+    bindStoredFixture = (installer, id) => {
+      const refuse = (reason: "installer" | "id" | "stopped" | "path") => Object.freeze({ status: "refused" as const, reason });
+      if (installer === null || (typeof installer !== "object" && typeof installer !== "function") ||
+          !(#runtimeRoot in installer)) return refuse("installer");
+      const owner = installer as AcpInstaller, root = owner.#runtimeRoot;
+      if (typeof id !== "string" || !ID.test(id)) return refuse("id");
+      if (owner.#runtimeStopped) return refuse("stopped");
+      const path = `${root}/${id}/${ARTIFACT}`;
+      if (!path.isWellFormed() || !isAbsolute(path) || resolve(path) !== path ||
+          /[\p{Cc}:]/u.test(path) || Buffer.byteLength(path, "utf8") > 3072 ||
+          path.slice(1).split(sep).some(part => !part || part === "." || part === ".." || Buffer.byteLength(part, "utf8") > 255))
+        return refuse("path");
+      const abort = new AbortController();
+      const binding: AcpStoredFixtureBinding = Object.freeze({ signal: abort.signal, capture, release });
+      fixtureBindings.set(binding, { installer: owner, root, id, abort, attempted: false, released: false });
+      owner.#fixtureBindings.add(abort); // Registered before returning, without I/O.
+      return Object.freeze({ status: "bound" as const, binding });
+    };
+  }
 
   constructor(root: string, opts: AcpInstallerOptions = {}) {
     if (!isAbsolute(root) || resolve(root) !== root || root === sep) fail("store root must be a canonical absolute directory");
@@ -776,7 +877,7 @@ export class AcpInstaller {
     if (Buffer.byteLength(root, "utf8") > 3072 ||
         root.split(sep).some(part => Buffer.byteLength(part, "utf8") > 255)) fail("runtime root path limit exceeded");
     const abort = new AbortController();
-    const reader = new StoredRuntimeReader(root, id, abort.signal, performance.now() + 2000);
+    const reader = new StoredRuntimeReader(root, id, abort.signal, performance.now() + 2000, "passive");
     runtimeReaderActive = true;
     // Register before the first filesystem operation, without racing/abandoning I/O.
     const task = Promise.resolve().then(() => reader.run());
@@ -818,6 +919,7 @@ export class AcpInstaller {
     // Stop the privately bound reader even if legacy TS-private properties were
     // replaced by the caller. Their failure must not abandon reader settlement.
     this.#runtimeStopped = true;
+    for (const abort of this.#fixtureBindings) abort.abort(new Error("ACP install: installer is stopped"));
     const readers = [...this.#runtimeActive];
     for (const [, abort] of readers) abort.abort(new Error("ACP install: installer is stopped"));
     try {

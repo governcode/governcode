@@ -391,6 +391,41 @@ failure can have valid teardown proof; contextual acceptance also requires the f
 completed context checks. Every successful allocation remains retained on all outcomes. The
 variant supplies no production context plumbing, stored-agent authority or cleanup permission.
 
+## Fixture-only stored image association (development)
+
+A separate fixture operation binds the actual installer before acquiring trusted image data or
+allocating a context. It then uses the same receipt-bound reader to capture an installed artifact
+and compares every captured byte with the trusted driver's fixed image A. Native setup separately
+requires its complete sealed image to equal embedded A and executes that same owned object.
+This associates a finite receipt observation with identical fixed-A contents; no supplied digest,
+receipt, passive result or caller-selected executable can authorize the operation.
+
+The private installer binding accepts only the actual installer and an installation ID. It shares
+the reader's inventory, checksum, reread, named-binding and consuming-closure checks. The selected
+capture is limited to 4 MiB, and the complete internally derived source path to 3,072 UTF-8 bytes;
+sibling artifacts retain the existing streamed bounds. The passive inspection API is unchanged.
+Package-internal binding data is available to trusted fixture code, not isolated from arbitrary
+code importing modules in the same process. The fixture result returns no bytes, source path,
+binding, cancellation signal or RPC client.
+
+One stored fixture operation is admitted process-wide without a queue. Its original eleven-second
+preparation deadline includes image acquisition, allocation, capture and launch admission. Capture
+uses its own original two-second reader deadline; native preparation and the existing launch/proof
+clocks remain separate. Cancellation is registered before spawn and closes the owned control
+endpoint afterward. Installer shutdown awaits pending store reads and closure attempts; it does
+not prove native teardown. Operation ownership lasts through settlement. Stalled I/O and runtime
+pauses remain outside userspace timing guarantees. The direct fixture branch counts at most
+65,536 combined stdout/stderr bytes and treats overflow or channel failure as unproven.
+
+The source file and receipt are not continuously held through execution. Byte-identical A may
+replace the source after capture, and a later receipt change makes the recorded observation
+historical. The native sealed image remains independently restricted to A. Trusted runtime,
+driver/build inputs, kernel and storage administration remain preconditions. The fixture adds no
+production caller, arbitrary stored-agent authority, audited runtime access or Runner eligibility.
+Context acceptance still requires the fixed image's completed checks as well as the owned proof
+join; setup-failed teardown and unproven outcomes remain distinct. All successful contexts and
+fixture evidence remain retained.
+
 ## Known limits
 
 - Existing Runner policies allow `chmod` (npm and git set file modes), and Landlock does not mediate it, so a

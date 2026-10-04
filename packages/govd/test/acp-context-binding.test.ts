@@ -62,11 +62,15 @@ test("context plumbing consumes privately, retains diagnostics and uses the sing
   const owner = await readFile(new URL("./fixtures/acp-probe-termination.ts", import.meta.url), "utf8");
   const preparation = owner.slice(owner.indexOf("export async function prepareNativeContextBoundFixture"), owner.indexOf("export function startNativeContextBoundFixture"));
   assert.ok(preparation.indexOf("contextParent(input)") < preparation.indexOf("consumePrepared(image"));
-  assert.ok(preparation.indexOf("consumePrepared(image") < preparation.indexOf("await allocateAcpProbeContext"));
-  assert.match(preparation, /allocateAcpProbeContext\(\{ parent \}, signal\)/);
-  assert.match(preparation, /prepared\.context = context/);
+  assert.ok(preparation.indexOf("consumePrepared(image") < preparation.indexOf("await prepareContextSelection"));
+  assert.match(preparation, /prepareContextSelection\(parent, prepared\.deadline, signal, prepared\)/);
+  const allocation = owner.slice(owner.indexOf("async function prepareContextSelection"), owner.indexOf("/** Consumes a private image"));
+  assert.match(allocation, /allocateAcpProbeContext\(\{ parent \}, signal\)/);
+  assert.match(allocation, /if \(prepared\) prepared\.context = context/);
   assert.match(preparation, /image: prepared, assets: prepared\.assets, launch, deadline: prepared\.deadline/);
-  assert.match(preparation, /contextDiagnostics\(context\)/);
+  assert.match(allocation, /contextDiagnostics\(context\)/);
+  assert.match(allocation, /afterAllocation\(deadline, performance\.now\(\), contextCancelled\(signal\)\)/);
+  assert.doesNotMatch(allocation, /performance\.now\(\) \+|rmdir|unlink|rename|remove|rollback/);
   assert.match(preparation, /deadline: prepared\.deadline/);
   assert.doesNotMatch(preparation, /performance\.now\(\) \+|rmdir|unlink|rename|remove|rollback/);
   const signalCheck = owner.slice(owner.indexOf("function contextCancelled"), owner.indexOf("export async function prepareNativeContextBoundFixture"));
@@ -76,8 +80,8 @@ test("context plumbing consumes privately, retains diagnostics and uses the sing
   assert.match(owner, /consumeAssociation\(contextPreparations, fixture, scenario, performance\.now\(\), contextScenarios\)/);
   assert.match(owner, /launchOwned\(prepared\.assets, scenario, "context-bound-transport-v1", prepared\.launch\)/);
   assert.match(owner, /cwd: context\?\.context\.directories\.cwd \?\? a\.cwd/);
-  assert.match(owner, /cwd: a\.cwd, env: \{ \.\.\.\(context\?\.env \?\? a\.env\) \}/);
-  assert.equal((owner.match(/function launchOwned\(/g) ?? []).length, 1);
+  assert.match(owner, /const options = \{ cwd: a\.cwd, env: \{ \.\.\.\(context\?\.env \?\? a\.env\) \}/);
+  assert.equal((owner.match(/function launchOwned\(a: FixtureAssets \| StoredLaunchSelection,/g) ?? []).length, 1);
   assert.equal((owner.match(/associations\.set\(/g) ?? []).length, 1);
   assert.doesNotMatch(owner, /process\.env|process\.kill\(|child\.kill\(|JSON\.parse|cleanup\(/);
 });
@@ -134,11 +138,10 @@ if (process.argv[2] === "fixture-image-b") bytes[24] = 1;
 process.stdout.write(${fault === "image-data" ? 'Buffer.alloc(0)' : fault === "image-layout" ? 'Buffer.alloc(120)' : 'bytes'});
 `, { mode: 0o700 });
     const ownerEdits: Array<[string, string]> = [];
-    if (fault === "expired") ownerEdits.push(["prepared.context = context;", "prepared.context = context; prepared.deadline = performance.now() - 1;"]);
+    if (fault === "expired") ownerEdits.push(["if (prepared) prepared.context = context;", "if (prepared) prepared.context = context; deadline = performance.now() - 1;"]);
     if (fault === "cancelled") {
-      ownerEdits.push(["allocateAcpProbeContext, AcpProbeContextError,", "allocateAcpProbeContext, createAcpProbeAbortController, AcpProbeContextError,"]);
-      ownerEdits.push(["const parent = contextParent(input);", "const parent = contextParent(input); const cancellation = createAcpProbeAbortController(); signal = cancellation.signal;"]);
-      ownerEdits.push(["prepared.context = context;", "prepared.context = context; cancellation.abort();"]);
+      ownerEdits.push(["  let context: AcpProbeContext;", "  const cancellation = createAcpProbeAbortController(); signal = cancellation.signal; let context: AcpProbeContext;"]);
+      ownerEdits.push(["if (prepared) prepared.context = context;", "if (prepared) prepared.context = context; cancellation.abort();"]);
     }
     if (fault === "selection") ownerEdits.push(["launch = contextSelection(context, parent);", 'launch = contextSelection({ ...context, env: { ...context.env, LC_ALL: "invented" } }, parent);']);
     if (fault === "allocation") ownerEdits.push(["context = await allocateAcpProbeContext({ parent }, signal);", 'throw new AcpProbeContextError("filesystem-error", "not-needed", null);']);

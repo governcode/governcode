@@ -354,6 +354,17 @@ are observations under trusted local storage, rather than uninterrupted ownershi
 environment paths. Termination proof can accompany failed setup, and every allocated context
 remains retained. This variant supplies no production launch or successful-context cleanup.
 
+A separate stored-image fixture authenticates the actual installer, acquires trusted fixed image
+data, allocates internally and captures the installed artifact through the receipt-bound reader.
+It requires complete captured-byte equality with image A before the existing native contextual
+branch independently admits its sealed embedded A and executes that same owned object. This
+establishes identical fixed contents under the trusted runtime/build/storage assumptions, not
+continuous store-object ownership or native-current receipt validation. The private binding has
+no production caller; the fixture returns descriptive receipt evidence, retained diagnostics and
+owned termination/stop handling, without bytes, source paths or an RPC client. Capture, preparation
+and proof clocks remain distinct, and installer shutdown does not supply native teardown proof.
+Production runtime policy, Runner eligibility and successful-context retention remain unchanged.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the

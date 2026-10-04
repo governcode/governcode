@@ -8,7 +8,9 @@ import { promisify, types } from "node:util";
 import type { Duplex, Readable } from "node:stream";
 import { startAcp, type AcpRpc } from "../../src/acp.ts";
 import { inspectAcpArtifactRuntime, type AcpArtifactRuntimeInspection } from "../../src/acp-artifact-runtime.ts";
-import { allocateAcpProbeContext, AcpProbeContextError, type AcpProbeContext } from "../../src/acp-probe-context.ts";
+import { allocateAcpProbeContext, createAcpProbeAbortController, AcpProbeContextError, type AcpProbeContext } from "../../src/acp-probe-context.ts";
+
+import { bindAcpStoredFixtureInstaller, type AcpInstaller, type AcpStoredFixtureBinding, type AcpStoredRuntimeObservation } from "../../src/acp-install.ts";
 
 const brand: unique symbol = Symbol("fixture namespace termination");
 export type FixtureNamespaceTermination = Readonly<{ [brand]: true }>;
@@ -84,15 +86,25 @@ function consumeAssociation<T extends { used: boolean; deadline: number }>(
   return p;
 }
 
-/** Fixed trusted-driver data modes only. No namespaces or caller byte baseline. */
-export async function prepareNativeBoundFixture(assets: FixtureAssets): Promise<BoundFixturePreparation> {
-  const a = snapshot(assets, "normal");
-  if (new Set([a.driver, a.target, a.policy, a.cwd]).size !== 4) return Object.freeze({ status: "unavailable", reason: "assets" });
-  if (process.platform !== "linux" || process.arch !== "x64") return Object.freeze({ status: "unavailable", reason: "platform" });
+type FixedImageData = Readonly<{ imageA: Buffer; imageB: Buffer; sha256: string; inspection: AcpArtifactRuntimeInspection }>;
+function checkImagePreparation(deadline?: number, signal?: AbortSignal): void {
+  if (deadline !== undefined && performance.now() >= deadline) throw new Error("Expired image preparation");
+  if (signal && signalAborted.call(signal)) throw new Error("Cancelled image preparation");
+}
+async function acquireFixedImages(a: StoredFixtureBootstrap, signal?: AbortSignal, deadline?: number): Promise<
+  Readonly<{ status: "acquired"; data: FixedImageData } | { status: "unavailable"; reason: "image-data" | "image-layout" }>> {
   const emit = async (mode: "fixture-image-a" | "fixture-image-b") => {
+    checkImagePreparation(deadline, signal);
     const start = performance.now();
-    const { stdout, stderr } = await promisify(execFile)(a.driver, [mode], { cwd: a.cwd, env: { ...a.env },
-      encoding: "buffer", timeout: 2000, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 });
+    const task = promisify(execFile)(a.driver, [mode], { cwd: a.cwd, env: { ...a.env },
+      ...(signal ? { signal } : {}), encoding: "buffer", timeout: 2000, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 });
+    // Abort can reject execFile before its child closes. The stored operation
+    // keeps its admission slot until this owned data-mode channel settles too.
+    const closed = signal ? new Promise<void>(resolve => { task.child.once("close", () => resolve()); }) : undefined;
+    let output: Awaited<typeof task>;
+    try { output = await task; } finally { if (closed) await closed; }
+    const { stdout, stderr } = output;
+    checkImagePreparation(deadline, signal);
     if (!imageDataAdmitted(stdout.length, stderr.length, start, performance.now()))
       throw new Error("Unavailable fixed image data");
     return Buffer.from(stdout);
@@ -105,6 +117,18 @@ export async function prepareNativeBoundFixture(assets: FixtureAssets): Promise<
   if (inspection.status !== "observed" || inspection.elfType !== "ET_EXEC" || other.status !== "observed" ||
     other.elfType !== "ET_EXEC" || imageA.equals(imageB)) return Object.freeze({ status: "unavailable", reason: "image-layout" });
   const sha256 = createHash("sha256").update(imageA).digest("hex");
+  checkImagePreparation(deadline, signal);
+  return Object.freeze({ status: "acquired", data: { imageA, imageB, sha256, inspection } });
+}
+
+/** Fixed trusted-driver data modes only. No namespaces or caller byte baseline. */
+export async function prepareNativeBoundFixture(assets: FixtureAssets): Promise<BoundFixturePreparation> {
+  const a = snapshot(assets, "normal");
+  if (new Set([a.driver, a.target, a.policy, a.cwd]).size !== 4) return Object.freeze({ status: "unavailable", reason: "assets" });
+  if (process.platform !== "linux" || process.arch !== "x64") return Object.freeze({ status: "unavailable", reason: "platform" });
+  const acquired = await acquireFixedImages(a);
+  if (acquired.status !== "acquired") return acquired;
+  const { imageA, imageB, sha256, inspection } = acquired.data;
   try {
     await writeFile(a.target, imageA, { flag: "wx", mode: 0o700 });
     await writeFile(a.policy, JSON.stringify({ version: 1, read: [], write: [a.cwd], exec: [], tcp_connect: [], cwd: a.cwd,
@@ -172,12 +196,9 @@ function contextCancelled(signal?: AbortSignal): boolean {
   return signalAborted.call(signal);
 }
 
-/** Consumes a private image once, allocates internally, and retains every success. */
-export async function prepareNativeContextBoundFixture(image: PreparedNativeBoundFixture, input: { parent: string },
-  signal?: AbortSignal): Promise<ContextFixturePreparation> {
-  // This must precede both image consumption and the allocator's signal/filesystem work.
-  const parent = contextParent(input);
-  const prepared = consumePrepared(image, "normal", performance.now());
+type AllocatedContext = Readonly<{ status: "allocated"; launch: ContextLaunch; diagnostics: ContextFixtureDiagnostics }>;
+async function prepareContextSelection(parent: string, deadline: number, signal?: AbortSignal,
+  prepared?: Prepared): Promise<AllocatedContext | Exclude<ContextFixturePreparation, { status: "prepared" }>> {
   let context: AcpProbeContext;
   try { context = await allocateAcpProbeContext({ parent }, signal); }
   catch (error) {
@@ -187,17 +208,29 @@ export async function prepareNativeContextBoundFixture(image: PreparedNativeBoun
       ...(retainedRoot ? { retainedRoot } : {}),
       ...(error instanceof AcpProbeContextError ? { allocationReason: error.reason } : {}) });
   }
-  prepared.context = context;
+  if (prepared) prepared.context = context;
   const diagnostics = contextDiagnostics(context);
   let launch: ContextLaunch;
   try {
-    const reason = afterAllocation(prepared.deadline, performance.now(), contextCancelled(signal));
+    const reason = afterAllocation(deadline, performance.now(), contextCancelled(signal));
     if (reason) return Object.freeze({ status: "unavailable", reason, diagnostics, retainedRoot: context.root });
     launch = contextSelection(context, parent);
-    const finalReason = afterAllocation(prepared.deadline, performance.now(), contextCancelled(signal));
+    const finalReason = afterAllocation(deadline, performance.now(), contextCancelled(signal));
     if (finalReason) return Object.freeze({ status: "unavailable", reason: finalReason, diagnostics, retainedRoot: context.root });
   }
   catch { return Object.freeze({ status: "unavailable", reason: "selection", diagnostics, retainedRoot: context.root }); }
+  return Object.freeze({ status: "allocated", launch, diagnostics });
+}
+
+/** Consumes a private image once, allocates internally, and retains every success. */
+export async function prepareNativeContextBoundFixture(image: PreparedNativeBoundFixture, input: { parent: string },
+  signal?: AbortSignal): Promise<ContextFixturePreparation> {
+  // This must precede both image consumption and the allocator's signal/filesystem work.
+  const parent = contextParent(input);
+  const prepared = consumePrepared(image, "normal", performance.now());
+  const allocation = await prepareContextSelection(parent, prepared.deadline, signal, prepared);
+  if (allocation.status !== "allocated") return allocation;
+  const { launch, diagnostics } = allocation;
   const fixture: PreparedNativeContextBoundFixture = Object.freeze({ [contextBrand]: true as const });
   contextPreparations.set(fixture, { image: prepared, assets: prepared.assets, launch, deadline: prepared.deadline, used: false });
   return Object.freeze({ status: "prepared", fixture, diagnostics });
@@ -206,12 +239,135 @@ export function startNativeContextBoundFixture(fixture: PreparedNativeContextBou
   const prepared = consumeAssociation(contextPreparations, fixture, scenario, performance.now(), contextScenarios);
   return launchOwned(prepared.assets, scenario, "context-bound-transport-v1", prepared.launch);
 }
-function launchArguments(a: FixtureAssets, scenario: ContextFixtureScenario,
+export type StoredFixtureBootstrap = Readonly<{ driver: string; cwd: string;
+  env: Readonly<{ HOME: string; TMPDIR: string; PATH: "/usr/bin"; LANG: "C"; LC_ALL: "C" }> }>;
+const storedScenarios = ["normal", "sandbox", "hold", "proof-stale", "proof-extra", "proof-truncate", "proof-missing",
+  "ctx-open", "ctx-final-inventory", "fault-read", "fault-seal", "fault-compare", "fault-close", "prep-stop", "prep-exec-expired"] as const;
+export type StoredFixtureScenario = typeof storedScenarios[number];
+export type StoredFixtureInvocation = Readonly<{ termination: Promise<FixtureTermination>; stop(): void }>;
+type StoredRefusal = "invalid-input" | "installer" | "admission" | "expired" | "cancelled" | "store" | "image-mismatch" | "selection" | "spawn";
+export type StoredFixtureStart = Readonly<
+  { status: "started"; invocation: StoredFixtureInvocation; observation: AcpStoredRuntimeObservation; diagnostics: ContextFixtureDiagnostics } |
+  { status: "refused"; reason: StoredRefusal; diagnostics?: ContextFixtureDiagnostics; retainedRoot?: string; allocationReason?: string } |
+  { status: "unavailable"; reason: "platform" | "image-data" | "image-layout" | "allocation";
+    diagnostics?: ContextFixtureDiagnostics; retainedRoot?: string; allocationReason?: string }>;
+type StoredLaunchSelection = Readonly<{ driver: string; source: string; cwd: string; env: StoredFixtureBootstrap["env"] }>;
+type StoredOwner = { deadline: number; cancelled: boolean; expired: boolean; channelError?: boolean; stoppedAt?: number; binding?: AcpStoredFixtureBinding;
+  controller?: AbortController; listener?: () => void; timer?: NodeJS.Timeout; control?: Duplex; releasing?: Promise<void> };
+let storedOperationOwned = false;
+class StoredPreparationFailure extends Error {
+  readonly reason: StoredRefusal;
+  constructor(reason: StoredRefusal) { super("Stored fixture preparation refused"); this.reason = reason; }
+}
+function storedAdmission(owner: StoredOwner): void {
+  if (owner.expired || performance.now() >= owner.deadline) throw new StoredPreparationFailure("expired");
+  if (owner.cancelled || !owner.binding || signalAborted.call(owner.binding.signal)) throw new StoredPreparationFailure("cancelled");
+}
+function releaseStoredBinding(owner: StoredOwner): Promise<void> {
+  if (owner.releasing) return owner.releasing;
+  clearTimeout(owner.timer); owner.timer = undefined;
+  const binding = owner.binding;
+  if (binding && owner.listener) binding.signal.removeEventListener("abort", owner.listener);
+  owner.listener = undefined; owner.controller?.abort(); owner.controller = undefined;
+  owner.binding = undefined; owner.control = undefined;
+  // A released task must not retain a fulfilled capture buffer or installer.
+  owner.releasing = binding ? binding.release() : Promise.resolve();
+  return owner.releasing;
+}
+function storedBootstrap(input: unknown): StoredFixtureBootstrap {
+  const a = plainSnapshot(input, ["driver", "cwd", "env"]);
+  const e = plainSnapshot(a.env, ["HOME", "TMPDIR", "PATH", "LANG", "LC_ALL"]);
+  for (const value of [a.driver, a.cwd, e.HOME, e.TMPDIR]) {
+    if (typeof value !== "string" || !value.isWellFormed() || !isAbsolute(value) || value === "/" ||
+      Buffer.byteLength(value) > 3072 || /[\p{Cc}:]/u.test(value) || value.slice(1).split("/").some(part =>
+        !part || part === "." || part === ".." || Buffer.byteLength(part) > 255)) throw new Error("Invalid stored bootstrap");
+  }
+  if (a.driver === a.cwd || e.PATH !== "/usr/bin" || e.LANG !== "C" || e.LC_ALL !== "C") throw new Error("Invalid stored bootstrap");
+  return Object.freeze({ ...a, env: Object.freeze({ ...e }) }) as StoredFixtureBootstrap;
+}
+
+/** One privately owned operation; no prepared candidate, RPC or caller byte baseline. */
+export async function startNativeStoredContextBoundFixture(installer: AcpInstaller, id: string,
+  bootstrap: StoredFixtureBootstrap, input: { parent: string }, scenario: StoredFixtureScenario): Promise<StoredFixtureStart> {
+  if (storedOperationOwned) return Object.freeze({ status: "refused", reason: "admission" });
+  const deadline = performance.now() + 11_000;
+  // Authenticate private installer state before any caller reflection or work.
+  const bound = bindAcpStoredFixtureInstaller(installer, id);
+  if (bound.status !== "bound") return Object.freeze({ status: "refused", reason:
+    bound.reason === "stopped" ? "cancelled" : bound.reason === "id" ? "invalid-input" : bound.reason === "path" ? "selection" : "installer" });
+  storedOperationOwned = true;
+  const owner: StoredOwner = { deadline, cancelled: false, expired: false, binding: bound.binding };
+  let running = false, data: FixedImageData | undefined;
+  let capture: Awaited<ReturnType<AcpStoredFixtureBinding["capture"]>> | undefined;
+  let diagnostics: ContextFixtureDiagnostics | undefined, retainedRoot: string | undefined, allocationReason: string | undefined;
+  const retained = () => ({ ...(diagnostics ? { diagnostics } : {}),
+    ...(retainedRoot ? { retainedRoot } : {}), ...(allocationReason ? { allocationReason } : {}) });
+  try {
+    let a: StoredFixtureBootstrap, parent: string;
+    try { a = storedBootstrap(bootstrap); parent = contextParent(input);
+      if (!storedScenarios.includes(scenario)) throw new Error("Invalid stored scenario"); }
+    catch { return Object.freeze({ status: "refused", reason: "invalid-input" }); }
+    owner.controller = createAcpProbeAbortController();
+    owner.listener = () => {
+      owner.cancelled = true; owner.stoppedAt ??= performance.now(); owner.controller?.abort();
+      try { owner.control?.destroy(); } catch { owner.channelError = true; }
+    };
+    bound.binding.signal.addEventListener("abort", owner.listener, { once: true });
+    if (signalAborted.call(bound.binding.signal)) owner.listener();
+    owner.timer = setTimeout(() => {
+      owner.expired = true; owner.controller?.abort();
+      // Abort capture's separate signal now. The operation's finally still
+      // awaits this idempotent release and all closes before releasing its slot.
+      void bound.binding.release().catch(() => {});
+    }, Math.max(1, deadline - performance.now()));
+    storedAdmission(owner);
+    if (process.platform !== "linux" || process.arch !== "x64") return Object.freeze({ status: "unavailable", reason: "platform" });
+    let acquired: Awaited<ReturnType<typeof acquireFixedImages>> | undefined = await acquireFixedImages(a, owner.controller.signal, deadline);
+    storedAdmission(owner);
+    if (acquired.status !== "acquired") return acquired;
+    data = acquired.data; acquired = undefined;
+    const allocation = await prepareContextSelection(parent, deadline, owner.controller.signal);
+    diagnostics = allocation.diagnostics;
+    retainedRoot = diagnostics?.root;
+    if (allocation.status !== "allocated") {
+      retainedRoot = allocation.retainedRoot ?? retainedRoot; allocationReason = allocation.allocationReason;
+    }
+    storedAdmission(owner);
+    if (allocation.status !== "allocated") {
+      if (allocation.reason === "allocation") return Object.freeze({ status: "unavailable", reason: "allocation", ...retained() });
+      return Object.freeze({ status: "refused", reason: allocation.reason, ...retained() });
+    }
+    try { capture = await bound.binding.capture(); }
+    catch { storedAdmission(owner); return Object.freeze({ status: "refused", reason: "store", ...retained() }); }
+    storedAdmission(owner);
+    const inspection = inspectAcpArtifactRuntime(capture.bytes, "linux-x86_64");
+    if (inspection.status !== "observed" || inspection.elfType !== "ET_EXEC")
+      return Object.freeze({ status: "refused", reason: "selection", ...retained() });
+    const matches = capture.bytes.length === data.imageA.length && capture.bytes.equals(data.imageA);
+    storedAdmission(owner);
+    if (!matches) return Object.freeze({ status: "refused", reason: "image-mismatch", ...retained() });
+    const observation = capture.observation;
+    const selected: StoredLaunchSelection = Object.freeze({ driver: a.driver, source: capture.path, cwd: a.cwd, env: a.env });
+    capture = undefined; data = undefined;
+    storedAdmission(owner);
+    const invocation = launchOwned(selected, scenario, "context-bound-transport-v1", allocation.launch, owner);
+    running = true;
+    return Object.freeze({ status: "started", invocation, observation, diagnostics: allocation.diagnostics });
+  } catch (error) {
+    return Object.freeze({ status: "refused", reason: error instanceof StoredPreparationFailure ? error.reason : "spawn", ...retained() });
+  } finally {
+    capture = undefined; data = undefined;
+    if (!running) { await releaseStoredBinding(owner); storedOperationOwned = false; }
+  }
+}
+
+function launchArguments(a: FixtureAssets | StoredLaunchSelection, scenario: ContextFixtureScenario,
   mode: "transport-v1" | "bound-transport-v1" | "context-bound-transport-v1", id: Buffer, context?: ContextLaunch): string[] {
   if (mode === "context-bound-transport-v1") {
     if (!context) throw new Error("Missing private context association");
-    return [mode, a.target, scenario, a.cwd, context.context.root, ...context.identities, id.toString("hex")];
+    return [mode, "source" in a ? a.source : a.target, scenario, a.cwd, context.context.root, ...context.identities, id.toString("hex")];
   }
+  if (!("policy" in a)) throw new Error("Missing legacy assets");
   return [mode, a.target, scenario, a.cwd, a.policy, id.toString("hex")];
 }
 const associations = new WeakMap<FixtureNamespaceTermination, { owner: object; child: ChildProcess }>();
@@ -315,25 +471,59 @@ export function startNativeLifetimeFixture(assets: FixtureAssets, scenario: Fixt
 }
 
 function launchOwned(a: FixtureAssets, scenario: ContextFixtureScenario,
-  mode: "transport-v1" | "bound-transport-v1" | "context-bound-transport-v1", context?: ContextLaunch): FixtureInvocation {
+  mode: "transport-v1" | "bound-transport-v1" | "context-bound-transport-v1", context?: ContextLaunch): FixtureInvocation;
+function launchOwned(a: StoredLaunchSelection, scenario: StoredFixtureScenario,
+  mode: "context-bound-transport-v1", context: ContextLaunch, stored: StoredOwner): StoredFixtureInvocation;
+function launchOwned(a: FixtureAssets | StoredLaunchSelection, scenario: ContextFixtureScenario,
+  mode: "transport-v1" | "bound-transport-v1" | "context-bound-transport-v1", context?: ContextLaunch,
+  stored?: StoredOwner): FixtureInvocation | StoredFixtureInvocation {
   const owner = Object.freeze({}), id = randomBytes(16);
   const launch = performance.now(), state = new Join(id, launch);
   let child: ChildProcess | undefined, control: Duplex | undefined;
   let resolve!: (r: FixtureTermination) => void, timer: NodeJS.Timeout | undefined, settled = false;
   const termination = new Promise<FixtureTermination>(r => { resolve = r; });
+  let outputPending = stored ? 2 : 0;
+  const monitors: Array<() => void> = [];
+  const monitor = (endpoint: NodeJS.EventEmitter, event: string, fn: (...args: any[]) => void) => {
+    endpoint.on(event, fn); monitors.push(() => endpoint.removeListener(event, fn));
+  };
+  const closeControl = () => {
+    if (!stored) { control?.destroy(); return; }
+    try { control?.destroy(); } catch { stored.channelError = true; }
+  };
+  const terminalStored = () => {
+    if (!stored) return;
+    closeControl();
+    void releaseStoredBinding(stored);
+  };
+  const channelSettled = () => {
+    if (!stored) return;
+    const finished = stored;
+    if (!settled) channelFailure();
+    terminalStored();
+    for (const detach of monitors.splice(0)) detach();
+    control = undefined; context = undefined;
+    void releaseStoredBinding(finished).then(() => { storedOperationOwned = false; });
+    stored = undefined;
+  };
   const settle = () => {
     const now = performance.now();
     if (!settled && now >= state.deadline) state.result = unproven("deadline");
     state.time(now);
+    if (!settled && stored?.channelError && state.result?.status !== "unproven") state.result = unproven("channel");
     const r = state.result;
     if (settled || !r) return;
+    // A valid proof cannot outrun a pending stdout/stderr overflow or error.
+    // This extra direct-branch drain does not change the legacy Join.
+    if (stored && r.status !== "unproven" && outputPending !== 0) return;
     settled = true; clearTimeout(timer);
     if (r.status === "proven" && child && child.exitCode === 0 && child.signalCode === null) {
       const evidence: FixtureNamespaceTermination = Object.freeze({ [brand]: true as const });
       associations.set(evidence, { owner, child });
       resolve(Object.freeze({ ...r, outcome: Object.freeze(r.outcome), evidence }));
     } else resolve(Object.freeze(r.status === "proven" ? unproven("producer") as FixtureTermination : r));
-    if (r.status === "unproven") control?.destroy();
+    if (r.status === "unproven") closeControl();
+    terminalStored();
   };
   const arm = () => {
     clearTimeout(timer);
@@ -341,23 +531,69 @@ function launchOwned(a: FixtureAssets, scenario: ContextFixtureScenario,
   };
   const stop = () => {
     if (settled) return;
-    state.stop(performance.now()); control?.destroy(); arm(); settle();
+    state.stop(stored?.stoppedAt ?? performance.now()); closeControl(); arm(); settle();
+  };
+  const channelFailure = () => {
+    if (!settled && state.result?.status !== "unproven") state.result = unproven("channel");
+    state.fail("channel"); closeControl(); settle();
   };
   const native = {
     spawn: (() => {
       if (child) throw new Error("Fixture spawn already owned");
-      child = spawn(a.driver, launchArguments(a, scenario, mode, id, context), {
-        cwd: a.cwd, env: { ...(context?.env ?? a.env) }, detached: false, stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
-      });
-      control = child.stdio[3] as Duplex;
-      const proof = child.stdio[4] as Readable;
-      control.on("error", stop);
-      proof.on("data", (b: Buffer) => { state.data(b, performance.now()); settle(); });
-      proof.on("end", () => { state.end(performance.now()); settle(); });
-      proof.on("close", () => { state.close(performance.now()); settle(); });
-      proof.on("error", () => { state.fail("channel"); settle(); });
-      child.on("exit", (code, signal) => { state.exit(code, signal, performance.now()); settle(); });
-      child.on("error", () => { state.fail("spawn"); settle(); });
+      const args = launchArguments(a, scenario, mode, id, context);
+      const options = { cwd: a.cwd, env: { ...(context?.env ?? a.env) }, detached: false,
+        stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe", "pipe", "pipe"] };
+      const direct = stored !== undefined;
+      if (stored) storedAdmission(stored);
+      child = spawn(a.driver, args, options);
+      // From this assignment onward this is always an owned run, even if Stop
+      // arrived reentrantly in spawn or acquiring an endpoint fails.
+      try {
+        if (stored) {
+          monitor(child, "close", channelSettled);
+          clearTimeout(stored.timer); stored.timer = undefined; stored.controller = undefined;
+          monitor(child, "exit", (code: number | null, signal: NodeJS.Signals | null) => { state.exit(code, signal, performance.now()); settle(); });
+          monitor(child, "error", () => { state.fail("spawn"); settle(); });
+        }
+        control = child.stdio[3] as Duplex;
+        const proof = child.stdio[4] as Readable;
+        if (stored) {
+          let outputBytes = 0;
+          const output = (chunk: Buffer) => {
+            if (settled) return;
+            if (chunk.length > 65_536 - outputBytes) { channelFailure(); return; }
+            outputBytes += chunk.length;
+          };
+          for (const endpoint of [child.stdin, child.stdout, child.stderr, control, proof]) {
+            if (!endpoint) throw new Error("Missing owned endpoint");
+            monitor(endpoint, "error", channelFailure);
+          }
+          for (const endpoint of [child.stdout!, child.stderr!]) {
+            let ended = false;
+            monitor(endpoint, "data", output);
+            monitor(endpoint, "end", () => { if (!ended) { ended = true; outputPending--; } settle(); });
+            monitor(endpoint, "close", () => { if (!ended) channelFailure(); });
+          }
+          monitor(control, "close", stop);
+          child.stdin!.end();
+          stored.control = control;
+          if (stored.cancelled || (stored.binding && signalAborted.call(stored.binding.signal))) stop();
+          monitor(proof, "data", (b: Buffer) => { state.data(b, performance.now()); settle(); });
+          monitor(proof, "end", () => { state.end(performance.now()); settle(); });
+          monitor(proof, "close", () => { state.close(performance.now()); settle(); });
+        } else {
+          control.on("error", stop);
+          proof.on("data", (b: Buffer) => { state.data(b, performance.now()); settle(); });
+          proof.on("end", () => { state.end(performance.now()); settle(); });
+          proof.on("close", () => { state.close(performance.now()); settle(); });
+          proof.on("error", () => { state.fail("channel"); settle(); });
+          child.on("exit", (code, signal) => { state.exit(code, signal, performance.now()); settle(); });
+          child.on("error", () => { state.fail("spawn"); settle(); });
+        }
+      } catch (error) {
+        if (!direct) throw error;
+        channelFailure();
+      }
       return child;
     }) as typeof spawn,
     kill: ((pid: number, signal?: NodeJS.Signals | number) => {
@@ -365,6 +601,12 @@ function launchOwned(a: FixtureAssets, scenario: ContextFixtureScenario,
       stop(); return true;
     }) as typeof process.kill,
   };
+  if (stored) {
+    native.spawn(a.driver, []);
+    if (!settled) arm();
+    return Object.freeze({ termination: Object.freeze(termination), stop: Object.freeze(stop) });
+  }
+  if (!("policy" in a)) throw new Error("Missing legacy assets");
   const rpc = startAcp({ supervisor: a.driver, policyFile: a.policy, bin: a.target, args: [],
     cwd: context?.context.directories.cwd ?? a.cwd, env: { ...(context?.env ?? a.env) }, outputBudget: { maxBytes: 65_536 } }, native);
   arm();

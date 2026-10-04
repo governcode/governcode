@@ -17,6 +17,9 @@ const evidence = await fs.mkdtemp(join(tmpdir(), "acp-runtime-retained-"));
 const manifest = join(evidence, "manifest.json");
 type RecordEntry = { test: string; status: string; trees: string[]; locations: string[]; injections: string[] };
 const records: RecordEntry[] = [];
+const sourceHashes = Object.fromEntries(await Promise.all([
+  "../src/acp-install.ts", "../src/acp-artifact-runtime.ts", "./acp-install-runtime.test.ts", "./acp-artifact-runtime.test.ts",
+].map(async path => [path, createHash("sha256").update(await fs.readFile(new URL(path, import.meta.url))).digest("hex")])));
 console.log(`ACP runtime retained evidence: ${evidence}; manifest: ${manifest}`);
 function retained(name: string, run: (t: TestContext, record: RecordEntry) => Promise<void>) {
   test(name, { skip: !supported }, async t => {
@@ -24,7 +27,7 @@ function retained(name: string, run: (t: TestContext, record: RecordEntry) => Pr
     records.push(record);
     try { await run(t, record); record.status = "passed"; }
     catch (error) { record.status = "failed"; throw error; }
-    finally { await fs.writeFile(manifest, JSON.stringify({ evidence, records, nativeLaunches: 0,
+    finally { await fs.writeFile(manifest, JSON.stringify({ evidence, sourceHashes, records, nativeLaunches: 0,
       cleanup: false, unrun: ["legacy installer suites", "probe-context suite", "native/provider acceptance"] }, null, 2)); }
   });
 }
@@ -65,7 +68,10 @@ async function fixture(record: RecordEntry, bytes = elf()) {
   const receipt = await installer.install(input, { signal: new AbortController().signal,
     gate: async () => ({ id: "G-1", allowed: true }) });
   const dir = join(root, input.fingerprint), artifact = join(dir, "artifact"), receiptPath = join(dir, "receipt.json");
-  record.locations.push(root, dir, artifact, receiptPath);
+  // Preserve the initial bytes/modes even in legacy same-inode mutation cases.
+  const original = join(base, "original-store");
+  record.locations.push(root, dir, artifact, receiptPath, original);
+  await fs.cp(root, original, { recursive: true, preserveTimestamps: true, errorOnExist: true, force: false });
   return { base, root, dir, artifact, receiptPath, input, installer, receipt, bytes };
 }
 function deferred() {
@@ -400,7 +406,7 @@ retained("failed consuming FileHandle close does not close a reused raw FD", asy
   } finally { hooks.restore(); await reused?.close(); }
 });
 
-retained("new boundary has no launch, allocation, exported capability or production options", async (_t, record) => {
+retained("shared reader preserves passive shape and exact internal-only binding export boundary", async (_t, record) => {
   const source = await fs.readFile(new URL("../src/acp-install.ts", import.meta.url), "utf8");
   const reader = source.slice(source.indexOf("class StoredRuntimeReader"), source.indexOf("export class AcpInstaller"));
   assert.doesNotMatch(reader, /\b(?:spawn|exec|fork|fetch|setTimeout|setInterval|rename|unlink|rmdir|mkdir)\s*\(/u);
@@ -409,8 +415,28 @@ retained("new boundary has no launch, allocation, exported capability or product
   assert.match(method, /const root = this\.#runtimeRoot/u);
   assert.doesNotMatch(method, /this\.(?:root|stopped|active|download|fault)\b/u);
   assert.doesNotMatch(method + reader, /\bPromise\.race\b|\bcloseSync\b|\btoken\s*:/u);
-  assert.deepEqual([...source.matchAll(/^export (?:type|interface|class) (\w+)/gmu)].map(m => m[1]),
-    ["AcpInstallFaultPoint", "AcpInstallerOptions", "AcpStoredRuntimeObservation", "AcpInstaller"]);
+  assert.deepEqual([...source.matchAll(/^export (?:type|interface|class|function) (\w+)/gmu)].map(m => m[1]),
+    ["AcpInstallFaultPoint", "AcpInstallerOptions", "AcpStoredRuntimeObservation", "AcpStoredFixtureBinding",
+      "bindAcpStoredFixtureInstaller", "AcpInstaller"]);
+  assert.match(method, /new StoredRuntimeReader\(root, id, abort\.signal, performance\.now\(\) \+ 2000, "passive"\)/u);
+  assert.match(reader, /observation = Object\.freeze\(\{ receipt: selected\.receipt, inspection \}\)/u);
+  assert.match(reader, /if \(capture && this\.completion === "fixture" && before\.size > BigInt\(MAX_FIXTURE_CAPTURE\)\)/u);
+  assert.ok(reader.indexOf('fail("fixture capture byte limit exceeded")') < reader.indexOf("Buffer.allocUnsafeSlow(size)"));
+  assert.ok(reader.indexOf("await this.closeMany([...this.owned].reverse())") < reader.indexOf("Object.freeze({ bytes: captured!"));
+  assert.match(source, /const MAX_FIXTURE_CAPTURE = 4 \* 1024 \* 1024/u);
+  assert.match(source, /readonly #runtimeActive = new Map<Promise<unknown>, AbortController>/u);
+  const binding = source.slice(source.indexOf("  static {"), source.indexOf("  constructor(root: string, opts:"));
+  assert.doesNotMatch(binding, /(?:installer|owner|this)\.(?:root|stopped|active|download|fault|inspectVerifiedRuntime|inspectVerified)\b/u);
+  assert.doesNotMatch(binding, /\b(?:open|opendir|spawn|exec|fork|fetch|rename|unlink|rmdir|mkdir|setTimeout|setInterval)\s*\(/u);
+  assert.match(binding, /#runtimeRoot in installer/u);
+  assert.match(binding, /fixtureBindings\.get\(this as object\)/u);
+  assert.match(binding, /releasedFixtureBindings\.has\(receiver\)/u);
+  assert.match(binding, /state\.task = task\.then\(\(\) => \{\}, \(\) => \{\}\)/u);
+  assert.match(binding, /state\.installer = undefined; state\.root = undefined; state\.id = undefined/u);
+  const stop = source.slice(source.indexOf("  async stop():"));
+  assert.ok(stop.indexOf("this.#runtimeStopped = true") < stop.indexOf("this.stopped = true"));
+  assert.ok(stop.indexOf("for (const abort of this.#fixtureBindings)") < stop.indexOf("const readers = [...this.#runtimeActive]"));
+  assert.ok(stop.indexOf("const readers = [...this.#runtimeActive]") < stop.indexOf("this.stopped = true"));
   record.injections.push("static public API/import/launch boundary checks");
 });
 
