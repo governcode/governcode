@@ -1,40 +1,48 @@
 # The sandbox (`govern-sup`)
 
-Every AI tool GovernCode runs (a Controller, a Runner, later a Module) is started by
+Every AI coding tool GovernCode runs (a Controller or a Runner) is started by
 `govern-sup`, a small Rust supervisor, inside a sandbox that denies by default. The point
 is one guarantee: **an AI tool cannot approve its own Gate, spend around a Limit, or reach
-the daemon except through the one channel it was given.** A same-user process with a file
+the daemon except through the channels it was given.** A same-user process with a file
 mode is not a boundary; this sandbox is.
 
 ## Invariants
 
-1. **One channel.** A sandboxed process talks to `govd` only through its stdin, stdout and
-   stderr. Every other inherited descriptor is closed before the tool starts, so a file or
-   socket opened outside the sandbox cannot be carried in. It cannot open new connections to
-   `govd`.
-2. **Filesystem is an allowlist** (Landlock). Writable: the project worktree (nothing, in
-   Home) and the tool's own scratch directories. Read-only: system directories, the
+1. **Only the channels it was given.** A sandboxed tool reports through stdin, stdout and
+   stderr; the Controller's GovernCode MCP server may also connect to its restricted per-turn
+   socket. That socket offers project tools, never Gate answers, Accept or undo. Every other
+   inherited descriptor is closed before the tool starts, so a file or socket opened outside
+   the sandbox cannot be carried in. No tool can connect to govd's user-facing RPC socket.
+2. **Filesystem is an allowlist** (Landlock). Writable: the Controller's project worktree
+   (read-only in Home or a report turn), or a Runner's Spec scope, plus the tool's own run
+   home, scratch directories and permitted login-refresh file. Read-only: system directories, the
    toolchain, and only the parts of the tool's configuration it needs. Everything else,
-   including GovernCode's state, the tool's transcripts of other projects, other tools'
+   including GovernCode's control state, the tool's transcripts of other projects, other tools'
    files and the user's keyrings, is neither readable nor writable. Of `/dev`, only
-   `null`, `zero` and `urandom`; no device ioctls, and seccomp refuses `TIOCSTI` and
+   `null`, `zero`, `random` and `urandom`; no device ioctls, and seccomp refuses `TIOCSTI` and
    `TIOCLINUX` on any descriptor, so no typing into a terminal. Every policy path is opened
    once, and the rule is built on that descriptor: a write path may not pass through any
    symlink, and a read or exec path only through symlinks root owns (`/bin -> usr/bin`), so a
    link planted by an earlier run cannot redirect a grant.
-3. **The tool's own settings, instructions and credentials are read-only**, so a run
-   cannot widen what the tool auto-allows on its next launch. The worktree's own settings
-   files are not loaded at all. After each turn `govd` removes any git hook or
-   program-running git config (`core.fsmonitor`, `core.sshCommand`, filters, aliases...)
+3. **Every run has a fresh home.** Its caches, settings, memory and rules are discarded
+   afterwards, so they cannot widen what a later run auto-allows. The login is the only
+   writable state shared between runs; Antigravity also shares helper programs read-only.
+   Tools may refresh the login (Grok's is read-only), and govd copies a replaced login
+   back as bytes, without parsing it. A Controller may bring personal instructions by
+   explicit opt-in, linked read-only; Claude Code's selected behaviour settings are copied,
+   excluding credential helpers and `env`. Claude Code does not load worktree settings;
+   Codex starts with a fresh GovernCode home. After each Controller turn `govd` removes any
+   git hook or program-running git config (`core.fsmonitor`, `core.sshCommand`, filters, aliases...)
    the tool added, since those would run later outside the sandbox.
 4. **Network is limited** (Landlock TCP rules): outbound TCP to ports 443 (and 80 only if a
    policy asks) and nothing else; no binding.
 5. **No local IPC out, except what the policy lists.** The session bus, the keyring service
    and the daemon are all Unix sockets. From Landlock ABI 9 the kernel refuses connecting to
    any pathname Unix socket except those in the policy's `unix_connect` list (in practice
-   only the system DNS resolver's; each entry must be a socket file, never a folder), and
-   scoping blocks abstract sockets. On older kernels seccomp refuses creating `AF_UNIX`
-   sockets at all. Stream `socketpair` keeps working. seccomp also refuses System V shared
+   the system DNS resolver's and a Controller's per-turn tool socket; each entry must be a
+   socket file, never a folder), and scoping blocks abstract sockets. On older kernels
+   seccomp refuses creating `AF_UNIX` sockets at all, so listed sockets remain unreachable. Stream
+   `socketpair` keeps working. seccomp also refuses System V shared
    memory, message queues and semaphores, and POSIX message queues.
 6. **No reaching other processes.** seccomp denies `ptrace`, `process_vm_readv/writev`,
    `pidfd_getfd` and `io_uring_setup`; Landlock denies ptrace-level access to processes
@@ -101,6 +109,19 @@ What a standing allow can cover is deliberately narrow:
   handoff itself, however the Controller reached it. Handing work to a local model (no quota) is
   a kind of step like any other. A Controller may throw away a Spec it proposed (also decided by
   govd); accepting one is always yours.
+
+The Controller's `crew`, `spec_status`, `conversation_read` and `project_notes` calls do not
+each ask at a Gate. Handoffs, follow-ups and discards go through govd's own decision path;
+`spec_cancel` stops a run without an approval question, keeping partial work for review. A
+report-only wake turn cannot do any of those mutations or write project notes, and its project
+filesystem is read-only. An opted-in limit continuation is different: it may continue work,
+under the usual Gates and sandbox.
+
+A Runner's Gates belong to its Spec, not the Controller turn or starting terminal. Every
+client can list and answer them; they wait up to an hour, then deny, and any left waiting deny
+when the round ends. Spec-scoped allows end with that round too. Async Specs can outlive a
+Controller turn, and a follow-up reuses the copy and scope after another Gate and Limit check;
+neither changes the sandbox boundary or applies the diff to the project.
 
 Be aware of one honest limit: allowing a build or test command (`npm test`) means allowing
 whatever the project's scripts say, and the AI can edit those scripts. The sandbox still bounds

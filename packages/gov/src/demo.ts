@@ -6,11 +6,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { Params, SpecCheckpoints, SpecDiff } from "@governcode/protocol";
 
 type Api = { call(method: string, params: unknown): Promise<any> };
 type Tty = { next(prompt: string): Promise<string | null>; close(): void };   // null: no answer here
 type Opts = { path?: string; tty: Tty; runAsk(api: any, project: string | null, prompt: string, tty: Tty): Promise<{ ok: boolean; summary: string }>;
   dim(s: string): string; warn(s: string): string };
+
+const Review = SpecDiff.extend({ id: Params["spec.diff"].shape.id, checkpoints: SpecCheckpoints });
 
 const FILES: Record<string, string> = {
   "README.md": "# Tide demo\n\nA tiny tide model, made by `gov demo` to show GovernCode at work.\n",
@@ -100,21 +103,27 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
     const specs = ((await api.call("spec.list", { project: name })).specs as Array<{ id: string; status: string }>).filter((s) => s.status === "needs-review");
     const spec = specs.at(-1);
     if (spec) {
-      step(4, `reviewing ${spec.id}`);
-      const diff = (await api.call("spec.diff", { id: spec.id })).diff;
+      const id = spec.id;
+      if (!Params["spec.diff"].safeParse({ id }).success) throw new Error("govd returned an invalid Spec id; not accepted");
+      step(4, `reviewing ${id}`);
+      const review = Review.safeParse(await api.call("spec.diff", { id }));
+      if (!review.success || review.data.id !== id) throw new Error("govd returned no valid matching review checkpoints; not accepted (update GovernCode or review the Spec again)");
+      // Keep the displayed snapshots across the prompt; a newer round needs a new review.
+      const { diff, checkpoints } = review.data;
       if (!diff) {
-        await api.call("spec.discard", { id: spec.id });
+        await api.call("spec.discard", { id });
         say("The Runner changed nothing, so there is nothing to review. (Discarded.)");
       } else {
+        say(`${id}: ${checkpoints.before} → ${checkpoints.after}`);
         say(diff);
-        const a = (await o.tty.next(`Accept ${spec.id} into the project? [y/N] `))?.trim().toLowerCase();
+        const a = (await o.tty.next(`Accept ${id} into the project? [y/N] `))?.trim().toLowerCase();
         if (a === undefined) {
-          say(dim(`no input here: ${spec.id} waits for your review (gov accept ${spec.id} or gov discard ${spec.id})`));
+          say(dim(`no input here: ${id} waits for your review (gov accept ${id} or gov discard ${id})`));
         } else if (a.startsWith("y")) {
-          const r = await api.call("spec.accept", { id: spec.id });
+          const r = await api.call("spec.accept", { id, checkpoints });
           say(`Applied ${r.applied.length} file(s). ${dim("It is a plain change in your folder now; git sees it too.")}`);
         } else {
-          await api.call("spec.discard", { id: spec.id });
+          await api.call("spec.discard", { id });
           say("Discarded. Nothing reached your folder.");
         }
       }

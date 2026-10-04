@@ -44,7 +44,10 @@ rl.on("line", (line) => {
   const m = JSON.parse(line);
   if (m.id === "gate" && m.result) return;
   if (m.method === "initialize") return out({ id: m.id, result: {} });
-  if (m.method === "account/rateLimits/read") return setTimeout(() => out({ id: m.id, result: { rateLimits: limits() } }), Number(cfg.readDelay ?? 0));
+  if (m.method === "account/rateLimits/read") {
+    if (cfg.readStarted) fs.writeFileSync(cfg.readStarted, "measuring");
+    return setTimeout(() => out({ id: m.id, result: { rateLimits: limits() } }), Number(cfg.readDelay ?? 0));
+  }
   if (m.method === "thread/start") return out({ id: m.id, result: { thread: { id: "thread" } } });
   if (m.method !== "turn/start") return;
   out({ id: m.id, result: {} });
@@ -63,7 +66,10 @@ rl.on("line", (line) => {
       turnId: "turn", threadId: "thread" } });
     return out({ method: "turn/completed", params: { turn: { status: "failed" } } });
   }
-  out({ method: "turn/completed", params: { turn: { status: "completed" } } });
+  const finish = () => out({ method: "turn/completed", params: { turn: { status: "completed" } } });
+  if (cfg.finishOnFile) {
+    const timer = setInterval(() => { if (fs.existsSync(cfg.finishOnFile)) { clearInterval(timer); finish(); } }, 20);
+  } else finish();
 });
 `);
 
@@ -90,6 +96,15 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       ...(typeof cfg.resetsAt === "number" ? { resetsAt: cfg.resetsAt } : {}) } });
     out({ type: "result", is_error: true, subtype: "error", terminal_reason: "blocking_limit", result: "stopped" });
     return process.exit(0);
+  }
+  if (cfg.failOnFile) {
+    const timer = setInterval(() => {
+      if (!fs.existsSync(cfg.failOnFile)) return;
+      clearInterval(timer);
+      out({ type: "result", is_error: true, subtype: "error", result: "old delivery failed" });
+      process.exit(0);
+    }, 20);
+    return;
   }
   if (fresh(text).includes("HANDOFF")) {
     const r = await rpc("controller.delegate", { to: "codex", brief: "write the file", result: "x/hello.txt is complete",
@@ -131,11 +146,11 @@ function client(sock: string) {
 }
 
 type Fake = { used?: number; limitUsed?: number; resetsAt?: number; limitRun?: boolean; text?: string; append?: boolean; fromReadme?: boolean;
-  summary?: string; promptFile?: string; readDelay?: number; gateRun?: boolean };
+  summary?: string; promptFile?: string; readDelay?: number; readStarted?: string; gateRun?: boolean; finishOnFile?: string };
 
 function fakeFile(dir: string): string { return join(dir, "state/tools/codex/fake.json"); }
 function setRunner(dir: string, fake: Fake): void { writeFileSync(fakeFile(dir), JSON.stringify(fake)); }
-function setController(dir: string, fake: { limit?: boolean; resetsAt?: number }): void {
+function setController(dir: string, fake: { limit?: boolean; resetsAt?: number; failOnFile?: string }): void {
   writeFileSync(join(dir, "proj/.fake-controller.json"), JSON.stringify(fake));
 }
 
@@ -274,6 +289,86 @@ test("at-reset recovery waits for a watcher, then a due Spec resumes", async () 
   assert.equal(t.d.ledger.eventsOfKind("p", ["recovery.resumed"]).at(-1)!.actor, "govd");
 });
 
+test("revoking automatic recovery during measurement prevents its Runner starting", async () => {
+  for (const clear of [false, true]) {
+    const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() - 60_000) / 1000) });
+    const id = await handoff(t);
+    const since = await recoverySince(t, id);
+    await t.c.call("recovery.set", { target: id, since, atReset: true });
+    const marker = join(t.dir, "read-started");
+    setRunner(t.dir, { used: 10, readDelay: 300, readStarted: marker });
+    await t.c.call("watch", { wake: true });
+    await until(() => existsSync(marker));
+    const response = await t.c.call(clear ? "recovery.clear" : "recovery.set", {
+      target: id, since, ...(clear ? {} : { atReset: false }),
+    });
+    assert.ok(response.result, JSON.stringify(response));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(t.d.ledger.spec(id)!.status, "held", clear ? "cleared" : "turned off");
+    assert.equal(t.d.ledger.eventsOfKind("p", ["spec.started"]).length, 0);
+    assert.equal((await recoveries(t)).some((item) => item.target === id && item.atReset), false);
+    t.d.close();
+  }
+});
+
+test("a sweep rechecks later targets after another recovery waits on measurement", async () => {
+  const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() - 60_000) / 1000) });
+  const first = await handoff(t);
+  const second = await handoff(t);
+  const firstSince = await recoverySince(t, first), secondSince = await recoverySince(t, second);
+  await t.c.call("recovery.set", { target: first, since: firstSince, atReset: true });
+  await t.c.call("recovery.set", { target: second, since: secondSince, atReset: true });
+  const marker = join(t.dir, "read-started");
+  setRunner(t.dir, { used: 10, readDelay: 300, readStarted: marker });
+  await t.c.call("watch", { wake: true });
+  await until(() => existsSync(marker));
+  assert.ok((await t.c.call("recovery.clear", { target: second, since: secondSince })).result);
+  await until(() => t.d.ledger.spec(first)?.status === "needs-review");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(t.d.ledger.spec(second)!.status, "held");
+  assert.deepEqual(t.d.ledger.eventsOfKind("p", ["spec.started"]).map((event) => event.data.spec), [first]);
+});
+
+test("a new round after restart reports completion under automatic wake", async () => {
+  const first = await setup({ limitRun: true, resetsAt: Math.floor((Date.now() - 60_000) / 1000) });
+  const id = await handoff(first);
+  await until(() => first.d.ledger.spec(id)?.status === "failed");
+  first.c.end(); first.d.close();
+  const second = await setup({ used: 10 }, first.dir);
+  await second.c.call("watch", { wake: true });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const wakes = () => second.d.ledger.eventsOfKind("p", ["turn.started"]).filter((event) => event.data.origin === "wake");
+  assert.equal(wakes().length, 0, "old completion waits for the user");
+  const response = await second.c.call("recovery.resume", { id, since: await recoverySince(second, id) });
+  assert.ok(response.result, JSON.stringify(response));
+  await until(() => wakes().length === 1);
+  await until(() => second.d.ledger.spec(id)?.delivery === "delivered");
+  assert.deepEqual(wakes()[0].data.specs, [id], "the fresh round is reported once");
+});
+
+test("a failed delivery of the old round cannot suppress the resumed round's wake", async () => {
+  const t = await setup({ limitRun: true });
+  const id = await handoff(t);
+  await until(() => t.d.ledger.spec(id)?.status === "failed");
+  assert.equal(t.d.ledger.spec(id)!.delivery, "pending");
+  const fail = join(t.dir, "fail-old-delivery"), finish = join(t.dir, "finish-new-round");
+  setController(t.dir, { failOnFile: fail });
+  const oldTurn = t.c.call("ask", { project: "p", prompt: "Tell me about the earlier result." });
+  await until(() => t.d.ledger.spec(id)?.delivery === "claimed");
+  setRunner(t.dir, { used: 10, append: true, finishOnFile: finish });
+  assert.ok((await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) })).result);
+  await t.c.call("watch", { wake: true });
+  writeFileSync(fail, "fail");
+  assert.equal((await oldTurn).result.ok, false);
+  assert.equal(t.d.ledger.spec(id)!.status, "running", "the old delivery fails during the new round");
+  setController(t.dir, {});
+  writeFileSync(finish, "finish");
+  const wakes = () => t.d.ledger.eventsOfKind("p", ["turn.started"]).filter((event) => event.data.origin === "wake");
+  await until(() => t.d.ledger.spec(id)?.status === "needs-review");
+  await until(() => t.d.ledger.spec(id)?.delivery === "delivered", 3000);
+  assert.deepEqual(wakes().map((event) => event.data.specs), [[id]], "the new result is reported once");
+});
+
 test("a sweep-resumed Spec stops when its last watcher leaves", async () => {
   const past = Math.floor((Date.now() - 60_000) / 1000);
   const t = await setup({ used: 100, resetsAt: past });
@@ -391,6 +486,27 @@ test("a Runner-limited Spec continues in its existing copy and keeps both rounds
   assert.match(readFileSync(promptFile, "utf8"), /stopped because codex hit its usage limit/i);
   const events = t.d.ledger.eventsOfKind("p", ["recovery.resumed", "spec.started"]);
   assert.ok(events.find((event) => event.kind === "recovery.resumed")!.seq < events.filter((event) => event.kind === "spec.started").at(-1)!.seq);
+});
+
+test("Accept is bound to the diff the user reviewed, even after a later round finishes", async () => {
+  const t = await setup({ limitRun: true, text: "first round\n" });
+  const id = await handoff(t);
+  await until(() => t.d.ledger.spec(id)?.status === "failed");
+  const first = (await t.c.call("spec.diff", { id })).result;
+  assert.deepEqual(first.checkpoints, t.d.ledger.spec(id)!.checkpoints);
+  setRunner(t.dir, { used: 10, text: "second round\n", append: true });
+  assert.ok((await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) })).result);
+  await until(() => t.d.ledger.spec(id)?.status === "needs-review");
+  const latest = (await t.c.call("spec.diff", { id })).result;
+  assert.notEqual(latest.checkpoints.after, first.checkpoints.after);
+  const stale = await t.c.call("spec.accept", { id, checkpoints: first.checkpoints });
+  assert.match(stale.error.message, /changed since you reviewed/);
+  assert.equal(existsSync(join(t.proj, "x/hello.txt")), false, "stale acceptance applied nothing");
+  assert.equal(t.d.ledger.spec(id)!.status, "needs-review");
+  assert.ok((await t.c.call("spec.accept", { id })).error, "ID-only clients cannot accept unseen snapshots");
+  const accepted = await t.c.call("spec.accept", { id, checkpoints: latest.checkpoints });
+  assert.deepEqual(accepted.result.applied, ["x/hello.txt"]);
+  assert.equal(readFileSync(join(t.proj, "x/hello.txt"), "utf8"), "first round\nsecond round\n");
 });
 
 test("a limited Controller turn is listed and can be continued by the user", async () => {

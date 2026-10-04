@@ -136,8 +136,8 @@ export function selectConversation(items: ConversationItem[], budget: number, cu
   return all.filter((i) => picked.has(i.seq));
 }
 
-// Turn events are read a page at a time, newest first, each page starting at a turn's beginning so
-// no turn is split; filtering by provider happens per page, so a Controller's own turns are found
+// Turn events are read a page at a time, newest first. Fragment-only pages are held until the
+// turn's beginning is found; filtering by provider happens per turn, so its own turns are found
 // however many of another provider's come after them. Scanning stops at MAX_SCAN events.
 const PAGE = 2000, MAX_SCAN = 40_000;
 
@@ -146,6 +146,7 @@ const PAGE = 2000, MAX_SCAN = 40_000;
 function itemsBefore(L: Ledger, project: string | null, floor: number, before: number, onlyProvider: string | undefined,
     enough: (items: ConversationItem[]) => boolean): { items: ConversationItem[]; exhausted: boolean; cursor: number } {
   const items: ConversationItem[] = [];
+  let tail: TraceEvent[] = [];
   let hi = before, scanned = 0;
   for (;;) {
     const events = L.eventsOfKindIn(project, TURN_KINDS, floor, hi, PAGE);
@@ -153,10 +154,18 @@ function itemsBefore(L: Ledger, project: string | null, floor: number, before: n
     scanned += events.length;
     const reachedFloor = events.length < PAGE;
     const start = events.findIndex((e) => e.kind === "turn.started");
-    // A page with no turn's beginning is the middle of a very long turn: keep going back. Events
-    // before the first beginning on a page that reached the reset belong to no turn shown here.
-    if (start < 0) { if (reachedFloor) return { items, exhausted: true, cursor: hi }; hi = events[0].seq; }
-    else { items.unshift(...itemsOf(events.slice(start), onlyProvider)); hi = events[start].seq; }
+    // Keep a long turn's text and ending until its beginning is in view. A tail without a
+    // beginning at the reset (or scan limit) is still outside the window and is left out.
+    if (start < 0) {
+      if (reachedFloor) return { items, exhausted: true, cursor: hi };
+      tail = events.concat(tail);
+      hi = events[0].seq;
+    } else {
+      items.unshift(...itemsOf(events.slice(start).concat(tail), onlyProvider));
+      tail = [];
+      // The prefix before this beginning is read again on the next page.
+      hi = events[start].seq;
+    }
     if (reachedFloor) return { items, exhausted: true, cursor: hi };
     if (enough(items) || scanned >= MAX_SCAN) return { items, exhausted: false, cursor: hi };
   }
@@ -213,7 +222,8 @@ export function readConversation(L: Ledger, project: string, p: unknown, o: { cu
     const offset = int("offset", 0, 1_000_000, 0)!;
     // The item's whole turn, from its beginning (the newest turn start at or before it) to the item.
     const start = L.eventsOfKindIn(project, ["turn.started"], floor, seq + 1, 1)[0];
-    const item = start && itemsOf(L.eventsOfKindIn(project, TURN_KINDS, start.seq - 1, seq + 1, 20_000, true), o.onlyProvider).find((i) => i.seq === seq);
+    // Use the same event budget as listing: every listed reply's continuation must be readable.
+    const item = start && itemsOf(L.eventsOfKindIn(project, TURN_KINDS, start.seq - 1, seq + 1, MAX_SCAN, true), o.onlyProvider).find((i) => i.seq === seq);
     if (!item) throw new Error(`no item ${seq} in this conversation (or it is before the user's last reset)`);
     const end = offset + maxChars;
     return { note, item: shown(item, o.current, item.text.slice(offset, end)), nextOffset: end < item.text.length ? end : null };

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, ProjectName, RUNNERS, setBudget, type CountedWindow } from "@governcode/protocol";
+import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, ProjectName, RUNNERS, SpecCheckpoints, SpecDiff, setBudget, type CountedWindow } from "@governcode/protocol";
 import { runDemo } from "./demo.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
@@ -19,7 +19,7 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
@@ -750,12 +750,44 @@ async function main(argv: string[]): Promise<number> {
       case "diff": {
         if (!/^S-\d{4,}$/.test(rest[0] ?? "")) throw new Error("usage: gov diff S-NNNN (see gov specs)");
         const r = await api.call("spec.diff", { id: rest[0] });
+        const checkpoints = SpecCheckpoints.safeParse(r.checkpoints);
+        if (checkpoints.success) console.log(`${rest[0]}: ${checkpoints.data.before} → ${checkpoints.data.after}`);
         console.log(r.diff || dim("(no changes)"));
         return 0;
       }
       case "accept": {
         if (!/^S-\d{4,}$/.test(rest[0] ?? "")) throw new Error("usage: gov accept S-NNNN (see gov specs)");
-        const r = await api.call("spec.accept", { id: rest[0] });
+        const id = rest[0];
+        const usage = "usage: gov accept S-NNNN [--before OID --after OID] (full reviewed Git object IDs)";
+        let explicit: SpecCheckpoints | undefined;
+        if (rest.length > 1) {
+          const flags: Record<string, string> = {};
+          if (rest.length !== 5) throw new Error(usage);
+          for (let i = 1; i < rest.length; i += 2) {
+            if (!["--before", "--after"].includes(rest[i]) || flags[rest[i]] !== undefined) throw new Error(usage);
+            flags[rest[i]] = rest[i + 1];
+          }
+          const checked = SpecCheckpoints.safeParse({ before: flags["--before"], after: flags["--after"] });
+          if (!checked.success) throw new Error(usage);
+          explicit = checked.data;
+        }
+        const reviewed = SpecDiff.safeParse(await api.call("spec.diff", { id }));
+        const bound = reviewed.success ? SpecCheckpoints.safeParse(reviewed.data.checkpoints) : null;
+        if (!reviewed.success || !bound?.success) throw new Error("govd returned no valid review checkpoints; not accepted (update GovernCode or wait for the Spec to finish)");
+        const checkpoints = bound.data;
+        console.log(`${id}: ${checkpoints.before} → ${checkpoints.after}`);
+        console.log(reviewed.data.diff || dim("(no changes)"));
+        if (explicit) {
+          if (explicit.before !== checkpoints.before || explicit.after !== checkpoints.after) throw new Error("the explicit snapshots do not match this diff; not accepted (review it again)");
+        } else {
+          const tty = answers();
+          let a: string | undefined;
+          try { a = (await tty.next(`Apply ${id}'s displayed changes? [y/N] `))?.trim().toLowerCase(); }
+          finally { tty.close(); }
+          if (a === undefined) throw new Error("no confirmation here: not accepted; review in a terminal, or pass --before OID --after OID for snapshots you already reviewed");
+          if (a !== "y" && a !== "yes") { console.log(`${id}: not accepted`); return 0; }
+        }
+        const r = await api.call("spec.accept", { id, checkpoints });
         console.log(`${r.id}: applied ${r.applied.length} file(s) to the project: ${r.applied.join(", ")}`);
         return 0;
       }

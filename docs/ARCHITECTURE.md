@@ -15,38 +15,70 @@ GovernCode runs on your own machine. There is no hosted service.
 | Piece | Language | Job |
 |---|---|---|
 | `govd` | TypeScript (Node 22.18+) | Projects, the Controller, Gates, the Trace, the RPC server. Refuses to start any AI tool until the sandbox self-test has passed on this machine. |
-| `govern-sup` | Rust | The only thing that starts AI tools. Applies the sandbox, then execs the tool. See [SANDBOX.md](SANDBOX.md). |
+| `govern-sup` | Rust | Starts and supervises AI coding tools under the sandbox. Local models receive text through Ollama instead. See [SANDBOX.md](SANDBOX.md). |
 | `gov` | TypeScript | The command line; a thin client of `govd`. |
 | `@governcode/protocol` | TypeScript + Zod | The wire contract shared by `govd` and every client. |
 
 ## A turn, end to end
 
-1. `gov ask "..."` sends `ask` to `govd` over its Unix socket (a 0700 directory; the
-   sandbox cannot open Unix sockets, so every connection is the user).
+1. `gov ask "..."` sends `ask` to `govd` over its user-facing Unix socket (0600 in a 0700
+   directory; sandboxed tools cannot connect to it). One Controller turn runs at a time per
+   project, or at Home.
 2. `govd` writes a policy for this turn (the project folder writable, or nothing writable
-   in Home; the tool's own settings read-only; TCP to port 443 only) and starts
+   in Home or a report-only wake turn; a fresh tool home with its GovernCode login linked
+   in; TCP to port 443 only) and starts
    `govern-sup run --policy … -- claude …`.
-3. `govern-sup` applies Landlock, seccomp and `no_new_privs`, then execs Claude Code in
-   place. Claude Code loads only the user's own settings, never the project's.
+3. `govern-sup` applies Landlock, seccomp and `no_new_privs`, then starts the tool under
+   supervision. Claude Code loads no settings file by default, never the project's settings;
+   personal setup is an explicit opt-in. Codex can be the Controller too.
 4. Claude Code streams events on stdout. A permission request becomes a **Gate**: `govd`
    records it, shows the exact request (sorted, ASCII-escaped JSON) to the user's terminal,
-   and waits. Allow runs exactly that input; deny, or the asker disconnecting, denies.
-5. Every step lands in the **Trace**: an append-only SQLite log that clients read.
+   and waits, unless Gate settings, a standing allow or an approved plan cover it. Allow runs
+   exactly that input; deny, or the asker disconnecting, denies the Controller's request.
+   A Runner's Gates belong to its Spec instead (below).
+5. Turns, tool steps, Gates and state changes land in the **Trace**: an append-only SQLite
+   log that clients read.
+
+## Project memory
+
+`govd` owns project memory in the Trace, separate from a tool's disposable home and the
+repository. A turn receives notes (up to 4,000 characters, with every version kept), a
+project record built without AI from recent Specs, Checkpoints and project allows, and
+recent conversation items as JSON. They are information in the message, not new instructions
+in the system prompt.
+
+The conversation budget is `settings.memory.conversationChars` (16,000 by default). Selection
+tries the latest user message, latest reply and first user message since the last reset, then
+the rest newest to oldest; what fits is presented in conversation order. Items that do not fit
+are omitted whole, never shortened. Replies identify their Controller's provider and model,
+and failed turns are marked as partial. Wake and automatic continuation messages identify
+GovernCode as their author and do not count as the first user message.
+
+`conversation_read` pages through earlier items, or reads a long item in parts. It cannot
+reach before `conversation.reset`. Switching providers requires a sharing choice: without
+consent the new Controller sees only its own provider's conversation and Specs, and cannot
+read or overwrite shared notes. Reset starts a new conversation; it does not delete the Trace
+or project notes.
 
 ## Delegation (phase 1)
 
-In a project, the Controller (Claude Code or Codex) gets GovernCode's tools (`delegate`,
-`crew`, `spec_status`) from a small MCP server that runs inside its sandbox and can reach
-only a socket `govd` opens for that one turn. That socket offers no Gate answers and no
-undo. Each call is a Gate the user answers; for Codex, govd answers only the approval for
-the GovernCode tool call Codex just announced, and declines any other server's.
+In a project, the Controller (Claude Code or Codex) gets GovernCode's tools from a small
+MCP server inside its sandbox, connected to a restricted socket `govd` opens for that one
+turn. It offers `delegate`, `crew`, `plan`, `spec_status`, `spec_cancel`, `spec_followup`,
+`spec_discard`, `project_notes` and `conversation_read`, never Gate answers, Accept or undo.
+Read calls and notes updates do not each open a Gate. Handoffs, follow-ups and discards are
+decided inside govd; a game plan has its own user answer. A paid handoff asks unless the Crew
+card's plan policy lets one approved item cover it. For Codex, govd accepts only a matching,
+announced GovernCode MCP call and declines other servers' approvals; accepting that tool call
+does not bypass the checks inside it. Runners receive no delegation tools. The per-turn
+pathname socket needs Landlock ABI 9; on ABI 6–8 the sandbox blocks all new Unix sockets.
 
 `delegate` measures the Runner's usage and checks the Limit (unknown means held; a finished
 Spec keeps counting until the provider's report has caught up with it: a reading taken 15
-minutes after it finished that shows its window has moved, or the vendor confirming that the
+minutes after it finished that shows usage has risen, or the vendor confirming that the
 window it ran in has reset; 2 hours at most), then builds the Runner's
-workspace **in govd's own state directory**, out of every AI tool's reach: the project as the
-user has it now (the last commit with the user's uncommitted edits; a new file only when an
+workspace **in govd's own state directory**, granting that Runner access only to its copy:
+the project as the user has it now (the last commit with the user's uncommitted edits; a new file only when an
 accepted Spec wrote it or the Spec's scope names it, never one that looks like a secret or holds
 a private key), read one folder at a time without following any link, refused over 2 GB or
 200,000 files, with its own git directory for snapshots. The
@@ -55,10 +87,52 @@ Snapshots hash raw bytes with git plumbing under a config that runs no program, 
 filter, hook or diff driver ever executes. A change outside the scope is never offered.
 `gov accept` applies exactly the reviewed after-state of each changed file, bound to the
 snapshot ids stored on the Spec, and only if the project still holds the before-state;
-otherwise nothing is applied. It never writes or follows a symlink (a dangling one
+otherwise nothing is applied. `spec.diff` returns the before/after snapshot ids with its
+content; `spec.accept` must supply those same ids, and rejects a newer round before writing
+anything. Clients without reviewed snapshot ids cannot accept. It never writes or follows a symlink (a dangling one
 included): new content is staged beside each file with `O_NOFOLLOW`, every file is checked
 again, and only then renamed into place. Accept and undo wait while a Controller turn is
 running in that project, since a running tool could swap a folder for a symlink mid-write.
+
+### Spec lifetime and completion delivery
+
+`delegate` defaults to `mode: async`: once admitted, it returns the Spec id while govd owns
+the run. `mode: wait` waits for the result (600 seconds by default, configurable from 10 to
+3,300); a timeout or the Controller turn ending stops only the wait, not the Spec. Each Spec
+has its own copy and stop signal. The default caps are three running Specs per project and
+two per Runner across govd, in `settings.specs`. Caps refuse a handoff rather than queue it;
+local-model caps and the provider's combined usage Limit apply as well.
+
+Runner Gates are owned by govd, listed for every client and answerable after the starting
+Controller turn ends. They are denied after an hour without an answer or when that round
+ends; Spec-scoped allows also end with the round. `spec_cancel` (or the user's `spec.cancel`)
+stops a running Spec and keeps partial changes for review. `spec_followup` starts a fresh
+Runner session on a finished Spec's existing copy and scope, after another Gate and Limit
+check. Follow-ups require a retained copy and a Spec waiting for review, failed or cancelled;
+they cannot widen the scope or reopen an accepted or discarded Spec. The original
+before-snapshot stays, so the diff and Accept cover every round; the last Runner summary
+is quoted as data, not trusted as instructions.
+
+Completion delivery is recorded on the Spec. An async result is `pending`; a turn reporting
+it makes it `claimed`, then `delivered` on success or `pending` again on failure. Reading a
+finished Spec with `spec_status` acknowledges it unless a reporting turn already claims it;
+a wait call receiving the result acknowledges it directly. Cancellation, disposal or turning
+completion reports off can mark delivery `disposed`.
+
+The Crew card chooses `wake: auto`, `tell` or `off`. `auto` starts a read-only report turn when
+the project Controller is idle and a client has connected with `watch {wake: true}` (the
+Dashboard). `tell` folds finished Spec ids and states into the user's next message; `off`
+suppresses completion delivery. Wake turns use govd's fixed text, read results through
+`spec_status`, and cannot delegate, follow up, cancel, discard or write notes. A user message
+arriving during an unattended turn goes next. The last wake-capable client disconnecting
+stops the unattended turn. Failed delivery waits for the user's next message rather than
+starting another wake turn.
+Starting a new Runner round clears suppression and reporting claims for the earlier completion,
+so that round can report normally even if a turn reporting the old result fails later.
+
+On restart, unfinished Specs are marked failed and their copies snapshotted for review;
+interrupted Controller turns are closed too. Pending completion reports wait for the user's
+next message. Restart does not itself restart those Specs or launch completion turns.
 
 ## Settings: Limits and models
 
@@ -73,13 +147,14 @@ why. The `crew` tool tells the Controller the defaults and the policy before it 
 
 A Runner can also have a **counted budget** (`gov budget`, or Settings in the Dashboard): a cap
 per window (5-hour, daily, weekly, monthly) in the provider's unit, tokens where its driver
-reports them and turns (one per Spec) otherwise. govd counts what its own Runners use, in its
-state (`counted.json`, 0600), and turns the count into the same percent readings a usage report
+reports them and turns (one per Runner round) otherwise. govd counts what its own Runners use,
+in its state (`counted.json`, 0600), and turns the count into the same percent readings a usage report
 gives, so the Limit gate, in-flight holds and the Dashboard treat it like any other window. A
 window starts at the first run counted after the previous one ended and resets that long after.
 Each run is written down (synced to disk) before it starts and settled when it ends; a run left
 open by a crash is counted at the next start as a turn with unknown tokens. A count file that
-cannot be read or trusted holds every budget it covers and is never overwritten.
+cannot be read or trusted holds every budget it covers and is never overwritten. If a required
+count cannot be written, that Runner does not start.
 The count is always fresh, but it is **counted by GovernCode only**: use outside GovernCode (the
 user's own sessions, other apps) is invisible to it, so the budget should sit below the real plan,
 and it keeps no reserve unless one is set. A token budget holds if a run reported no tokens. When
@@ -87,6 +162,54 @@ the provider has its own usage report too, both are read and every reading is ch
 stricter one decides; if either cannot be read, the Runner is held. A provider with neither a
 report nor a budget is held (running one unmetered is not offered). Local models have no quota: their Limit is the machine's (`gov local N M`: at
 most N local Specs at once, each stopped after M minutes).
+
+For provider-reported windows, `owed.json` (0600) keeps in-flight reservations and the amounts
+still owed by finished rounds. Admission includes every running reservation and reconciles
+finished amounts per window; one rise in a provider's reading is not credited to several Specs.
+Claims are saved before a Runner starts, become debits when it ends, and survive a restart.
+Open claims left by a crash become debits on load. An unreadable, invalid or unwritable owed
+file holds metered Runners; local models are unaffected. Recovery from a broken store requires
+fixing the file and restarting govd; removing it also clears the accounting it retained.
+These are admission checks against reports that can lag, not a hard cap on what an
+already-running provider can spend.
+
+## Usage-limit recovery
+
+Recovery is derived from Specs and the Trace: held Specs, failed Runner rounds marked
+`limited`, and a project's latest failed Controller turn with a reported usage limit. A
+newer turn, conversation reset or Controller change makes an earlier turn ineligible. Driver
+limit reports and Limits crossed during a running Spec preserve the reset time when known;
+if several windows block admission, the latest blocking reset is used, or no reset if any
+blocking window has an unknown time. No provider reset time is guessed.
+
+Claude Code's driver detects rejected rate-limit events and terminal limit errors, with a
+60-second inactivity timeout after a rejected window that pauses while a Gate is pending.
+Codex detects usage-limit and rate-limit errors and reads resets from account rate-limit
+snapshots. The ACP driver treats error `-32003` as a rate limit with no known reset time;
+Grok therefore needs a manual resume.
+
+The user can resume now, opt in at reset, turn that choice off, or clear the recovery record.
+`settings.recovery.autoResume` is off by default; turning it on arms newly limited items with
+a known future reset. `recovery.set`, `recovery.resume` and `recovery.clear` carry the item's
+`since`, so a stale choice cannot act on a newer limit episode. A cleared record does not
+accept or discard a Spec. A resume attempt is recorded before work starts, so a crash cannot
+silently repeat the same at-reset choice.
+The sweep rechecks each choice before attempting it and again after usage measurement;
+clearing, disabling or replacing the choice during that wait prevents the old attempt from
+starting work.
+
+Resuming a Spec checks the current Crew card, caps, model policy and freshly measured Limit
+again. A held Spec gets a fresh project copy; a Runner-limited Spec continues in its existing
+copy with the original before-snapshot. If model, effort or budget changed, automatic recovery
+waits for a manual resume. A still-blocking Limit leaves it limited. A Controller continuation
+is a new `ask` with `continuationOf`, using project memory rather than the old provider session.
+
+The single-flight recovery sweep runs every 15 seconds and after a wake-capable watch connects,
+only while such a client is present. Automatic Controller continuations are authored by govd
+and may work within the Crew card and normal Gates; they are not report-only wake turns. The
+last wake-capable client leaving stops both unattended Controller turns and automatically
+resumed Specs. Such a Spec stays limited for a new user choice. Ordinary async Specs continue
+independently of the client that started them.
 
 ## Proposing a project from Home
 
@@ -114,15 +237,22 @@ the sandbox status; clients check features, not versions. Methods, by area:
   `context.state`, `context.share`, `notes.get`, `notes.set`, `crew.get`, `crew.set`,
   `plan.answer`;
 - Gates and rules: `gate.list`, `gate.answer`, `allows.list`, `allows.revoke`;
-- Specs and Checkpoints: `spec.list`, `spec.diff`, `spec.accept`, `spec.discard`, `turn.list`
+- Specs and Checkpoints: `spec.list`, `spec.diff`, `spec.accept`, `spec.discard`, `spec.cancel`, `turn.list`
   (a project's Checkpoints: id, time, files, whether undone), `turn.undo`;
 - Limits, settings and tools: `limits.list`, `settings.get`, `settings.set`, `tools.list`,
   `connect.start`, `connect.input`, `connect.cancel`, `tools.disconnect`;
+- recovery: `recovery.list`, `recovery.set`, `recovery.resume`, `recovery.clear`; Controller
+  turns continue through `ask` with `continuationOf`, not `recovery.resume`;
 - the record: `trace.list`, and `watch`: after it, the connection also receives every Trace
   append (`{kind: "trace", event}`) and a `{kind: "gates"}` nudge whenever a Gate opens or is
-  settled, so clients update without polling.
+  settled, so clients update without polling. `watch` defaults to `wake: false`; `wake: true`
+  declares that the client can show unattended work and permits wake turns and opted-in
+  at-reset recovery while it stays connected.
 
-Parameters are validated with Zod schemas in `packages/protocol`.
+The current feature list is `projects`, `trace`, `ask`, `gates`, `home`, `delegate`, `specs`,
+`watch`, `parallel-specs` and `recovery`. Parameters are validated with Zod schemas in
+`packages/protocol`. `settings.set` preserves saved top-level keys omitted by the request,
+so older clients do not erase settings added later.
 
 ## Roadmap
 

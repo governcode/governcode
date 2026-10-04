@@ -464,6 +464,17 @@ export class Daemon {
     this.wakeIfDue(s.project);
   }
 
+  /** A new round supersedes the old completion: turns still reporting that completion must
+   *  neither acknowledge the new result nor suppress its wake if their old delivery fails. */
+  private specStarted(id: string): void {
+    this.noWake.delete(id);
+    for (const [turn, ids] of this.telling) {
+      const remaining = ids.filter((claimed) => claimed !== id);
+      if (remaining.length) this.telling.set(turn, remaining);
+      else this.telling.delete(turn);
+    }
+  }
+
   /** A newly limited target inherits the Settings default only when its real reset is still ahead. */
   private armRecovery(target: string, resetsAt: string | null, knownProject?: string | null): void {
     const reset = resetsAt === null ? NaN : Date.parse(resetsAt);
@@ -488,6 +499,7 @@ export class Daemon {
       runtimeDir: resolve(this.opts.socketPath, ".."), supervisor: this.opts.supervisor, policyDir: this.opts.policyDir,
       stateDir: this.stateDir(), gate: async () => "deny", notify, settings: () => this.settings(), runs: this.runs,
       specGate: (spec) => this.specGate(spec, () => false, notify), onSpecDone: (id) => this.specDone(id),
+      onSpecStarted: (id) => this.specStarted(id),
       onLimited: (id) => this.specLimited(id) };
   }
 
@@ -518,15 +530,25 @@ export class Daemon {
       const states = recoveryStates(this.ledger, { running: this.runs });
       for (const state of states) {
         if (this.stopping || !this.someoneSeesWakes()) break;
-        const item = state.item;
-        if (!item.due || state.guarded) continue;
+        // Earlier targets may have waited on measurement. Re-read this target's choice;
+        // never act on the stale sweep snapshot after the user revoked or replaced it.
+        const fresh = this.recoveryTarget(state.item.target);
+        if (!fresh?.item.due || fresh.guarded || fresh.choiceSeq !== state.choiceSeq
+            || fresh.item.since !== state.item.since) continue;
+        const item = fresh.item;
         if (item.kind !== "turn") {
           const spec = this.ledger.spec(item.target);
           if (!spec) continue;
           const ctx = this.recoveryContext(item.project);
           if (resumeSpecIssue(ctx, spec)) continue;
           try {
-            await resumeSpec(ctx, spec, "govd");
+            await resumeSpec(ctx, spec, "govd", () => {
+              const current = this.recoveryTarget(item.target);
+              // Our recovery.resumed guards this choice already; compare the choice's identity
+              // rather than rejecting our own guard. No work starts until this recheck passes.
+              return !this.stopping && this.someoneSeesWakes() && !!current?.item.due
+                && current.choiceSeq === fresh.choiceSeq && current.item.since === item.since;
+            });
             if (this.runs.has(spec.id)) {
               this.recoveryRuns.set(spec.id, { resetsAt: item.resetsAt });
               void this.runs.done(spec.id)?.then(() => this.recoveryRuns.delete(spec.id), () => this.recoveryRuns.delete(spec.id));
@@ -782,12 +804,15 @@ export class Daemon {
       case "spec.diff": {
         const s = this.specOr404(p.id);
         const { before, after } = s.checkpoints;
-        return { id: s.id, files: s.files, diff: before && after ? specDiff(specPaths(this.stateDir(), s.id), before, after) : "" };
+        return { id: s.id, files: s.files, checkpoints: { before, after }, diff: before && after ? specDiff(specPaths(this.stateDir(), s.id), before, after) : "" };
       }
       case "spec.accept": {
         const s = this.specOr404(p.id);
         if (this.runs.has(s.id)) throw new RpcError(Errors.refused, `${s.id} is running (a follow-up round, or still at work): accept it when it finishes`);
         if (s.status !== "needs-review") throw new RpcError(Errors.refused, `${s.id} is ${s.status}, not waiting for review`);
+        if (p.checkpoints.before !== s.checkpoints.before || p.checkpoints.after !== s.checkpoints.after) {
+          throw new RpcError(Errors.refused, `${s.id} changed since you reviewed it; reload its diff before accepting`);
+        }
         this.notWhileTurning(s.project);
         const files = this.refusing(() => accept(this.stateDir(), this.projectPath(s.project), s));
         // Settled by the user: no turn needs to tell the Controller about it any more.
@@ -1068,6 +1093,7 @@ export class Daemon {
           policyDir: this.opts.policyDir, stateDir: resolve(this.opts.ledgerPath, ".."), gate: hooks.gate, notify,
           settings: () => this.settings(), turn: turnId, runs: this.runs,
           specGate: (spec) => this.specGate(spec, () => alive, notify), onSpecDone: (id) => this.specDone(id),
+          onSpecStarted: (id) => this.specStarted(id),
           onLimited: (id) => this.specLimited(id), wake: !!wake })
           : openTurnSocket(resolve(this.opts.socketPath, ".."), async (method, params) => {
             if (method !== "controller.propose_project") throw new Error(`not offered at Home: ${method}`);

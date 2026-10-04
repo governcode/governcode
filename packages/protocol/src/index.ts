@@ -47,6 +47,14 @@ export type SpecStatus = "queued" | "held" | "running" | "needs-review" | "accep
  *  turn is telling it), delivered (told), acknowledged (it read the result or got it inline),
  *  disposed (it will not be told: cancelled, or the user already accepted or discarded it). */
 export type SpecDelivery = "pending" | "claimed" | "delivered" | "acknowledged" | "disposed";
+/** Full Git object IDs, never an abbreviation or Git's all-zero null object. */
+export const GitObjectId = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i, "a full Git object ID is required")
+  .refine((id) => !/^0+$/.test(id), "a Git object ID must not be the null object");
+export const SpecCheckpoints = z.object({ before: GitObjectId, after: GitObjectId });
+export type SpecCheckpoints = z.infer<typeof SpecCheckpoints>;
+/** spec.diff binds its displayed content to these snapshots. Missing snapshots are read-only. */
+export const SpecDiff = z.object({ diff: z.string(), checkpoints: z.object({ before: GitObjectId.nullable(), after: GitObjectId.nullable() }) });
+export type SpecDiff = z.infer<typeof SpecDiff>;
 export type Spec = SpecInput & { id: string; project: string; status: SpecStatus; created: string;
   checkpoints: { before: string | null; after: string | null }; files: string[]; note?: string;
   turn?: string;                 // the Controller turn that made it (T-n)
@@ -180,7 +188,7 @@ export const Params = {
   "settings.set": Settings,
   "turn.undo": z.object({ id: z.string().regex(/^T-\d+$/) }),
   "spec.diff": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
-  "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
+  "spec.accept": z.object({ id: z.string().regex(/^S-\d{4,}$/), checkpoints: SpecCheckpoints }),
   "spec.discard": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   "spec.cancel": z.object({ id: z.string().regex(/^S-\d{4,}$/) }),
   // Usage limits (#226). A target is a limited Spec (S-n) or Controller turn (T-n). recovery.list

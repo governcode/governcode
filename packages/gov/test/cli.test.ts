@@ -158,6 +158,91 @@ test("gov settings works with an older govd, and auto-resume requires recovery",
   assert.deepEqual(old.methods().slice(-1), ["hello"], "settings were not read or changed");
 });
 
+const reviewCheckpoints = { before: "a".repeat(40), after: "b".repeat(40) };
+const acceptPrompt = "Apply S-0001's displayed changes? [y/N] ";
+const reviewDiff = "diff --git a/note.txt b/note.txt\n+reviewed change\n";
+
+test("gov accept shows the exact diff and requires a fresh confirmation, including with piped input", async () => {
+  const g = await fakeGovd((m) => m === "spec.diff" ? { diff: reviewDiff, checkpoints: reviewCheckpoints }
+    : { id: "S-0001", applied: ["note.txt"] });
+  for (const input of [undefined, "y\n"]) {
+    const start = g.calls.length;
+    const r = await run(g.dir, ["accept", "S-0001"], { input }).done;
+    assert.equal(r.code, 1, r.stderr);
+    assert.ok(r.stdout.includes(reviewDiff));
+    assert.ok(r.stdout.includes(`${reviewCheckpoints.before} → ${reviewCheckpoints.after}`));
+    assert.match(r.stderr, /not accepted/);
+    assert.deepEqual(g.calls.slice(start).map((c) => c.method), ["spec.diff"]);
+  }
+  const r = run(g.dir, ["accept", "S-0001"], { live: true });
+  try {
+    await answer(r, acceptPrompt, "yes");
+    const result = await r.done;
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(g.calls.at(-1), { method: "spec.accept", params: { id: "S-0001", checkpoints: reviewCheckpoints } });
+  } finally { r.p.kill(); }
+});
+
+test("gov accept declines without applying, and never rebinds a confirmation to a newer round", async () => {
+  let changed = false;
+  const g = await fakeGovd((m, p) => {
+    if (m === "spec.diff") return { diff: reviewDiff, checkpoints: reviewCheckpoints };
+    if (m === "spec.accept") {
+      assert.deepEqual(p.checkpoints, reviewCheckpoints);
+      if (changed) throw new Error("snapshots changed; reload the diff");
+      return { id: p.id, applied: [] };
+    }
+  });
+  const no = run(g.dir, ["accept", "S-0001"], { live: true });
+  try {
+    await answer(no, acceptPrompt, "n");
+    assert.equal((await no.done).code, 0);
+    assert.deepEqual(g.methods(), ["spec.diff"]);
+  } finally { no.p.kill(); }
+  const yes = run(g.dir, ["accept", "S-0001"], { live: true });
+  try {
+    await until(() => yes.out().endsWith(acceptPrompt));
+    changed = true;
+    await answer(yes, acceptPrompt, "y");
+    const r = await yes.done;
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /snapshots changed/);
+    assert.deepEqual(g.methods(), ["spec.diff", "spec.diff", "spec.accept"]);
+  } finally { yes.p.kill(); }
+});
+
+test("gov accept's explicit snapshots must be complete, valid, and match the returned diff", async () => {
+  const g = await fakeGovd((m) => m === "spec.diff" ? { diff: reviewDiff, checkpoints: reviewCheckpoints }
+    : { id: "S-0001", applied: [] });
+  for (const flags of [["--before", reviewCheckpoints.before], ["--after", reviewCheckpoints.after],
+    ["--before", "abcd", "--after", reviewCheckpoints.after],
+    ["--before", reviewCheckpoints.before, "--after", "g".repeat(40)], ["--yes"],
+    ["--before", reviewCheckpoints.before, "--after", reviewCheckpoints.after, "--yes"]]) {
+    const start = g.calls.length;
+    const r = await run(g.dir, ["accept", "S-0001", ...flags]).done;
+    assert.equal(r.code, 1);
+    assert.deepEqual(g.calls.slice(start), [], "invalid flags never reach govd");
+  }
+  const stale = await run(g.dir, ["accept", "S-0001", "--before", reviewCheckpoints.before, "--after", "c".repeat(40)]).done;
+  assert.equal(stale.code, 1);
+  assert.match(stale.stderr, /snapshots.*match/);
+  assert.deepEqual(g.methods(), ["spec.diff"]);
+  const r = await run(g.dir, ["accept", "S-0001", "--after", reviewCheckpoints.after, "--before", reviewCheckpoints.before]).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(g.calls.at(-1), { method: "spec.accept", params: { id: "S-0001", checkpoints: reviewCheckpoints } });
+});
+
+test("gov accept refuses a diff without valid checkpoints instead of sending an ID-only request", async () => {
+  for (const checkpoints of [undefined, { before: null, after: reviewCheckpoints.after },
+    { before: reviewCheckpoints.before, after: "" }, { before: "bad", after: reviewCheckpoints.after }]) {
+    const g = await fakeGovd(() => ({ diff: reviewDiff, checkpoints }));
+    const r = await run(g.dir, ["accept", "S-0001"]).done;
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /review checkpoints/);
+    assert.deepEqual(g.methods(), ["spec.diff"]);
+  }
+});
+
 test("gov limited, resume and auto-resume use the recovery methods", async () => {
   const since = "2026-10-03T00:00:00.000Z";
   const settings = { personal: { claude: false, codex: false }, recovery: { autoResume: false } };

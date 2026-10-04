@@ -71,6 +71,7 @@ export type DelegationContext = {
    *  after the turn that made it ends; end() denies any still waiting. Without it, the turn's gate. */
   specGate?: (spec: Spec) => { gate(req: GateRequest): Promise<"allow" | "deny">; end(): void };
   onSpecDone?: (id: string) => void;                 // a finished Spec the Controller has not heard of
+  onSpecStarted?: (id: string) => void;              // a new round supersedes old completion suppression
   onLimited?: (id: string) => void;                  // a Spec stopped by a usage Limit
   wake?: boolean;                                    // a wake turn: it reads and reports, it changes nothing
 };
@@ -497,6 +498,7 @@ async function followup(ctx: DelegationContext, raw: unknown) {
  *  (whoever cancelled it knows). */
 function startRound(ctx: DelegationContext, spec: Spec, input: SpecInput, prompt: string, w: Prepared, inline: { waiting: boolean }): Promise<SpecResult> {
   const runs = ctx.runs ?? new SpecRuns();
+  ctx.onSpecStarted?.(spec.id);
   let cancelled = () => false;
   const done = runs.start(spec.id, ctx.project.name, input.to, (stop, c) => { cancelled = c; return runRound(ctx, spec, input, prompt, w, stop, c, inline); });
   // After SpecRuns has let go of it, so whoever is told sees it finished.
@@ -739,9 +741,13 @@ export function resumeSpecIssue(ctx: DelegationContext, spec: Spec): string | nu
 }
 
 /** Resume a limited Spec after checking its current Crew card, caps, usage and Limit. */
-export async function resumeSpec(ctx: DelegationContext, spec: Spec, by: "user" | "govd") {
+export async function resumeSpec(ctx: DelegationContext, spec: Spec, by: "user" | "govd", stillAuthorized?: () => boolean) {
   const L = ctx.ledger;
   const current = L.spec(spec.id);
+  const checkAuthorization = () => {
+    if (stillAuthorized && !stillAuthorized()) throw new Error("the automatic recovery choice changed or nobody is connected to see it");
+  };
+  checkAuthorization();
   if (ctx.alive && !ctx.alive()) throw new Error("govd is stopping; start it again to continue");
   if (!current?.limited || !["held", "failed"].includes(current.status)) throw new Error(`${spec.id} is not a limited Spec`);
   if (ctx.runs?.has(current.id)) throw new Error(`${current.id} is already running`);
@@ -763,6 +769,9 @@ export async function resumeSpec(ctx: DelegationContext, spec: Spec, by: "user" 
   const input = SpecInput.parse({ ...current, model: picked.model, effort: picked.effort, budgetPercent, mode: "async", waitSeconds: 600 });
 
   await measured(ctx, input.to);
+  // Measuring yields to user choices. A cleared, disabled or replaced choice must not start
+  // work, or be rearmed by any of the preflight failures below.
+  checkAuthorization();
   if (ctx.alive && !ctx.alive()) throw new Error("govd is stopping; start it again to continue");
   const latest = L.spec(current.id)!;
   if (ctx.runs?.has(current.id)) throw new Error(`${current.id} is already running`);

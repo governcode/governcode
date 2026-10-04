@@ -59,7 +59,9 @@ GovernCode with it in about fifteen minutes.
 ## Try it (developers, Linux)
 
 You need Linux with Landlock ABI 6+ (kernel 6.12 or newer), Node 22.18+, Rust, git, `script`
-(util-linux) and Claude Code installed (Codex too, to see delegation). Every AI coding tool
+(util-linux) and Claude Code installed (Codex too, to see delegation).
+Controller delegation needs Landlock ABI 9 for its restricted Unix socket; ABI 6–8 block
+all new Unix sockets. Every AI coding tool
 GovernCode starts runs in the sandbox, always; there is no switch to turn it off. (A local model
 is different: GovernCode sends it text through Ollama's own server and gives it no tools.)
 
@@ -170,7 +172,7 @@ gov ask "Use the governcode delegate tool to have codex write tests for src/tide
          scope write [\"tests\"], budget 10%, model gpt-5.5, effort medium"
 gov specs            # the Spec: Runner, model, status, files
 gov diff S-0001      # exactly what the Runner changed
-gov accept S-0001    # apply it to your project (or: gov discard S-0001)
+gov accept S-0001    # show the current diff, then confirm applying it (or: gov discard S-0001)
 gov cancel S-0002    # stop a Spec that is still running (what it changed stays for review)
 gov limits           # each Runner's measured usage against its Limit
 gov reserve codex weekly 15   # keep 15% of Codex's weekly window back (default 10)
@@ -187,6 +189,12 @@ as it is: your uncommitted edits, and the files of Specs you accepted, are in it
 commit between Specs. Other new files you have not committed come in only if the Spec's scope
 names them (the Spec says which stayed out); files git ignores, and new files that look like
 secrets (`.env`, keys) or hold a private key, never do.
+
+Accept is bound to the snapshots shown in the diff. If a follow-up or recovery round changes
+them before confirmation, nothing is applied: review the new diff first. The Dashboard enables
+Accept only after that diff loads. `gov accept` shows the diff and asks before applying it;
+scripts must name snapshots already reviewed with `--before OID --after OID` (the full ids from
+`gov diff`). Older clients that omit the snapshots cannot accept work.
 
 A Spec runs on its own: the Controller's turn can end while it works, and several can run side by
 side, each in its own copy (up to the caps above; the Limit counts them all together). A Runner's

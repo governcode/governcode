@@ -10,6 +10,8 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
+import { transpileModule, ModuleKind, JsxEmit } from "typescript";
+import * as protocol from "@governcode/protocol";
 import { checkAsk, checkCall, checkConnect, connect, socketPath } from "../src/main/govd-client.ts";
 import { GovdLink } from "../src/main/link.ts";
 import { CALLABLE, Channel } from "../src/shared/contract.ts";
@@ -76,6 +78,159 @@ test("the renderer may call only the allowlisted methods, with valid parameters"
   assert.throws(() => checkCall("gate.answer", { id: "G-3", answer: "allow", remember: "forever" }));
   assert.deepEqual(checkCall("allows.revoke", { id: "R-2" }).params, { id: "R-2" });
   assert.throws(() => checkCall("allows.revoke", { id: "G-2" }));
+});
+
+test("accept requires the reviewed snapshots; old clients and incomplete object IDs fail closed", () => {
+  for (const length of [40, 64]) {
+    const checkpoints = { before: "a".repeat(length), after: "b".repeat(length) };
+    assert.deepEqual(checkCall("spec.accept", { id: "S-0001", checkpoints }).params, { id: "S-0001", checkpoints });
+  }
+  assert.throws(() => checkCall("spec.accept", { id: "S-0001" }));
+  for (const bad of [null, "", "abcd", "g".repeat(40), "a".repeat(41), "0".repeat(40), 123]) {
+    for (const field of ["before", "after"]) {
+      assert.throws(() => checkCall("spec.accept", { id: "S-0001", checkpoints: { before: "a".repeat(40), after: "b".repeat(40), [field]: bad } }));
+    }
+  }
+});
+
+// Exercise the actual component with controlled hooks and RPC promises. No browser, daemon,
+// or additional renderer dependency is needed to check its review and request lifetime.
+function reviewComponent() {
+  type Element = { type: unknown; key: unknown; props: Record<string, any> };
+  const slots: any[] = [];
+  const effects: Array<() => void> = [];
+  const calls: Array<{ method: string; params: any; resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+  let cursor = 0, writes = 0;
+  const hooks = {
+    useState(initial: unknown) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], (v: unknown) => { ++writes; slots[i] = v; }];
+    },
+    useRef(initial: unknown) { const i = cursor++; return slots[i] ??= { current: initial }; },
+    useEffect(effect: () => (() => void) | undefined, deps: unknown[]) {
+      const i = cursor++, old = slots[i];
+      if (!old || deps.some((v, n) => !Object.is(v, old.deps[n]))) {
+        effects.push(() => { old?.cleanup?.(); slots[i] = { deps, cleanup: effect() }; });
+      }
+    },
+  };
+  const jsx = (type: unknown, props: Element["props"], key?: unknown) => ({ type, props, key });
+  const module = { exports: {} as { SpecDetail: (props: any) => Element } };
+  const source = readFileSync(new URL("../src/renderer/views/Pipeline.tsx", import.meta.url), "utf8") + "\nexport { SpecDetail };\n";
+  const compiled = transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS, jsx: JsxEmit.ReactJSX } }).outputText;
+  runInNewContext(compiled, {
+    module, exports: module.exports,
+    require(name: string) {
+      if (name === "react") return hooks;
+      if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
+      if (name === "@governcode/protocol") return protocol;
+      if (name === "../ui.tsx") return { ConfirmButton: "ConfirmButton", DiffView: "DiffView", SpecPill: "SpecPill" };
+      if (name === "../api.ts") return {
+        call: (method: string, params: unknown) => new Promise((resolve, reject) => calls.push({ method, params, resolve, reject })),
+        clock: () => "now", dotted: (...v: unknown[]) => v.filter(Boolean).join(" · "),
+      };
+      throw new Error(`unexpected component import ${name}`);
+    },
+  });
+  const find = (tree: any, predicate: (el: Element) => boolean): Element | undefined => {
+    if (Array.isArray(tree)) return tree.map((t) => find(t, predicate)).find(Boolean);
+    if (!tree || typeof tree !== "object") return;
+    return predicate(tree) ? tree : find(tree.props?.children, predicate);
+  };
+  return {
+    calls,
+    writes: () => writes,
+    render(spec: any) {
+      cursor = 0;
+      const tree = module.exports.SpecDetail({ spec, onChanged() {} });
+      while (effects.length) effects.shift()!();
+      return {
+        accept: find(tree, (e) => e.type === "ConfirmButton" && e.props.label === "Accept")!,
+        reload: find(tree, (e) => e.type === "button" && ["Show diff", "Reload diff"].includes(e.props.children))!,
+        diff: find(tree, (e) => e.type === "DiffView"),
+      };
+    },
+    unmount() { for (const s of slots) s?.cleanup?.(); },
+  };
+}
+
+const reviewSnapshots = { before: "a".repeat(40), after: "b".repeat(40) };
+const reviewSpec = () => ({ id: "S-0001", project: "demo", status: "needs-review", checkpoints: reviewSnapshots,
+  files: ["note.txt"], brief: "Update the note", to: "codex", model: "", effort: null, workspace: "worktree",
+  scope: { read: [], write: ["note.txt"] }, budgetPercent: 10, created: "2026-10-03T00:00:00Z", reason: "A small edit", result: "Note updated" });
+const flushReview = async () => { await Promise.resolve(); await Promise.resolve(); };
+
+test("Pipeline accepts only the loaded diff's checkpoints and clears confirmation for every reload", async () => {
+  const h = reviewComponent(), spec = reviewSpec();
+  let ui = h.render(spec);
+  assert.equal(ui.accept.props.disabled, true, "metadata alone cannot authorize acceptance");
+  await ui.accept.props.onConfirm();
+  assert.equal(h.calls.length, 1, "even a stale confirmation cannot send before a diff loads");
+  h.calls[0].resolve({ diff: "reviewed", checkpoints: reviewSnapshots });
+  await flushReview();
+  ui = h.render(spec);
+  assert.equal(ui.accept.props.disabled, false);
+  assert.equal(ui.diff?.props.diff, "reviewed");
+  const oldConfirmation = ui.accept;
+  const reload = ui.reload.props.onClick();
+  await oldConfirmation.props.onConfirm();
+  ui = h.render(spec);
+  assert.equal(ui.accept.props.disabled, true);
+  assert.notEqual(ui.accept.key, oldConfirmation.key, "reload unmounts the pending confirmation");
+  assert.deepEqual(h.calls.map((c) => c.method), ["spec.diff", "spec.diff"]);
+  h.calls[1].resolve({ diff: "reviewed again", checkpoints: reviewSnapshots });
+  await reload;
+  ui = h.render(spec);
+  assert.notEqual(ui.accept.key, oldConfirmation.key);
+  const accepted = ui.accept.props.onConfirm();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls[2].params)), { id: spec.id, checkpoints: reviewSnapshots });
+  h.calls[2].resolve({ applied: ["note.txt"] });
+  await accepted;
+  h.unmount();
+});
+
+test("Pipeline ignores overlapping, replaced, and unmounted diff responses", async () => {
+  const h = reviewComponent(), spec = reviewSpec();
+  let ui = h.render(spec);
+  const reload = ui.reload.props.onClick();
+  h.calls[1].resolve({ diff: "latest request", checkpoints: reviewSnapshots });
+  await reload;
+  h.calls[0].resolve({ diff: "late request", checkpoints: reviewSnapshots });
+  await flushReview();
+  ui = h.render(spec);
+  assert.equal(ui.diff?.props.diff, "latest request");
+  const staleConfirmation = ui.accept;
+  const oldReload = ui.reload.props.onClick();
+  const next = { ...spec, checkpoints: { ...reviewSnapshots, after: "c".repeat(40) } };
+  ui = h.render(next);
+  assert.equal(ui.accept.props.disabled, true);
+  await staleConfirmation.props.onConfirm();
+  assert.equal(h.calls.at(-1)?.method, "spec.diff");
+  h.calls[2].resolve({ diff: "previous round", checkpoints: reviewSnapshots });
+  await oldReload;
+  assert.equal(h.render(next).diff, undefined);
+  const writes = h.writes();
+  h.unmount();
+  h.calls[3].reject(new Error("late failure"));
+  await flushReview();
+  assert.equal(h.writes(), writes, "unmounted requests cannot update even the error state");
+});
+
+test("Pipeline refuses mismatched snapshots and a legacy diff with no checkpoint binding", async () => {
+  for (const result of [{ diff: "legacy" }, { diff: "other round", checkpoints: { ...reviewSnapshots, after: "c".repeat(40) } },
+    { diff: "no snapshots", checkpoints: { before: null, after: null } }]) {
+    const h = reviewComponent(), spec = reviewSpec();
+    h.render(spec);
+    h.calls[0].resolve(result);
+    await flushReview();
+    const ui = h.render(spec);
+    assert.equal(ui.accept.props.disabled, true);
+    assert.equal(ui.diff, undefined);
+    await ui.accept.props.onConfirm();
+    assert.deepEqual(h.calls.map((c) => c.method), ["spec.diff"]);
+    h.unmount();
+  }
 });
 
 test("an ask needs a well-formed id and prompt; Home is a null project", () => {

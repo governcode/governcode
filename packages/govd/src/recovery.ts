@@ -17,7 +17,7 @@ export type RecoveryItem = {
 };
 
 /** `guarded` means a recovery.resumed was written after the current at-reset choice. */
-export type RecoveryState = { item: RecoveryItem; guarded: boolean };
+export type RecoveryState = { item: RecoveryItem; guarded: boolean; choiceSeq: number | null };
 export type RunningSpecs = { has(id: string): boolean };
 
 // Read whole: few of them (one per Spec state change or choice). Turn events are read only from the
@@ -50,7 +50,7 @@ function stateOf(item: Omit<RecoveryItem, "atReset" | "due">, events: TraceEvent
   const choice = choiceOf(events, item.target, item.resetsAt, sinceSeq, item.since);
   const guarded = choice.seq !== null && events.some((e) => e.kind === "recovery.resumed"
     && targetOf(e) === item.target && e.seq > choice.seq!);
-  return { item: { ...item, atReset: choice.atReset, due: isDue(item.resetsAt, choice.atReset, now) }, guarded };
+  return { item: { ...item, atReset: choice.atReset, due: isDue(item.resetsAt, choice.atReset, now) }, guarded, choiceSeq: choice.seq };
 }
 
 /** Derive recovery state from already-read projections. Inputs are not changed. */

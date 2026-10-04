@@ -285,6 +285,187 @@ test("conversation_read: pages back through earlier items, reads a long one in p
   L.close();
 });
 
+const fragmentedTurn = (L: Ledger, ended: "completed" | "failed" | null, chunks = 2001, text = "x", provider = "codex") => {
+  const start = L.append("p", "turn.started", "user", { prompt: "many fragments", controller: { provider, model: "m" } });
+  for (let i = 0; i < chunks; i++) L.append("p", "turn.text", `controller · ${provider}`, { text });
+  const end = ended && L.append("p", ended === "completed" ? "turn.completed" : "turn.failed", `controller · ${provider}`, { summary: "done" });
+  return { start, end, reply: Array(chunks).fill(text).join("\n\n") };
+};
+
+for (const ended of ["completed", "failed", null] as const) {
+  test(`conversation: keeps a fragmented ${ended ?? "running"} turn across event pages`, () => {
+    const L = new Ledger(":memory:");
+    try {
+      const { end, reply } = fragmentedTurn(L, ended);
+      if (end) assert.equal(readConversation(L, "p", { seq: end.seq, maxChars: 8000 }, {}).item!.text, reply);
+      const r = conversationRecord(L, "p", { current: "codex" });
+      const items = JSON.parse(r.record);
+      assert.deepEqual(items.map((i: any) => i.text), ended ? ["many fragments", reply] : ["many fragments"]);
+      assert.deepEqual([r.shown, r.omitted, r.older], [ended ? 2 : 1, 0, false]);
+      assert.ok(r.record.length <= 16_000);
+      if (ended === "failed") assert.equal(items[1].status, "the turn ended early: this may be partial");
+      if (ended === "completed") assert.equal(items[1].status, undefined);
+      // The reply stays whole even when it cannot fit in the smaller record.
+      if (ended) {
+        const small = conversationRecord(L, "p", { budget: 2000 });
+        assert.deepEqual(JSON.parse(small.record).map((i: any) => i.text), ["many fragments"]);
+        assert.equal(small.omitted, 1);
+      }
+    } finally { L.close(); }
+  });
+}
+
+test("conversation_read: a fragmented reply survives mixed event pages and item pagination", () => {
+  const L = new Ledger(":memory:");
+  try {
+    turn(L, "earlier question", "earlier reply");
+    const { start, end, reply } = fragmentedTurn(L, "completed");
+    turn(L, "latest question", "latest reply");
+    const page = readConversation(L, "p", { limit: 3, maxChars: 1000 }, { current: "codex" });
+    assert.deepEqual(page.items!.map((i) => i.text), [reply.slice(0, 1000), "latest question", "latest reply"]);
+    assert.equal(page.items![0].seq, end!.seq);
+    assert.equal(page.items![0].nextOffset, 1000);
+    assert.equal(page.nextBefore, end!.seq);
+    const part = readConversation(L, "p", { seq: end!.seq, offset: 1000, maxChars: 8000 }, {});
+    assert.deepEqual([part.item!.text, part.nextOffset], [reply.slice(1000), null]);
+    const back = readConversation(L, "p", { before: page.nextBefore, limit: 2 }, {});
+    assert.deepEqual(back.items!.map((i) => i.text), ["earlier reply", "many fragments"]);
+    assert.equal(back.items![1].seq, start.seq);
+    const first = readConversation(L, "p", { before: back.nextBefore }, {});
+    assert.deepEqual(first.items!.map((i) => i.text), ["earlier question"]);
+    assert.equal(first.nextBefore, null);
+  } finally { L.close(); }
+});
+
+test("conversation: several fragment-only pages preserve provider filtering and the reset boundary", () => {
+  const L = new Ledger(":memory:");
+  try {
+    const { reply } = fragmentedTurn(L, "completed", 4001, "", "claude-code");
+    turn(L, "own question", "own reply", "codex", "m");
+    const only = { current: "codex", onlyProvider: "codex" };
+    assert.deepEqual(JSON.parse(conversationRecord(L, "p", only).record).map((i: any) => i.text), ["own question", "own reply"]);
+    assert.deepEqual(readConversation(L, "p", {}, only).items!.map((i) => i.text), ["own question", "own reply"]);
+    const shared = conversationRecord(L, "p", { current: "codex", budget: 24_000 });
+    assert.deepEqual(JSON.parse(shared.record).map((i: any) => i.text), ["many fragments", reply, "own question", "own reply"]);
+    L.append("p", "turn.started", "user", { prompt: "before reset", controller: { provider: "codex" } });
+    L.append("p", "conversation.reset", "user", {});
+    for (let i = 0; i < 2001; i++) L.append("p", "turn.text", "controller · codex", { text: "hidden" });
+    L.append("p", "turn.completed", "controller · codex", { summary: "hidden" });
+    assert.deepEqual(conversationRecord(L, "p", only), { record: "", shown: 0, omitted: 0, older: false });
+    const reset = readConversation(L, "p", {}, only);
+    assert.deepEqual([reset.items, reset.nextBefore], [[], null]);
+  } finally { L.close(); }
+});
+
+test("conversation_read: listed replies with more than 20000 fragments continue by seq and offset", () => {
+  const L = new Ledger(":memory:");
+  try {
+    turn(L, "earlier question", "earlier reply");
+    const { start, end, reply } = fragmentedTurn(L, "completed", 20_001);
+    turn(L, "latest question", "latest reply");
+    const page = readConversation(L, "p", { limit: 3, maxChars: 500 }, {});
+    assert.deepEqual(page.items!.map((i) => i.text), [reply.slice(0, 500), "latest question", "latest reply"]);
+    assert.equal(page.items![0].seq, end!.seq);
+    assert.equal(page.items![0].nextOffset, 500);
+    assert.equal(page.nextBefore, end!.seq);
+    let text = page.items![0].text;
+    let offset: number | null = page.items![0].nextOffset!;
+    for (let n = 0; offset !== null && n < 10; n++) {
+      const part = readConversation(L, "p", { seq: end!.seq, offset, maxChars: 8000 }, { current: "codex", onlyProvider: "codex" });
+      assert.equal(part.item!.seq, end!.seq);
+      assert.equal(part.item!.from, "you (codex · m)");
+      assert.equal(part.item!.text, reply.slice(offset, offset + 8000));
+      assert.equal(part.nextOffset, offset + 8000 < reply.length ? offset + 8000 : null);
+      text += part.item!.text;
+      offset = part.nextOffset!;
+    }
+    assert.equal(offset, null, "continuation reaches the end within the expected number of parts");
+    assert.equal(text, reply, "all fragments and separators survive the continuation");
+    const back = readConversation(L, "p", { before: page.nextBefore, limit: 2 }, {});
+    assert.deepEqual(back.items!.map((i) => i.text), ["earlier reply", "many fragments"]);
+    assert.equal(back.items![1].seq, start.seq);
+    assert.throws(() => readConversation(L, "p", { seq: end!.seq }, { onlyProvider: "claude-code" }), /no item/);
+    L.append("p", "conversation.reset", "user", {});
+    assert.throws(() => readConversation(L, "p", { seq: end!.seq, offset: 500 }, {}), /before the user's last reset/);
+  } finally { L.close(); }
+});
+
+for (const events of [40_000, 40_001]) {
+  test(`conversation_read: a ${events}-event turn respects the whole-turn scan boundary`, () => {
+    const L = new Ledger(":memory:");
+    try {
+      const { start, end, reply } = fragmentedTurn(L, "failed", events - 2, "");
+      const page = readConversation(L, "p", { maxChars: 500 }, {});
+      if (events === 40_000) {
+        assert.deepEqual(page.items!.map((i) => i.seq), [start.seq, end!.seq]);
+        assert.equal(page.items![1].text, reply.slice(0, 500));
+        assert.equal(page.items![1].nextOffset, 500);
+        const last = readConversation(L, "p", { seq: end!.seq, offset: reply.length - 500, maxChars: 500 }, {});
+        assert.equal(last.item!.text, reply.slice(-500));
+        assert.equal(last.item!.status, "the turn ended early: this may be partial");
+        assert.equal(last.nextOffset, null);
+      } else {
+        assert.deepEqual(page.items, [], "no reply or continuation offset without a complete turn");
+        assert.throws(() => readConversation(L, "p", { seq: end!.seq, offset: 500 }, {}), /no item/);
+      }
+      assert.ok(page.nextBefore && page.nextBefore < end!.seq);
+      const back = readConversation(L, "p", { before: page.nextBefore }, {});
+      assert.deepEqual(back.items!.map((i) => i.text), events === 40_000 ? [] : ["many fragments"]);
+      assert.equal(back.nextBefore, null);
+    } finally { L.close(); }
+  });
+}
+
+test("conversation: rereading page prefixes cannot exceed the event scan budget", () => {
+  const L = new Ledger(":memory:");
+  try {
+    const { start, end } = fragmentedTurn(L, "completed", 38_001, "");
+    turn(L, "another provider", "not shared");
+    const eventsOfKindIn = L.eventsOfKindIn.bind(L);
+    let scanned = 0;
+    L.eventsOfKindIn = (...args) => {
+      const events = eventsOfKindIn(...args);
+      if (args[1].includes("turn.text")) scanned += events.length;
+      return events;
+    };
+    const page = readConversation(L, "p", {}, { onlyProvider: "codex" });
+    assert.equal(scanned, 40_000, "reread events count toward the same bounded scan");
+    assert.deepEqual(page.items, [], "the beginning was not reached inside this scan's budget");
+    assert.ok(page.nextBefore && page.nextBefore > start.seq && page.nextBefore < end!.seq);
+    const back = readConversation(L, "p", { before: page.nextBefore }, { onlyProvider: "codex" });
+    assert.deepEqual(back.items!.map((i) => i.text), ["many fragments"]);
+    assert.equal(back.nextBefore, null);
+  } finally { L.close(); }
+});
+
+test("conversation: fragment retention keeps the event scan bounded and its cursor moving", () => {
+  const L = new Ledger(":memory:");
+  try {
+    const { end } = fragmentedTurn(L, "completed", 40_001, "");
+    const eventsOfKindIn = L.eventsOfKindIn.bind(L);
+    let scanned = 0;
+    L.eventsOfKindIn = (...args) => {
+      const events = eventsOfKindIn(...args);
+      if (args[1].includes("turn.text")) {
+        assert.ok(args[4] <= 2000, "event queries stay page-sized");
+        scanned += events.length;
+      }
+      return events;
+    };
+    const record = conversationRecord(L, "p", {});
+    assert.equal(scanned, 40_000);
+    assert.equal(record.older, true, "the scan limit does not report exhausted history");
+    scanned = 0;
+    const page = readConversation(L, "p", {}, {});
+    assert.equal(scanned, 40_000);
+    assert.deepEqual(page.items, [], "a turn without its beginning in the bounded window is left out");
+    assert.ok(page.nextBefore && page.nextBefore < end!.seq, "the next scan advances into older history");
+    const back = readConversation(L, "p", { before: page.nextBefore }, {});
+    assert.deepEqual(back.items!.map((i) => i.text), ["many fragments"]);
+    assert.equal(back.nextBefore, null);
+  } finally { L.close(); }
+});
+
 test("conversation_read over the Controller's socket keeps the user's 'start fresh': only that Controller's own turns", async () => {
   const { openControllerSocket } = await import("../src/delegate.ts");
   const { LimitGate } = await import("../src/limits.ts");

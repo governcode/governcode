@@ -1,6 +1,7 @@
 // Pipeline: the Specs, their status, and for one Spec its details, its diff, and the choice
 // to accept it into the project or discard it.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { SpecCheckpoints, SpecDiff } from "@governcode/protocol";
 import { call, clock, dotted, modelLabel, useFallbackPoll, useWatch, type RecoveryItem, type Spec } from "../api.ts";
 import { ConfirmButton, DiffView, Empty, SpecPill } from "../ui.tsx";
 
@@ -77,20 +78,52 @@ export function Pipeline({ project, live, recoveryEnabled }: { project: string |
 }
 
 function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: RecoveryItem; onChanged: () => void }) {
-  const [diff, setDiff] = useState<string | null>(null);
+  const [review, setReview] = useState<(SpecDiff & { id: string; request: number }) | null>(null);
+  const request = useRef(0);
+  const currentSpec = useRef(spec);
+  currentSpec.current = spec;
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const reviewable = spec.status === "needs-review";
+  const matches = (s: Spec, r: NonNullable<typeof review>) => s.id === r.id
+    && s.checkpoints.before === r.checkpoints.before && s.checkpoints.after === r.checkpoints.after;
+  const canAccept = reviewable && review !== null && review.request === request.current
+    && SpecCheckpoints.safeParse(review.checkpoints).success && matches(spec, review);
 
   const showDiff = async () => {
-    try { setDiff((await call<{ diff: string }>("spec.diff", { id: spec.id })).diff); }
-    catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+    const n = ++request.current;
+    const requested = spec;
+    // A reload withdraws the previous review and its confirmation immediately.
+    setReview(null);
+    setMsg(null);
+    const isCurrent = () => n === request.current && currentSpec.current.id === requested.id
+      && currentSpec.current.checkpoints.before === requested.checkpoints.before
+      && currentSpec.current.checkpoints.after === requested.checkpoints.after;
+    try {
+      const result = await call<unknown>("spec.diff", { id: requested.id });
+      if (!isCurrent()) return;
+      const parsed = SpecDiff.safeParse(result);
+      if (!parsed.success) throw new Error("govd returned no valid review checkpoints (update GovernCode).");
+      const loaded = { ...parsed.data, id: requested.id, request: n };
+      if (!matches(currentSpec.current, loaded)) {
+        setMsg({ ok: false, text: "The Spec's snapshots changed. Reload its diff to review the new result." });
+        onChanged();
+        return;
+      }
+      setReview(loaded);
+    } catch (e) { if (isCurrent()) setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
   };
-  useEffect(() => { if (spec.checkpoints.after) void showDiff(); }, [spec.id]);
+  useEffect(() => {
+    if (spec.checkpoints.after) void showDiff();
+    return () => { ++request.current; };   // an unmounted or replaced review cannot receive a late diff
+  }, [spec.id, spec.checkpoints.before, spec.checkpoints.after]);
 
   const act = async (method: "spec.accept" | "spec.discard" | "spec.cancel") => {
+    if (method === "spec.accept" && (!canAccept || !review || review.request !== request.current
+        || currentSpec.current.status !== "needs-review" || !matches(currentSpec.current, review))) return;
     if (method === "spec.cancel") setMsg({ ok: true, text: "Cancelling…" });   // its Runner may take a few seconds to stop
     try {
-      const r = await call<{ applied?: string[]; status?: string; files?: string[] }>(method, { id: spec.id });
+      const r = await call<{ applied?: string[]; status?: string; files?: string[] }>(method,
+        { id: spec.id, ...(method === "spec.accept" ? { checkpoints: review!.checkpoints } : {}) });
       setMsg({ ok: true, text: method === "spec.accept" ? `Applied ${r.applied?.length ?? 0} file(s): ${(r.applied ?? []).join(", ")}`
         : method === "spec.discard" ? "Discarded."
         // A cancelled Spec's changed files stay reviewable: accept or discard them like any other.
@@ -142,7 +175,7 @@ function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: Reco
     <div className="spec-detail">
       <div className="row wrap"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
         {spec.status === "running" && <ConfirmButton label="Cancel Spec" tone="danger" confirm={`Stop ${spec.id}'s Runner? Work it already did stays for review.`} onConfirm={() => act("spec.cancel")} />}
-        <ConfirmButton label="Accept" tone="ok" disabled={!reviewable} confirm={`Apply ${spec.id}'s changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
+        <ConfirmButton key={JSON.stringify([spec.id, spec.status, request.current, review?.request])} label="Accept" tone="ok" disabled={!canAccept} confirm={`Apply ${spec.id}'s displayed changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
         <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || ["failed", "cancelled", "held"].includes(spec.status))} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
       </div>
       {spec.limited && (
@@ -167,8 +200,8 @@ function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: Reco
       <pre className="code wrap">{spec.brief}</pre>
       <h3>Files ({spec.files.length})</h3>
       <div className="mono small">{spec.files.length ? spec.files.join("  ") : <span className="dim">none</span>}</div>
-      <div className="row"><h3>Diff</h3><span className="spacer" /><button className="btn" onClick={showDiff}>{diff === null ? "Show diff" : "Reload diff"}</button></div>
-      {diff !== null && <DiffView diff={diff} />}
+      <div className="row"><h3>Diff</h3><span className="spacer" /><button className="btn" onClick={showDiff}>{review === null ? "Show diff" : "Reload diff"}</button></div>
+      {review !== null && matches(spec, review) && <DiffView diff={review.diff} />}
     </div>
   );
 }

@@ -232,7 +232,7 @@ test("the user cancels a running Spec; discarding waits for the cancel", async (
   await until(() => d.ledger.spec("S-0001")?.status === "running");
   await new Promise((ok) => setTimeout(ok, 300));   // it has written its file by now
   assert.match((await c.call("spec.discard", { id: "S-0001" })).error.message, /is running: cancel it first/);
-  assert.match((await c.call("spec.accept", { id: "S-0001" })).error.message, /is running/);
+  assert.match((await c.call("spec.accept", { id: "S-0001", checkpoints: { before: "1".repeat(40), after: "2".repeat(40) } })).error.message, /is running/);
   const r = await c.call("spec.cancel", { id: "S-0001" });
   assert.equal(r.result.status, "needs-review", JSON.stringify(r));
   assert.match(r.result.note, /cancelled before it finished/);
