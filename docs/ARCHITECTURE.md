@@ -320,6 +320,13 @@ descendants and verifier loss. No production proof transport or context deletion
 unconfirmed teardown and loss of the verifier retain uncertainty. Existing Runner supervision
 and its hard-kill limit remain unchanged.
 
+A test-only Node owner can receive native termination evidence over a fresh dedicated endpoint
+from an opt-in feature-driver mode. Its private result requires a bounded invocation-matching
+record, genuine proof EOF and clean verifier exit confirmed by the outer guard. Agent output,
+transport closure and the guard's independent safety reap cannot supply missing evidence.
+The fixture stop adapter closes a control endpoint while preserving the verifier; production
+ACP transport, discovery and context-retention contracts remain unchanged.
+
 A passive ELF64 inspector separately examines a private snapshot of supplied bytes for an
 explicit platform. Bounded program-header parsing can report `no-interpreter-or-dynamic-segments`
 for its conservative supported layout. This is descriptive metadata, not checksum verification,

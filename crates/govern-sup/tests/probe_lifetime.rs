@@ -5,7 +5,12 @@
 #[allow(dead_code)]
 mod probe_lifetime;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::Shutdown;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -268,4 +273,514 @@ fn unsupported_injections_admit_no_targets() {
         assert!(!dir.join("work/executed").exists());
     }
     fs::remove_dir_all(f.dir).unwrap();
+}
+
+// Transport checks use the same pipe/Unix-stream endpoint types as the Node
+// fixture owner. No file, /dev/null, reopened /dev/fd, or target-supplied channel
+// substitutes for one of the five fresh driver endpoints.
+const INVOCATION: [u8; 16] = [0x4a; 16];
+const INVOCATION_HEX: &str = "4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a";
+
+#[derive(Clone, Copy)]
+enum TransportAction {
+    None,
+    StopData,
+    StopEof,
+    StopError,
+    StopWriteFailure,
+    InvalidLayout,
+    Acp,
+    Forbidden,
+    Hung,
+    OutputBudget,
+    CloseProof,
+}
+struct TransportRun {
+    code: i32,
+    proof: Vec<u8>,
+    proof_bytes: usize,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    dir: PathBuf,
+}
+fn nonblocking(fd: i32) {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    assert!(flags >= 0);
+    assert_eq!(
+        unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+        0
+    );
+}
+fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, total: &mut usize, cap: usize) -> bool {
+    let mut buffer = [0u8; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return true,
+            Ok(n) => {
+                *total += n;
+                let keep = n.min(cap.saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&buffer[..keep]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return false,
+            Err(error) => panic!("fixture endpoint failed: {error}; contents retained"),
+        }
+    }
+}
+impl Fixture {
+    fn transport(&self, scenario: &str, label: &str, action: TransportAction) -> TransportRun {
+        let dir = self.dir.join(format!("transport-{label}"));
+        fs::create_dir(&dir).unwrap();
+        fs::create_dir(dir.join("work")).unwrap();
+        let policy = serde_json::json!({"version":1,"read":[],"write":[dir.join("work")],
+            "exec":[self.binary],"tcp_connect":[],"cwd":dir.join("work"),
+            "child_restrictions":{"deny_network":true,"deny_chmod":true}});
+        fs::write(dir.join("policy.json"), policy.to_string()).unwrap();
+        let (control, control_peer) = UnixStream::pair().unwrap();
+        let (proof, proof_peer) = UnixStream::pair().unwrap();
+        // Duplicate above 4 before pre_exec so dup2 cannot clobber either source.
+        let duplicate = |fd: i32| {
+            let fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 5) };
+            assert!(fd >= 5);
+            unsafe { OwnedFd::from_raw_fd(fd) }
+        };
+        let child_control = duplicate(control_peer.as_raw_fd());
+        let child_proof = duplicate(proof_peer.as_raw_fd());
+        drop(control_peer);
+        drop(proof_peer);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_probe-lifetime-driver"));
+        command
+            .args(["transport-v1"])
+            .arg(&self.binary)
+            .arg(scenario)
+            .arg(dir.join("work"))
+            .arg(dir.join("policy.json"))
+            .arg(INVOCATION_HEX)
+            .env_clear()
+            .env("PATH", "/usr/bin")
+            .env("HOME", dir.join("work"))
+            .env("TMPDIR", dir.join("work"))
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        unsafe {
+            command.pre_exec(move || {
+                for (source, destination) in
+                    [(child_control.as_raw_fd(), 3), (child_proof.as_raw_fd(), 4)]
+                {
+                    if libc::dup2(source, destination) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                // The five-entry contract permits no inherited aliases. Close
+                // source duplicates and every other child-side descriptor,
+                // including aliases created by the standard spawn machinery.
+                if libc::syscall(libc::SYS_close_range, 5u32, u32::MAX, 0u32) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if matches!(action, TransportAction::InvalidLayout) && libc::dup2(4, 10) != 10 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut running = Running {
+            child: command.spawn().unwrap(),
+            finished: false,
+        };
+        drop(command); // Close the deliberately created child-side aliases in the parent.
+        let mut stdin = running.child.stdin.take().unwrap();
+        let mut stdout = running.child.stdout.take().unwrap();
+        let mut stderr = running.child.stderr.take().unwrap();
+        for fd in [
+            stdin.as_raw_fd(),
+            stdout.as_raw_fd(),
+            stderr.as_raw_fd(),
+            control.as_raw_fd(),
+            proof.as_raw_fd(),
+        ] {
+            nonblocking(fd);
+        }
+        let mut control = Some(control);
+        let mut proof = Some(proof);
+        let mut proof_eof = false;
+        if matches!(action, TransportAction::CloseProof) {
+            drop(proof.take());
+            proof_eof = true;
+        }
+        let requests = match action {
+            TransportAction::Acp | TransportAction::Hung =>
+                b"{\"id\":1,\"method\":\"initialize\",\"params\":{}}\n{\"id\":2,\"method\":\"session/new\",\"params\":{}}\n".as_slice(),
+            TransportAction::Forbidden =>
+                b"{\"id\":1,\"method\":\"initialize\",\"params\":{}}\n{\"id\":2,\"method\":\"session/new\",\"params\":{}}\n{\"id\":100,\"error\":{\"code\":-32601,\"message\":\"fixture refusal\"}}\n".as_slice(),
+            _ => b"".as_slice(),
+        };
+        let mut request_offset = 0;
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut record = Vec::new();
+        let (mut out_bytes, mut err_bytes, mut proof_bytes) = (0, 0, 0);
+        let (mut out_eof, mut err_eof) = (false, false);
+        let mut status = None;
+        let deadline = Instant::now() + Duration::from_secs(13);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "independent transport watchdog expired in {scenario}; contents retained"
+            );
+            if request_offset < requests.len() {
+                match stdin.write(&requests[request_offset..]) {
+                    Ok(n) => request_offset += n,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::Interrupted
+                                | std::io::ErrorKind::BrokenPipe
+                        ) => {}
+                    Err(error) => panic!("fixture stdin failed: {error}"),
+                }
+            }
+            if !out_eof {
+                out_eof = drain(&mut stdout, &mut out, &mut out_bytes, 300_000);
+            }
+            if !err_eof {
+                err_eof = drain(&mut stderr, &mut err, &mut err_bytes, 300_000);
+            }
+            if !proof_eof {
+                proof_eof = drain(proof.as_mut().unwrap(), &mut record, &mut proof_bytes, 64);
+            }
+            let ready = match action {
+                TransportAction::StopData
+                | TransportAction::StopEof
+                | TransportAction::StopError
+                | TransportAction::StopWriteFailure => dir.join("work/descendant-ready").exists(),
+                TransportAction::Hung => dir.join("work/hung-request").exists(),
+                TransportAction::OutputBudget => out_bytes + err_bytes > 65_536,
+                _ => false,
+            };
+            if ready && let Some(mut endpoint) = control.take() {
+                match action {
+                    TransportAction::StopData => {
+                        let _ = endpoint.write(b"stop");
+                    }
+                    TransportAction::StopError => {
+                        endpoint.shutdown(Shutdown::Both).unwrap();
+                    }
+                    TransportAction::StopWriteFailure => {
+                        endpoint.shutdown(Shutdown::Write).unwrap();
+                        assert!(
+                            endpoint.write(b"stop").is_err(),
+                            "actual stop write must fail"
+                        );
+                    }
+                    _ => {}
+                }
+                drop(endpoint); // EOF is also the bounded fallback for a failed stop write.
+            }
+            if status.is_none()
+                && let Some(done) = running.child.try_wait().unwrap()
+            {
+                running.finished = true;
+                status = Some(done);
+            }
+            if status.is_some() && proof_eof && out_eof && err_eof {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        TransportRun {
+            code: status
+                .unwrap()
+                .code()
+                .expect("outer guard must classify its exact verifier exit"),
+            proof: record,
+            proof_bytes,
+            stdout: out,
+            stderr: err,
+            dir,
+        }
+    }
+}
+fn frame(kind: u8, detail: u8, value: u32) -> [u8; 32] {
+    let mut bytes = [0; 32];
+    bytes[..8].copy_from_slice(&[b'G', b'P', b'L', b'T', 1, kind, detail, 0]);
+    bytes[8..24].copy_from_slice(&INVOCATION);
+    bytes[24..28].copy_from_slice(&value.to_be_bytes());
+    bytes
+}
+fn exact_record(run: &TransportRun, expected: [u8; 32]) {
+    assert_eq!(
+        run.proof_bytes,
+        32,
+        "{}: {:?}",
+        run.dir.display(),
+        run.stderr
+    );
+    assert_eq!(run.proof, expected);
+}
+fn no_execution(run: &TransportRun) {
+    assert!(
+        !run.dir.join("work/executed").exists(),
+        "refusal admitted a target"
+    );
+    assert!(!run.dir.join("work/pre-restriction-fds").exists());
+}
+
+// Remove only this finite owner's known files after the strict join (or checked
+// zero-execution refusal). Unexpected contents stop cleanup and remain retained.
+fn remove_transport_files(dir: &Path) {
+    for name in [
+        "executed",
+        "descendant-ready",
+        "late-activity",
+        "forge-rejected",
+        "sandbox-ok",
+        "fd-closed",
+        "acp-ready",
+        "forbidden-rejected",
+        "pre-restriction-fds",
+        "hung-request",
+        "flood-ready",
+    ] {
+        match fs::remove_file(dir.join("work").join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("finite fixture cleanup failed: {error}; contents retained"),
+        }
+    }
+    fs::remove_dir(dir.join("work")).unwrap();
+    fs::remove_file(dir.join("policy.json")).unwrap();
+    fs::remove_dir(dir).unwrap();
+}
+fn remove_transport_fixture(fixture: &Fixture) {
+    for name in ["target", "cc-out", "cc-err"] {
+        fs::remove_file(fixture.dir.join(name)).unwrap();
+    }
+    for name in ["home", "tmp"] {
+        fs::remove_dir(fixture.dir.join(name)).unwrap();
+    }
+    fs::remove_dir(&fixture.dir).unwrap();
+}
+
+#[test]
+fn transport_stream_namespace_matrix() {
+    let fixture = Fixture::new();
+    let normal = fixture.transport("normal", "normal", TransportAction::None);
+    if normal.code == 65 {
+        exact_record(&normal, frame(2, 2, 0));
+        no_execution(&normal);
+        eprintln!(
+            "SKIP transport namespace matrix: native namespace/pidfd facilities unavailable; exact unsupported record and zero executed marker checked"
+        );
+        remove_transport_files(&normal.dir);
+        remove_transport_fixture(&fixture);
+        return;
+    }
+    assert_eq!(normal.code, 0);
+    exact_record(&normal, frame(1, 1, 7));
+    assert!(normal.dir.join("work/executed").exists());
+    assert!(normal.dir.join("work/pre-restriction-fds").exists());
+    remove_transport_files(&normal.dir);
+    let cases = [
+        ("high-exit", TransportAction::None, 1, 200),
+        ("signal", TransportAction::None, 2, libc::SIGTERM as u32),
+        ("direct", TransportAction::None, 1, 0),
+        ("double", TransportAction::None, 1, 0),
+        ("detach", TransportAction::None, 1, 0),
+        (
+            "signal-tree",
+            TransportAction::None,
+            2,
+            libc::SIGTERM as u32,
+        ),
+        ("kill-init", TransportAction::None, 2, libc::SIGKILL as u32),
+        ("hold", TransportAction::StopData, 3, 0),
+        ("hold", TransportAction::StopEof, 3, 0),
+        ("hold", TransportAction::StopError, 3, 0),
+        ("hold", TransportAction::StopWriteFailure, 3, 0),
+        ("guard-registration-deadline", TransportAction::None, 4, 0),
+        ("control-error", TransportAction::None, 3, 0),
+        ("forge", TransportAction::None, 1, 0),
+        ("acp", TransportAction::Acp, 1, 0),
+        ("acp-forbidden", TransportAction::Forbidden, 1, 0),
+        ("acp-hang", TransportAction::Hung, 3, 0),
+        ("stdout-flood", TransportAction::OutputBudget, 0, 0),
+        ("stderr-flood", TransportAction::OutputBudget, 0, 0),
+        ("map-failure", TransportAction::None, 4, 0),
+        ("restrict-failure", TransportAction::None, 4, 0),
+        ("exec-failure", TransportAction::None, 4, 0),
+    ];
+    for (index, (scenario, action, detail, value)) in cases.iter().enumerate() {
+        let run = fixture.transport(scenario, &format!("{index}-{scenario}"), *action);
+        assert_eq!(run.code, 0, "{scenario}: {:?}", run.stderr);
+        if *detail == 0 {
+            // Flood can exit before stop or observe the owner's stop.
+            assert!(run.proof == frame(1, 1, 0) || run.proof == frame(1, 3, 0));
+            assert_eq!(run.proof_bytes, 32);
+        } else {
+            exact_record(&run, frame(1, *detail, *value));
+        }
+        if [
+            "direct",
+            "double",
+            "detach",
+            "signal-tree",
+            "kill-init",
+            "hold",
+        ]
+        .contains(scenario)
+        {
+            assert!(
+                run.dir.join("work/descendant-ready").exists(),
+                "{scenario} never exercised descendant"
+            );
+            assert!(
+                !run.dir.join("work/late-activity").exists(),
+                "{scenario}: late target activity"
+            );
+        }
+        if *scenario == "forge" {
+            assert_eq!(
+                run.stdout,
+                frame(1, 1, 0),
+                "matching-ID forgery travels only over ACP stdout"
+            );
+            assert!(run.dir.join("work/forge-rejected").exists());
+            assert!(run.dir.join("work/pre-restriction-fds").exists());
+        }
+        if *scenario == "acp" {
+            assert!(String::from_utf8_lossy(&run.stdout).contains("fixture-session"));
+        }
+        if *scenario == "acp-forbidden" {
+            assert!(run.dir.join("work/forbidden-rejected").exists());
+        }
+        if *scenario == "acp-hang" {
+            assert!(run.dir.join("work/hung-request").exists());
+        }
+        if *detail == 4 {
+            assert!(!run.dir.join("work/executed").exists());
+        }
+        remove_transport_files(&run.dir); // Strict proven join completed, including real EOF.
+    }
+    remove_transport_fixture(&fixture);
+    eprintln!("transport native matrix: 23 actual namespace/stream cases passed");
+}
+
+#[test]
+fn transport_refusals_execute_zero_targets() {
+    let fixture = Fixture::new();
+    for (scenario, code, detail) in [
+        ("not-a-scenario", 64, 1),
+        ("clone-failure", 65, 2),
+        ("pidfd-failure", 65, 2),
+    ] {
+        let run = fixture.transport(scenario, scenario, TransportAction::None);
+        assert_eq!(run.code, code);
+        exact_record(&run, frame(2, detail, 0));
+        no_execution(&run);
+        remove_transport_files(&run.dir);
+    }
+    let alias = fixture.transport("normal", "invalid-fd-alias", TransportAction::InvalidLayout);
+    assert_eq!(alias.code, 64);
+    exact_record(&alias, frame(2, 1, 0));
+    no_execution(&alias);
+    remove_transport_files(&alias.dir);
+    remove_transport_fixture(&fixture);
+}
+
+#[test]
+fn transport_verifier_loss_never_becomes_guard_success() {
+    let fixture = Fixture::new();
+    let normal = fixture.transport("normal", "facility-check", TransportAction::None);
+    if normal.code == 65 {
+        exact_record(&normal, frame(2, 2, 0));
+        no_execution(&normal);
+        eprintln!(
+            "SKIP transport verifier/producer loss matrix: actual namespace/pidfd creation unavailable; zero target admission checked"
+        );
+        remove_transport_files(&normal.dir);
+        remove_transport_fixture(&fixture);
+        return;
+    }
+    assert_eq!(normal.code, 0);
+    exact_record(&normal, frame(1, 1, 7));
+    remove_transport_files(&normal.dir);
+    let cases = [
+        "death-pre-admission",
+        "death-post-admission",
+        "death-mid-record",
+        "death-full-record",
+        "death-closed-record",
+        "proof-truncate",
+        "proof-stale",
+        "proof-extra",
+        "proof-missing",
+        "guard-eof",
+        "guard-registration-failure",
+        "wait-failure",
+        "withhold",
+    ];
+    for scenario in cases {
+        let action = if scenario == "withhold" {
+            TransportAction::StopEof
+        } else {
+            TransportAction::None
+        };
+        let run = fixture.transport(scenario, scenario, action);
+        let expected_code = match scenario {
+            "proof-truncate" | "proof-stale" | "proof-extra" | "proof-missing" => 0,
+            "wait-failure" | "withhold" => 70,
+            _ => 71,
+        };
+        assert_eq!(
+            run.code, expected_code,
+            "{scenario}: exit {} {:?}",
+            run.code, run.stderr
+        );
+        assert!(
+            !run.dir.join("work/late-activity").exists(),
+            "{scenario}: finite guard safety failed"
+        );
+        match scenario {
+            "death-pre-admission" | "guard-eof" | "guard-registration-failure" => {
+                no_execution(&run)
+            }
+            "death-mid-record" => {
+                assert_eq!(run.proof_bytes, 16);
+                assert_eq!(run.proof, frame(1, 1, 7)[..16]);
+            }
+            "proof-truncate" => {
+                assert_eq!(run.proof_bytes, 31);
+                assert_eq!(run.proof, frame(1, 1, 7)[..31]);
+            }
+            "death-full-record" | "death-closed-record" => {
+                exact_record(&run, frame(1, 1, 7));
+            }
+            "proof-stale" => {
+                let mut stale = frame(1, 1, 7);
+                stale[8] ^= 1;
+                exact_record(&run, stale);
+            }
+            "proof-extra" => {
+                assert_eq!(run.proof_bytes, 64);
+                assert_eq!(run.proof, [frame(1, 1, 7), frame(1, 1, 7)].concat());
+            }
+            "proof-missing" => assert_eq!(run.proof_bytes, 0),
+            "wait-failure" | "withhold" => exact_record(&run, frame(3, 1, 0)),
+            _ => {}
+        }
+        // A clean guard exit cannot repair missing/invalid/stale framing. Retain
+        // these directories too: none supplies the entire acceptance join.
+        // An independent adopted-init reap never repairs verifier loss either.
+    }
+    let closed = fixture.transport("normal", "proof-peer-closed", TransportAction::CloseProof);
+    assert_eq!(
+        closed.code, 71,
+        "closed proof endpoint must reject producer success"
+    );
+    assert_eq!(closed.proof_bytes, 0);
+    eprintln!("transport loss matrix: 14 cases passed; all 14 finite case directories retained");
 }

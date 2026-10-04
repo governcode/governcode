@@ -267,13 +267,25 @@ The fixture's independent guard receives a duplicate init pidfd before
 target admission. It exercises finite descendants, detached process groups, supervisor death
 and verifier death without relying on inherited host `/proc` scans.
 
+An opt-in transport fixture carries the verifier's actual termination result to a Node test
+owner over a dedicated channel, separate from ACP stdout/stderr. Only trusted, locally built
+fixture programs participate. Proof/control descriptors are closed before target execution.
+A bounded 32-byte invocation-matching record remains a candidate until genuine channel EOF
+and a clean verifier-exit check by the outer guard. Truncation, extra bytes, channel errors,
+deadline expiry or producer death leave the result unproven. The guard's independent reap
+cannot repair missing verifier evidence, and a matching identifier on agent stdout grants no
+authority. The fixture stop adapter closes the owned control endpoint rather than signalling
+an external process group; ordinary ACP shutdown behavior is unchanged.
+
 This does not provide a production proof channel or authorize deleting returned probe contexts.
 Loss of the verifier loses its proof; failed or timed-out observation leaves termination
 unproven. Kernel teardown can be delayed by uninterruptible tasks. Unsupported namespace,
 mapping, pidfd or wait operations fail closed, with no execution fallback. Actual fixtures
 establish acceptance only on the tested host; other architectures and kernels remain unverified.
 The primitive adds no aggregate CPU, memory or task bound and does not establish credential or
-network isolation. No real registry agent is launched by this feature.
+network isolation. No real registry agent is launched by this feature. Logical framing tests
+and an explicitly run native transport harness provide different evidence; ordinary package
+tests do not launch namespace fixtures merely because a feature binary is present.
 
 ## Passive ELF program-header evidence (development)
 
