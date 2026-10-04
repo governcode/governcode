@@ -330,9 +330,12 @@ ACP transport, discovery and context-retention contracts remain unchanged.
 A passive ELF64 inspector separately examines a private snapshot of supplied bytes for an
 explicit platform. Bounded program-header parsing can report `no-interpreter-or-dynamic-segments`
 for its conservative supported layout. This is descriptive metadata, not checksum verification,
-runtime compatibility or execution authority. It has no production caller and does not tighten
-the installer's existing header-only contract. Runtime access, receipt-to-execution binding and
-production lifetime proof transport remain separate prerequisites.
+runtime compatibility or execution authority. A separate passive installer operation captures
+private stored bytes, checks them against the receipt and plan checksum, rereads and revalidates
+the store, and returns only the frozen receipt and inspection result after descriptor closure.
+Parser refusal does not invalidate an installation. Installer acceptance and Runner eligibility
+remain unchanged; runtime access, receipt-to-execution binding and production lifetime proof
+transport remain separate prerequisites.
 
 A separate feature-only fixture selects one fixed embedded static image by comparing the complete
 contents of a native-owned, fully sealed memfd, then executes that same object by descriptor.

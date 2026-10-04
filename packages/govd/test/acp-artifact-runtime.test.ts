@@ -301,7 +301,7 @@ test("fixed-seed small mutation corpus has bounded deterministic frozen results 
   }
 });
 
-test("source remains passive with only util dependency and no production importer", async () => {
+test("source remains passive with only util dependency and exact installer importer", async () => {
   const source = await readFile(new URL("../src/acp-artifact-runtime.ts", import.meta.url), "utf8");
   assert.deepEqual([...source.matchAll(/from "([^"]+)"/gu)].map(match => match[1]), ["node:util"]);
   assert.doesNotMatch(source, /\b(?:async|await|process|fetch|require|setTimeout|setInterval|queueMicrotask|Promise)\b/u);
@@ -314,7 +314,11 @@ test("source remains passive with only util dependency and no production importe
       if (entry.isDirectory()) await scan(child);
       else if (entry.isFile() && /\.(?:[cm]?[jt]s|[jt]sx)$/u.test(entry.name) && entry.name !== "acp-artifact-runtime.ts") {
         const text = await readFile(child, "utf8");
-        assert.doesNotMatch(text, /acp-artifact-runtime|inspectAcpArtifactRuntime/u, `production importer: ${entry.name}`);
+        if (child.href === new URL("packages/govd/src/acp-install.ts", root).href) {
+          assert.deepEqual([...text.matchAll(/from "([^"]*acp-artifact-runtime[^"]*)"/gu)].map(match => match[1]),
+            ["./acp-artifact-runtime.ts"]);
+          assert.equal([...text.matchAll(/\binspectAcpArtifactRuntime\s*\(/gu)].length, 1);
+        } else assert.doesNotMatch(text, /acp-artifact-runtime|inspectAcpArtifactRuntime/u, `production importer: ${child.href}`);
       }
     }
   }

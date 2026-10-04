@@ -8,7 +8,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, opendir, rename, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
-import type { Stats } from "node:fs";
+import type { BigIntStats, Dir, Stats } from "node:fs";
+import { inspectAcpArtifactRuntime, type AcpArtifactRuntimeInspection, type AcpElfPlatform } from "./acp-artifact-runtime.ts";
 import { downloadVerifiedBinary } from "./acp-download.ts";
 import type { AcpArtifactDownloader, AcpInstallHooks, AcpInstallReceipt, AcpInstallRequest } from "./acp-install-contract.ts";
 import { executableInstallSupport, installFingerprint } from "./acp-install-plan.ts";
@@ -185,11 +186,8 @@ async function binaryEvidence(file: FileHandle, plan: AcpInstallPlan, signal?: A
   if (!Number.isSafeInteger(size) || size < 64 || size > MAX_ARTIFACT) fail("invalid artifact size");
   const header = Buffer.alloc(64);
   const read = await file.read(header, 0, header.length, 0);
-  const machine = plan.platform === "linux-x86_64" ? 62 : 183;
-  if (read.bytesRead !== 64 || !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
-      header[4] !== 2 || header[5] !== 1 || header[6] !== 1 || ![0, 3].includes(header[7]) ||
-      ![2, 3].includes(header.readUInt16LE(16)) || header.readUInt16LE(18) !== machine ||
-      header.readUInt32LE(20) !== 1 || header.readUInt16LE(52) !== 64) fail("artifact must be a raw native ELF64 executable");
+  if (read.bytesRead !== 64) fail("artifact must be a raw native ELF64 executable");
+  rawRuntimeHeader(header, plan.platform);
   const hash = createHash("sha256"), chunk = Buffer.alloc(64 * 1024);
   let position = 0;
   while (position < size) {
@@ -235,30 +233,270 @@ async function verifiedDirectory(dir: FileHandle, id: string, signal?: AbortSign
       if (bytesRead !== size) fail("receipt changed while reading");
       body = body.subarray(0, size);
     } finally { await manifest.close(); }
-    let parsed: unknown;
-    try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
-    catch { fail("invalid receipt encoding"); }
-    const envelope = object(parsed, ["receipt", "sha256"]);
-    if (canonical(envelope) !== body.toString("utf8") || envelope.sha256 !== digest(canonical(envelope.receipt)))
-      fail("receipt bytes were changed");
-    const r = object(envelope.receipt, ["schema", "installationId", "operation", "gate", "installedAt", "catalog", "plan",
-      "bytes", "sha256", "versionEvidence"]);
-    if (r.schema !== 1 || r.installationId !== id || r.versionEvidence !== "registry-advertised" ||
-        typeof r.gate !== "string" || !/^G-\d{1,16}$/u.test(r.gate) ||
-        !Number.isSafeInteger(r.bytes) || (r.bytes as number) < 64 || (r.bytes as number) > MAX_ARTIFACT)
-      fail("invalid receipt contract");
-    timestamp(r.installedAt);
-    validateRequest({ operation: r.operation, catalog: r.catalog, plan: r.plan, fingerprint: id });
+    const r = decodeReceipt(body, id);
     const file = await safeFile(dir, ARTIFACT, 0o700);
     try {
       if (ownedFiles && !same(await file.stat(), ownedFiles.get(ARTIFACT)!)) fail("artifact ownership changed");
       const actual = await binaryEvidence(file, r.plan as AcpInstallPlan, signal);
       if (actual.bytes !== r.bytes || actual.sha256 !== r.sha256) fail("receipt evidence mismatch");
     } finally { await file.close(); }
-    return freeze(r as unknown as AcpInstallReceipt);
+    return r;
+}
+
+// Only actual bounded store reads supply this decoder. It accepts no public evidence.
+function decodeReceipt(body: Buffer, id: string): AcpInstallReceipt {
+  let parsed: unknown;
+  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
+  catch { fail("invalid receipt encoding"); }
+  const envelope = object(parsed, ["receipt", "sha256"]);
+  if (canonical(envelope) !== body.toString("utf8") || envelope.sha256 !== digest(canonical(envelope.receipt)))
+    fail("receipt bytes were changed");
+  const r = object(envelope.receipt, ["schema", "installationId", "operation", "gate", "installedAt", "catalog", "plan",
+    "bytes", "sha256", "versionEvidence"]);
+  if (r.schema !== 1 || r.installationId !== id || r.versionEvidence !== "registry-advertised" ||
+      typeof r.gate !== "string" || !/^G-\d{1,16}$/u.test(r.gate) ||
+      !Number.isSafeInteger(r.bytes) || (r.bytes as number) < 64 || (r.bytes as number) > MAX_ARTIFACT)
+    fail("invalid receipt contract");
+  timestamp(r.installedAt);
+  validateRequest({ operation: r.operation, catalog: r.catalog, plan: r.plan, fingerprint: id });
+  return freeze(r as unknown as AcpInstallReceipt);
+}
+
+export type AcpStoredRuntimeObservation = Readonly<{
+  receipt: AcpInstallReceipt;
+  inspection: AcpArtifactRuntimeInspection;
+}>;
+
+// One process-wide slot; held through settled I/O and every consuming close attempt.
+let runtimeReaderActive = false;
+const RUNTIME_CHUNK = 64 * 1024;
+const FINGERPRINT_FIELDS = ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs"] as const;
+function runtimeSame(a: BigIntStats, b: BigIntStats): boolean {
+  return FINGERPRINT_FIELDS.every(key => a[key] === b[key]);
+}
+function runtimePrivate(s: BigIntStats, directory: boolean, mode: bigint): void {
+  if (!(directory ? s.isDirectory() : s.isFile()) || s.uid !== BigInt(process.getuid!()) ||
+      (s.mode & 0o7777n) !== mode || (!directory && s.nlink !== 1n)) fail("unsafe runtime store object");
+}
+function rawRuntimeHeader(header: Buffer, platform: AcpInstallPlan["platform"]): void {
+  if (!header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
+      header[4] !== 2 || header[5] !== 1 || header[6] !== 1 || ![0, 3].includes(header[7]) ||
+      ![2, 3].includes(header.readUInt16LE(16)) ||
+      header.readUInt16LE(18) !== (platform === "linux-x86_64" ? 62 : 183) ||
+      header.readUInt32LE(20) !== 1 || header.readUInt16LE(52) !== 64)
+    fail("artifact must be a raw native ELF64 executable");
+}
+
+// Specific to the passive store operation. Own FileHandles/Dir objects, never raw
+// FD close responsibilities. Trusted runtime/kernel/storage administration required:
+// finite observations cannot exclude hostile same-user changes or inode reuse.
+class StoredRuntimeReader {
+  private readonly owned = new Set<FileHandle | Dir>();
+  private readonly root: string;
+  private readonly id: string;
+  private readonly signal: AbortSignal;
+  private readonly deadline: number;
+  constructor(root: string, id: string, signal: AbortSignal, deadline: number) {
+    this.root = root; this.id = id; this.signal = signal; this.deadline = deadline;
+  }
+
+  private check(): void {
+    this.signal.throwIfAborted();
+    if (performance.now() >= this.deadline) fail("runtime inspection deadline exceeded");
+  }
+  private async io<T>(operation: () => Promise<T>): Promise<T> {
+    this.check(); const result = await operation(); this.check(); return result;
+  }
+  private async acquire<T extends FileHandle | Dir>(operation: () => Promise<T>): Promise<T> {
+    this.check();
+    if (this.owned.size >= 8) fail("runtime reader handle limit exceeded");
+    const handle = await operation();
+    this.owned.add(handle); // Ownership precedes the post-await cancellation/deadline check.
+    this.check(); return handle;
+  }
+  private async close(handle: FileHandle | Dir): Promise<void> {
+    if (!this.owned.delete(handle)) fail("runtime close responsibility already consumed");
+    const failures: unknown[] = [];
+    try { this.check(); } catch (error) { failures.push(error); }
+    try { await handle.close(); } catch (error) { failures.push(error); }
+    try { this.check(); } catch (error) { failures.push(error); }
+    if (failures.length) throw failures[0];
+  }
+  private async closeMany(handles: readonly (FileHandle | Dir)[]): Promise<void> {
+    const failures: unknown[] = [];
+    for (const handle of handles) {
+      try { await this.close(handle); } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failures, "ACP install: runtime closure failed");
+  }
+  private async stat(handle: FileHandle): Promise<BigIntStats> {
+    return this.io(() => handle.stat({ bigint: true }));
+  }
+  private async open(path: string, directory: boolean): Promise<FileHandle> {
+    return this.acquire(() => open(path, directory ? DIR_FLAGS : FILE_FLAGS));
+  }
+  private async walk(): Promise<FileHandle> {
+    let current = await this.open(sep, true);
+    for (const part of this.root.split(sep).filter(Boolean)) {
+      const next = await this.open(fdPath(current, part), true);
+      await this.close(current); current = next;
+    }
+    runtimePrivate(await this.stat(current), true, 0o700n);
+    return current;
+  }
+  private async names(handle: FileHandle, limit: number): Promise<string[]> {
+    const dir = await this.acquire(() => opendir(fdPath(handle)));
+    const entries: string[] = [];
+    try {
+      for (;;) {
+        const entry = await this.io(() => dir.read());
+        if (!entry) break;
+        if (entries.length >= limit) fail("runtime store entry limit exceeded");
+        entries.push(entry.name);
+      }
+      this.check(); entries.sort(); this.check(); return entries;
+    } finally { await this.close(dir); }
+  }
+  private async unchanged(handle: FileHandle, before: BigIntStats): Promise<void> {
+    if (!runtimeSame(before, await this.stat(handle))) fail("runtime store metadata changed");
+  }
+  private async binding(parent: FileHandle, name: string, before: BigIntStats, directory: boolean): Promise<void> {
+    const current = await this.open(fdPath(parent, name), directory);
+    try {
+      if (!runtimeSame(before, await this.stat(current))) fail("runtime named binding changed");
+    } finally { await this.close(current); }
+  }
+  private async read(file: FileHandle, target: Buffer, offset: number, length: number, position: number): Promise<number> {
+    const result = await this.io(() => file.read(target, offset, length, position));
+    if (!Number.isInteger(result.bytesRead) || result.bytesRead < 0 || result.bytesRead > length)
+      fail("invalid runtime read count");
+    return result.bytesRead;
+  }
+  private async eof(file: FileHandle, size: number): Promise<void> {
+    if (await this.read(file, Buffer.alloc(1), 0, 1, size) !== 0) fail("runtime file grew while reading");
+  }
+  private async receipt(file: FileHandle, before: BigIntStats, id: string): Promise<{ receipt: AcpInstallReceipt; body: Buffer }> {
+    if (before.size < 1n || before.size > BigInt(MAX_RECEIPT)) fail("receipt byte limit exceeded");
+    const body = Buffer.allocUnsafeSlow(Number(before.size));
+    let position = 0;
+    while (position < body.length) {
+      const count = await this.read(file, body, position, body.length - position, position);
+      if (!count) fail("receipt changed while reading");
+      position += count;
+    }
+    await this.eof(file, body.length); await this.unchanged(file, before);
+    this.check(); const receipt = decodeReceipt(body, id); this.check();
+    return { receipt, body };
+  }
+  private async artifact(file: FileHandle, before: BigIntStats, receipt: AcpInstallReceipt,
+    capture: boolean): Promise<Buffer | undefined> {
+    if (before.size < 64n || before.size > BigInt(MAX_ARTIFACT) || before.size !== BigInt(receipt.bytes))
+      fail("invalid artifact size or receipt byte count");
+    const size = Number(before.size), bytes = capture ? Buffer.allocUnsafeSlow(size) : undefined;
+    const chunk = Buffer.alloc(RUNTIME_CHUNK), header = Buffer.alloc(64), hash = createHash("sha256");
+    let position = 0;
+    while (position < size) {
+      const length = Math.min(RUNTIME_CHUNK, size - position);
+      const count = await this.read(file, bytes ?? chunk, bytes ? position : 0, length, position);
+      if (!count) fail("artifact changed while reading");
+      const part = bytes ? bytes.subarray(position, position + count) : chunk.subarray(0, count);
+      if (position < 64) part.copy(header, position, 0, Math.min(count, 64 - position));
+      this.check(); hash.update(part); this.check(); position += count;
+    }
+    await this.eof(file, size); await this.unchanged(file, before);
+    this.check(); rawRuntimeHeader(header, receipt.plan.platform);
+    const sha256 = hash.digest("hex");
+    if (sha256 !== receipt.sha256 || sha256 !== receipt.plan.checksum!.value.toLowerCase())
+      fail("receipt artifact checksum mismatch");
+    this.check(); return bytes;
+  }
+  private async reread(file: FileHandle, bytes: Buffer, before: BigIntStats): Promise<void> {
+    const chunk = Buffer.alloc(RUNTIME_CHUNK);
+    let position = 0;
+    while (position < bytes.length) {
+      const count = await this.read(file, chunk, 0, Math.min(chunk.length, bytes.length - position), position);
+      if (!count || !chunk.subarray(0, count).equals(bytes.subarray(position, position + count)))
+        fail("runtime reread mismatch");
+      this.check(); position += count;
+    }
+    await this.eof(file, bytes.length); await this.unchanged(file, before);
+  }
+  private async selected(root: FileHandle, id: string): Promise<{
+    dir: FileHandle; manifest: FileHandle; file: FileHandle;
+    dirStat: BigIntStats; receiptStat: BigIntStats; artifactStat: BigIntStats;
+    receipt: AcpInstallReceipt; body: Buffer;
+  }> {
+    const dir = await this.open(fdPath(root, id), true), dirStat = await this.stat(dir);
+    runtimePrivate(dirStat, true, 0o700n);
+    if (canonical(await this.names(dir, 2)) !== canonical([ARTIFACT, RECEIPT])) fail("unexpected artifact directory contents");
+    const manifest = await this.open(fdPath(dir, RECEIPT), false), receiptStat = await this.stat(manifest);
+    runtimePrivate(receiptStat, false, 0o600n);
+    // Sibling ID is selected solely from the complete store inventory.
+    const body = await this.receipt(manifest, receiptStat, id);
+    const file = await this.open(fdPath(dir, ARTIFACT), false), artifactStat = await this.stat(file);
+    runtimePrivate(artifactStat, false, 0o700n);
+    return { dir, manifest, file, dirStat, receiptStat, artifactStat, ...body };
+  }
+  private async revalidate(root: FileHandle, id: string, selected: Awaited<ReturnType<StoredRuntimeReader["selected"]>>) {
+    const { dir, manifest, file, dirStat, receiptStat, artifactStat } = selected;
+    if (canonical(await this.names(dir, 2)) !== canonical([ARTIFACT, RECEIPT])) fail("unexpected artifact directory contents");
+    await this.unchanged(dir, dirStat); await this.unchanged(manifest, receiptStat); await this.unchanged(file, artifactStat);
+    await this.binding(dir, RECEIPT, receiptStat, false); await this.binding(dir, ARTIFACT, artifactStat, false);
+    await this.binding(root, id, dirStat, true);
+  }
+  private async inventory(root: FileHandle): Promise<Map<string, AcpInstallReceipt>> {
+    const entries = await this.names(root, MAX_INSTALLATIONS), receipts: [string, AcpInstallReceipt][] = [];
+    for (const id of entries) {
+      this.check();
+      if (!ID.test(id)) fail("ambiguous or locked runtime store");
+      const selected = await this.selected(root, id);
+      try {
+        await this.artifact(selected.file, selected.artifactStat, selected.receipt, false);
+        await this.revalidate(root, id, selected);
+        receipts.push([id, selected.receipt]);
+      } finally { await this.closeMany([selected.file, selected.manifest, selected.dir]); }
+    }
+    this.check(); const result = new Map(receipts); this.check(); return result;
+  }
+  async run(): Promise<AcpStoredRuntimeObservation> {
+    let result: AcpStoredRuntimeObservation | undefined, failure: unknown, failed = false;
+    try {
+      this.check();
+      const root = await this.walk(), rootStat = await this.stat(root);
+      const first = await this.inventory(root);
+      if (!first.has(this.id)) fail("installation not found");
+      const selected = await this.selected(root, this.id);
+      this.check();
+      if (canonical(selected.receipt) !== canonical(first.get(this.id))) fail("runtime selected receipt changed");
+      this.check();
+      const bytes = (await this.artifact(selected.file, selected.artifactStat, selected.receipt, true))!;
+      await this.reread(selected.file, bytes, selected.artifactStat);
+      await this.reread(selected.manifest, selected.body, selected.receiptStat);
+      const second = await this.inventory(root);
+      this.check();
+      if (canonical([...second]) !== canonical([...first])) fail("runtime store inventory changed");
+      this.check();
+      await this.unchanged(root, rootStat);
+      const current = await this.walk();
+      if (!runtimeSame(rootStat, await this.stat(current))) fail("store root identity changed");
+      await this.close(current);
+      await this.revalidate(root, this.id, selected);
+      this.check();
+      const inspection = inspectAcpArtifactRuntime(bytes, selected.receipt.plan.platform as AcpElfPlatform);
+      this.check(); result = Object.freeze({ receipt: selected.receipt, inspection }); this.check();
+    } catch (error) { failed = true; failure = error; }
+    try { await this.closeMany([...this.owned].reverse()); }
+    catch (error) { if (!failed) { failed = true; failure = error; } }
+    try { this.check(); } catch (error) { if (!failed) { failed = true; failure = error; } }
+    if (failed) throw failure;
+    return result!;
+  }
 }
 
 export class AcpInstaller {
+  readonly #runtimeRoot: string;
+  #runtimeStopped = false;
+  readonly #runtimeActive = new Map<Promise<AcpStoredRuntimeObservation>, AbortController>();
   private readonly root: string;
   private readonly download: AcpArtifactDownloader;
   private readonly fault?: AcpInstallerOptions["fault"];
@@ -268,6 +506,7 @@ export class AcpInstaller {
   constructor(root: string, opts: AcpInstallerOptions = {}) {
     if (!isAbsolute(root) || resolve(root) !== root || root === sep) fail("store root must be a canonical absolute directory");
     this.root = root;
+    this.#runtimeRoot = root;
     this.download = opts.download ?? ((plan, file, signal) => downloadVerifiedBinary(plan.source, plan.checksum!.value, file, signal));
     this.fault = opts.fault;
   }
@@ -527,6 +766,28 @@ export class AcpInstaller {
     } finally { await current.close(); }
   }
 
+  /** Passive receipt-bound evidence only; no path, bytes, token or execution authority. */
+  async inspectVerifiedRuntime(id: string): Promise<AcpStoredRuntimeObservation> {
+    // Private branding precedes receiver property access, including on revoked proxies.
+    const root = this.#runtimeRoot;
+    if (typeof id !== "string" || !ID.test(id)) fail("invalid installation ID");
+    if (this.#runtimeStopped) fail("installer is stopped");
+    if (runtimeReaderActive) fail("runtime inspection already active");
+    if (Buffer.byteLength(root, "utf8") > 3072 ||
+        root.split(sep).some(part => Buffer.byteLength(part, "utf8") > 255)) fail("runtime root path limit exceeded");
+    const abort = new AbortController();
+    const reader = new StoredRuntimeReader(root, id, abort.signal, performance.now() + 2000);
+    runtimeReaderActive = true;
+    // Register before the first filesystem operation, without racing/abandoning I/O.
+    const task = Promise.resolve().then(() => reader.run());
+    this.#runtimeActive.set(task, abort);
+    void task.finally(() => {
+      this.#runtimeActive.delete(task);
+      runtimeReaderActive = false;
+    }).catch(() => {});
+    return task;
+  }
+
   async inspectVerified(id: string): Promise<{ receipt: AcpInstallReceipt; path: string }> {
     if (!ID.test(id)) fail("invalid installation ID");
     const root = await rootHandle(this.root, false);
@@ -554,9 +815,16 @@ export class AcpInstaller {
   }
 
   async stop(): Promise<void> {
-    this.stopped = true;
-    const active = [...this.active];
-    for (const [, abort] of active) abort.abort(new Error("ACP install: installer is stopped"));
-    await Promise.allSettled(active.map(([task]) => task));
+    // Stop the privately bound reader even if legacy TS-private properties were
+    // replaced by the caller. Their failure must not abandon reader settlement.
+    this.#runtimeStopped = true;
+    const readers = [...this.#runtimeActive];
+    for (const [, abort] of readers) abort.abort(new Error("ACP install: installer is stopped"));
+    try {
+      this.stopped = true;
+      const active = [...this.active];
+      for (const [, abort] of active) abort.abort(new Error("ACP install: installer is stopped"));
+      await Promise.allSettled(active.map(([task]) => task));
+    } finally { await Promise.allSettled(readers.map(([task]) => task)); }
   }
 }

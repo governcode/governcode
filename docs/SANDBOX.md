@@ -303,10 +303,25 @@ and custom loading behavior are not inspected. This evidence does not establish 
 validity, execution compatibility, credential isolation or absence of dependencies, and verifies
 no checksum or receipt identity.
 
-The inspector has no production caller and changes no installer acceptance, Runner eligibility
-or filesystem grants. Future probing still needs receipt-to-byte and exact-execution binding,
-reviewed runtime access, a narrow policy, context association and native lifetime proof transport.
-No real artifact is executed by this inspection.
+The installer provides a separate passive receipt-bound inspection. It privately captures the
+selected artifact, verifies that snapshot against both the receipt and plan checksum, compares
+a held-file reread, and revalidates the receipt, directory bindings and complete bounded store
+inventory. It returns only a frozen receipt and inspection result after all descriptor closure
+attempts and final lifecycle checks succeed. A valid stored artifact with unsupported program
+headers returns a parser refusal; it is not deleted or made invalid by that observation.
+
+This operation admits one inspection process-wide, with no queue, and retains one absolute
+two-second deadline across reads, parsing, revalidation and closure. It preserves the 128 MiB
+artifact bound; the private snapshot and parser copy can together use twice that space. Large
+valid stores may conservatively refuse. A userspace deadline cannot interrupt stalled filesystem
+I/O or a synchronous runtime pause; late completion rejects rather than publishing evidence.
+
+The result describes finite observations under the trusted runtime and private store-owner
+assumptions. It does not authenticate registry claims, prove continuous ownership or make a path
+current after closure. No bytes, handles or launch capability are returned. Installer acceptance,
+Runner eligibility and filesystem grants are unchanged. Future probing still needs exact-execution
+binding, reviewed runtime access, a narrow policy, context association and native lifetime proof
+transport. No artifact is executed by this inspection.
 
 ## Fixture-only sealed initial images (development)
 
