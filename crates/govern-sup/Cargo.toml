@@ -14,3 +14,18 @@ serde_json = "1"
 
 [dev-dependencies]
 libc = "0.2"
+
+# Native fixture helpers are deliberately absent from ordinary builds and packaging.
+[features]
+probe-lifetime-fixtures = []
+
+[[bin]]
+name = "probe-lifetime-driver"
+path = "tests/fixtures/probe_lifetime_driver.rs"
+required-features = ["probe-lifetime-fixtures"]
+test = false
+
+[[test]]
+name = "probe_lifetime"
+path = "tests/probe_lifetime.rs"
+required-features = ["probe-lifetime-fixtures"]

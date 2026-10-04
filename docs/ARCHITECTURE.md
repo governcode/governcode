@@ -311,6 +311,15 @@ retained with no cleanup method. Failed setup can attempt bounded rollback, reta
 replacements or unexpected contents. This foundation neither launches an agent nor establishes
 descendant death, runtime compatibility or production credential-isolation acceptance.
 
+The explicit `probe-lifetime-fixtures` native build feature tests a separate PID-namespace
+lifetime primitive, excluded from production dispatch. A trusted namespace PID 1 admits a
+restricted target only after mappings, capability removal and parent-death registration; an
+outside verifier owns its init pidfd and exact wait. A private termination value requires
+reaping that init after kernel namespace teardown. Independent finite fixtures exercise
+descendants and verifier loss. No production proof transport or context deletion is wired;
+unconfirmed teardown and loss of the verifier retain uncertainty. Existing Runner supervision
+and its hard-kill limit remain unchanged.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the

@@ -247,6 +247,34 @@ make deletion conditional on inode identity, so malicious same-user mutation, pr
 actors and hostile storage remain outside the allocator's trust boundary. The private runtime
 directory redirects scratch use; it does not establish a login-session lifecycle.
 
+## Fixture-only PID namespace lifetimes (development)
+
+An explicit `probe-lifetime-fixtures` Cargo feature builds a native fixture driver and tests;
+ordinary builds and production `run` dispatch do not include the new lifetime module. It
+creates a fresh unprivileged user/PID namespace using `clone3`, with a trusted supervisor as
+namespace PID 1 and a separate verifier outside it. Admission stays closed until single-ID
+mappings, control ownership, capability removal and parent-death checks are established.
+Unprivileged mapping rules freeze supplementary groups; their inherited representation is
+verified, rather than cleared. The target still requires the existing Landlock/seccomp policy
+and child ceilings. Control descriptors are closed before exec, and an additional filter
+denies namespace creation or joining by the target.
+
+Stop requests and deadlines signal the owned init pidfd. A private native termination value
+is constructed only after exact kernel reaping of this invocation's namespace init. Linux
+namespace teardown precedes init reaping; sending SIGKILL, observing target exit or closing
+stdio is insufficient. This ordering follows the [kernel's namespace teardown invariant](https://github.com/torvalds/linux/blob/v6.12/kernel/pid_namespace.c#L225).
+The fixture's independent guard receives a duplicate init pidfd before
+target admission. It exercises finite descendants, detached process groups, supervisor death
+and verifier death without relying on inherited host `/proc` scans.
+
+This does not provide a production proof channel or authorize deleting returned probe contexts.
+Loss of the verifier loses its proof; failed or timed-out observation leaves termination
+unproven. Kernel teardown can be delayed by uninterruptible tasks. Unsupported namespace,
+mapping, pidfd or wait operations fail closed, with no execution fallback. Actual fixtures
+establish acceptance only on the tested host; other architectures and kernels remain unverified.
+The primitive adds no aggregate CPU, memory or task bound and does not establish credential or
+network isolation. No real registry agent is launched by this feature.
+
 ## Known limits
 
 - Existing Runner policies allow `chmod` (npm and git set file modes), and Landlock does not mediate it, so a
