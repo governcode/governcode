@@ -13,9 +13,12 @@ import { fileURLToPath } from "node:url";
 const gov = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "gc-cli-"));
 after(() => rmSync(root, { recursive: true, force: true }));
-const plain = (s: string) => s.replace(/\x1b\[\d+m/g, "");
+const plain = (s: string) => s.replace(/\x1b\[\d+m/g, "").replace(/\r/g, "");
 
 type Notify = (e: unknown) => void;
+const handleDisconnect = (error: NodeJS.ErrnoException) => {
+  if (error.code !== "EPIPE" && error.code !== "ECONNRESET") throw error;
+};
 
 /** A govd that answers each call from `handle` (undefined: {}; a throw: an error) and records them.
  *  `drop` closes the connection, as a govd restart would. */
@@ -23,8 +26,10 @@ async function fakeGovd(handle: (method: string, params: any, notify: Notify, dr
   const dir = mkdtempSync(join(root, "run-"));
   const calls: Array<{ method: string; params: any }> = [];
   const server = createServer((s) => {
+    // A completed client may exit while the independent Gate-answer reply is in flight.
+    s.on("error", handleDisconnect);
     const send = (o: unknown) => s.writable && s.write(JSON.stringify(o) + "\n");
-    createInterface({ input: s }).on("line", async (l) => {
+    createInterface({ input: s }).on("error", handleDisconnect).on("line", async (l) => {
       const m = JSON.parse(l);
       calls.push({ method: m.method, params: m.params });
       try { send({ jsonrpc: "2.0", id: m.id, result: (await handle(m.method, m.params, (e) => send({ jsonrpc: "2.0", method: "event", params: e }), () => s.destroy())) ?? {} }); }
@@ -38,11 +43,16 @@ async function fakeGovd(handle: (method: string, params: any, notify: Notify, dr
 
 /** gov with stdin closed (or fed `input`, or left open for the test to type into: `live`), against
  *  the govd whose runtime folder is `dir`. The user's git config stays out of it (gov demo commits). */
-function run(dir: string, args: string[], o: { cwd?: string; input?: string; live?: boolean } = {}) {
-  const p = spawn(process.execPath, [gov, ...args], { cwd: o.cwd ?? root,
+function run(dir: string, args: string[], o: { cwd?: string; input?: string; live?: boolean; pty?: boolean } = {}) {
+  // Linux raw-artifact approval is exercised through a real pseudo-terminal, not mocked isTTY.
+  const quote = (word: string) => "'" + word.replace(/'/g, "'\\''") + "'";
+  const p = spawn(o.pty ? "script" : process.execPath, o.pty
+    ? ["-qefc", [process.execPath, gov, ...args].map(quote).join(" "), "/dev/null"] : [gov, ...args], { cwd: o.cwd ?? root,
     env: { ...process.env, GOVERNCODE_RUNTIME_DIR: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
     stdio: [o.input === undefined && !o.live ? "ignore" : "pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
+  // The PTY helper may close its input pipe as soon as gov exits successfully.
+  p.stdin?.on("error", handleDisconnect);
   p.stdout!.on("data", (d) => (stdout += d));
   p.stderr!.on("data", (d) => (stderr += d));
   if (o.input !== undefined) p.stdin!.end(o.input);
@@ -87,7 +97,9 @@ test("ACP search and inspection send only read-only catalog requests", async () 
 
 test("ACP rejects unsupported operations and malformed options before requesting a catalog", async () => {
   const g = await fakeGovd();
-  for (const args of [[], ["install", "fixture"], ["inspect"], ["inspect", "../fixture"],
+  for (const args of [[], ["probe", "fixture"], ["install"], ["install", "fixture", "--json"],
+    ["install", "fixture", "--fingerprint", "bad"], ["install", "fixture", "--kind", "npm"],
+    ["cancel", "G-1"], ["installed", "--refresh"], ["inspect"], ["inspect", "../fixture"],
     ["search", "one", "two"], ["search", "--kind", "npx"], ["inspect", "fixture", "--platform", "linux-arm64"],
     ["inspect", "fixture", "--kind", "npm"], ["inspect", "fixture", "--kind"], ["search", "--refresh", "--refresh"],
     ["inspect", "fixture", "--kind", "npx", "--kind", "uvx"]]) {
@@ -96,6 +108,83 @@ test("ACP rejects unsupported operations and malformed options before requesting
     assert.match(result.stderr, /usage: gov acp/);
   }
   assert.deepEqual(g.calls, []);
+});
+
+const installInspection = () => ({ fingerprint: "a".repeat(64), executor: { supported: true },
+  installation: { supported: true, plan: { agentId: "fixture-agent", version: "1.2.3" } } });
+const installReceipt = () => ({ plan: { agentId: "fixture-agent", version: "1.2.3" }, bytes: 128,
+  sha256: "b".repeat(64), installationId: "a".repeat(64) });
+
+test("ACP install requires a fresh terminal answer and sends the inspected binding without remember scope", { skip: process.platform !== "linux" }, async () => {
+  let settle!: (value: unknown) => void;
+  const pending = new Promise((ok) => { settle = ok; });
+  const g = await fakeGovd((method, params, notify) => {
+    if (method === "acp.inspect") return installInspection();
+    if (method === "acp.install") {
+      notify({ kind: "acp.install", id: "I-1" });
+      notify({ kind: "gate", id: "G-1", canonical: "fixture source/hash/platform/command", scopes: [] });
+      return pending;
+    }
+    if (method === "gate.answer") { settle({ receipt: installReceipt() }); return {}; }
+  });
+  const r = run(g.dir, ["acp", "install", "fixture-agent"], { live: true, pty: true });
+  await answer(r, "Allow G-1? [y/N] ", "yes");
+  const result = await r.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /cancel with gov acp cancel I-1/);
+  assert.match(result.stdout, /registry-advertised/);
+  assert.deepEqual(g.calls, [
+    { method: "acp.inspect", params: { id: "fixture-agent", kind: "binary" } },
+    { method: "watch", params: { wake: false } },
+    { method: "acp.install", params: { id: "fixture-agent", kind: "binary", fingerprint: "a".repeat(64) } },
+    { method: "gate.answer", params: { id: "G-1", answer: "allow" } },
+  ]);
+});
+
+test("ACP install refuses a stale explicit fingerprint and unsupported executor before starting", async () => {
+  const g = await fakeGovd(() => installInspection());
+  const stale = await run(g.dir, ["acp", "install", "fixture-agent", "--fingerprint", "c".repeat(64)]).done;
+  assert.equal(stale.code, 1); assert.match(stale.stderr, /changed since inspection/);
+  assert.deepEqual(g.methods(), ["acp.inspect"]);
+  const unsupported = await fakeGovd(() => ({ ...installInspection(), executor: { supported: false, reason: "archive extraction is not implemented" } }));
+  const result = await run(unsupported.dir, ["acp", "install", "fixture-agent"]).done;
+  assert.equal(result.code, 1); assert.match(result.stderr, /archive extraction/);
+  assert.deepEqual(unsupported.methods(), ["acp.inspect"]);
+});
+
+test("ACP delayed piped approval cannot answer a Gate; an external answer withdraws the question", async () => {
+  let complete!: (value: unknown) => void, notify!: Notify;
+  const pending = new Promise((ok) => { complete = ok; });
+  const g = await fakeGovd((method, _params, send) => {
+    if (method === "acp.inspect") return installInspection();
+    if (method === "acp.install") {
+      notify = send;
+      send({ kind: "gate", id: "G-2", canonical: "fixture binding", scopes: [] });
+      return pending;
+    }
+  });
+  const r = run(g.dir, ["acp", "install", "fixture-agent"], { live: true });
+  await until(() => r.out().includes("no input here"));
+  await new Promise((ok) => setTimeout(ok, 1100));
+  r.p.stdin!.end("yes\n");
+  await until(() => r.out().includes("ignored: no question was waiting"));
+  assert.equal(g.methods().includes("gate.answer"), false);
+  notify({ kind: "trace", event: { kind: "gate.allowed", data: { gate: "G-2" } } });
+  complete({ receipt: installReceipt() });
+  const result = await r.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /answered elsewhere/);
+  assert.equal(g.methods().includes("gate.answer"), false);
+});
+
+test("ACP stored inventory and cancellation use only user RPCs", async () => {
+  const inventory = { installations: [installReceipt()] };
+  const g = await fakeGovd((method) => method === "acp.installed" ? inventory : { id: "I-7", cancelled: true });
+  const listed = await run(g.dir, ["acp", "installed", "--json"]).done;
+  assert.equal(listed.code, 0); assert.deepEqual(JSON.parse(listed.stdout), inventory);
+  const cancelled = await run(g.dir, ["acp", "cancel", "I-7"]).done;
+  assert.equal(cancelled.code, 0); assert.match(cancelled.stdout, /I-7: cancellation requested/);
+  assert.deepEqual(g.calls, [{ method: "acp.installed", params: {} }, { method: "acp.install.cancel", params: { id: "I-7" } }]);
 });
 
 test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets it on stderr, without govd too", async () => {

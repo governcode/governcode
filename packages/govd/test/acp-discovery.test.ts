@@ -16,7 +16,7 @@ test("user ACP discovery preserves catalog provenance and cannot enable a regist
   let fetches = 0;
   const document = JSON.stringify({ version: "1.0.0", agents: [{ id: "fixture-agent", name: "Fixture Agent", version: "1.2.3",
     description: "Invented catalog fixture", license_url: "https://example.org/LICENSE",
-    distribution: { npx: { package: "fixture-agent@1.2.3", args: ["acp"] } } }] });
+    distribution: { npx: { package: "fixture-agent@1.2.3", args: Array(64).fill("acp") } } }] });
   // Transport injection remains test-local; production uses only the fixed official URL.
   (d as any).catalog = new AcpCatalog(async () => { fetches++; return new Response(document); });
   await d.listen();
@@ -41,6 +41,9 @@ test("user ACP discovery preserves catalog provenance and cannot enable a regist
     const inspected = await call("acp.inspect", { id: "fixture-agent", platform: "linux-x86_64" });
     assert.deepEqual(inspected.result.catalog, search.result.catalog);
     assert.equal(inspected.result.installation.plan.packageSpec, "fixture-agent@1.2.3");
+    assert.equal(inspected.result.installation.plan.command.length, 66);
+    assert.match(inspected.result.fingerprint, /^[a-f0-9]{64}$/);
+    assert.equal(inspected.result.executor.supported, false, "package recipes remain inspectable without enabling their installer");
     assert.equal(inspected.result.eligibility.eligible, false);
     assert.match(inspected.result.eligibility.reasons.join(" "), /No safety profile/);
     assert.equal(fetches, 1, "search and inspection reuse the same bounded snapshot");

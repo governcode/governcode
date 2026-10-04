@@ -102,6 +102,12 @@ test("canonical: sorted keys, ASCII-escaped, whole input", () => {
   assert.equal(canonical({ b: 1, a: { d: "\u202e", c: 2 } }), '{\n "a": {\n  "c": 2,\n  "d": "\\u202e"\n },\n "b": 1\n}');
 });
 
+test("a late wake callback after shutdown never reads the closed Trace", () => {
+  const d = daemon("late-wake");
+  d.close();
+  assert.doesNotThrow(() => (d as any).wakeIfDue("fixture-project"));
+});
+
 test("no AI tool starts when the sandbox self-test fails", async () => {
   process.env.FAKE_SELFTEST = "fail";
   const d = daemon("refuse");

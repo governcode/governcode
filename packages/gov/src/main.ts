@@ -19,7 +19,7 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp cancel I-N|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
@@ -263,6 +263,48 @@ export async function runAsk(api: Awaited<ReturnType<typeof open>>, project: str
   tty.reshow();
   await Promise.all(proposals);
   return r;
+}
+
+async function installAcpInTerminal(api: Awaited<ReturnType<typeof open>>, id: string, kind: "binary" | "npx" | "uvx",
+  explicitFingerprint?: string): Promise<number> {
+  const inspected = await api.call("acp.inspect", { id, kind });
+  if (!inspected.installation?.supported || !inspected.executor?.supported)
+    throw new Error(inspected.installation?.reason ?? inspected.executor?.reason ?? "this govd does not support artifact storage");
+  const fingerprint = explicitFingerprint ?? inspected.fingerprint;
+  if (!/^[a-f0-9]{64}$/.test(fingerprint ?? "") || (explicitFingerprint && explicitFingerprint !== inspected.fingerprint))
+    throw new Error("the installation changed since inspection; inspect it again");
+  const tty = answers(), questions = new Map<string, AbortController>();
+  api.onEvent(async (event) => {
+    if (event.kind === "acp.install") console.log(`Installation ${event.id} (cancel with gov acp cancel ${event.id})`);
+    else if (event.kind === "gate") {
+      console.log(warn(`\nArtifact installation Gate ${event.id}:`));
+      console.log(event.canonical);
+      const withdrawn = new AbortController();
+      questions.set(event.id, withdrawn);
+      const line = process.stdin.isTTY === true ? await tty.next(`Allow ${event.id}? [y/N] `, withdrawn.signal) : null;
+      if (withdrawn.signal.aborted) return;
+      if (line === null) {
+        console.log(dim(`no input here: answer with gov gate ${event.id} allow|deny from another terminal`));
+        return;
+      }
+      questions.delete(event.id);
+      const answer = line.trim().toLowerCase();
+      await api.call("gate.answer", { id: event.id, answer: answer === "y" || answer === "yes" ? "allow" : "deny" })
+        .catch((error: Error) => console.log(dim(`${event.id}: ${error.message}`)));
+    } else if (event.kind === "trace" && ["gate.allowed", "gate.denied"].includes(event.event.kind)) {
+      const gate = event.event.data.gate, pending = questions.get(gate);
+      if (pending) { questions.delete(gate); pending.abort(); console.log(dim(`${gate}: answered elsewhere`)); }
+    }
+  });
+  try {
+    await api.call("watch", { wake: false });
+    const { receipt } = await api.call("acp.install", { id, kind, fingerprint });
+    console.log(`Stored ${receipt.plan.agentId} ${receipt.plan.version} (registry-advertised) · ${receipt.bytes} bytes\nInstallation: ${receipt.installationId}\nSHA-256: ${receipt.sha256}`);
+    return 0;
+  } finally {
+    for (const question of questions.values()) question.abort();
+    tty.close();
+  }
 }
 
 async function currentProject(api: Awaited<ReturnType<typeof open>>): Promise<string | null> {
@@ -600,8 +642,35 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "acp": {
-        const usage = "usage: gov acp search [QUERY] [--refresh] [--json] | inspect ID [--platform P] [--kind binary|npx|uvx] [--refresh] [--json]";
+        const usage = "usage: gov acp search [QUERY] [--refresh] [--json] | inspect ID [--platform P] [--kind binary|npx|uvx] [--refresh] [--json] | install ID [--kind binary|npx|uvx] [--fingerprint F] | installed [--json] | cancel I-N";
         const action = rest[0];
+        if (action === "installed") {
+          if (rest.length > 2 || (rest.length === 2 && rest[1] !== "--json")) throw new Error(usage);
+          const result = await api.call("acp.installed", {});
+          if (rest[1] === "--json") console.log(JSON.stringify(result, null, 2));
+          else {
+            for (const receipt of result.installations) console.log(`${receipt.plan.agentId} ${receipt.plan.version} · ${receipt.installationId} · ${receipt.bytes} bytes`);
+            if (!result.installations.length) console.log(dim("no verified ACP artifacts stored"));
+          }
+          return 0;
+        }
+        if (action === "cancel") {
+          if (rest.length !== 2 || !/^I-\d{1,16}$/.test(rest[1])) throw new Error(usage);
+          console.log(`${(await api.call("acp.install.cancel", { id: rest[1] })).id}: cancellation requested`);
+          return 0;
+        }
+        if (action === "install") {
+          if (!/^[a-z][a-z0-9-]{0,95}$/.test(rest[1] ?? "")) throw new Error(usage);
+          const options: Record<string, string> = {};
+          for (let i = 2; i < rest.length; i += 2) {
+            if (!["--kind", "--fingerprint"].includes(rest[i]) || options[rest[i]] !== undefined || !rest[i + 1]) throw new Error(usage);
+            options[rest[i]] = rest[i + 1];
+          }
+          const kind = options["--kind"] ?? "binary";
+          if (!["binary", "npx", "uvx"].includes(kind) ||
+              (options["--fingerprint"] !== undefined && !/^[a-f0-9]{64}$/.test(options["--fingerprint"]))) throw new Error(usage);
+          return await installAcpInTerminal(api, rest[1], kind as "binary" | "npx" | "uvx", options["--fingerprint"]);
+        }
         if (action !== "search" && action !== "inspect") throw new Error(usage);
         let value: string | undefined, json = false, refresh = false;
         const flags: Record<string, string> = {};
@@ -632,10 +701,12 @@ async function main(argv: string[]): Promise<number> {
             console.log(`Distribution: ${plan.kind} · ${plan.packageSpec ?? plan.version}\nSource: ${plan.source}`);
             console.log(`Integrity: ${plan.checksum ? `SHA-256 ${plan.checksum.value}` : "exact package version"}`);
             console.log(`Advertised command: ${JSON.stringify(plan.command)}`);
+            if (result.fingerprint) console.log(`Review fingerprint: ${result.fingerprint}`);
+            if (result.executor) console.log(`Storage: ${result.executor.supported ? "raw binary supported" : result.executor.reason}`);
           } else console.log(`Distribution unavailable: ${result.installation.reason}`);
           console.log("Runner eligibility:");
           for (const reason of result.eligibility.reasons) console.log(`  ${reason}`);
-          console.log(dim("Read-only inspection. Installation and ACP Runner execution are not enabled."));
+          console.log(dim("Read-only inspection. Stored artifacts remain ineligible for ACP Runner execution."));
         }
         return 0;
       }

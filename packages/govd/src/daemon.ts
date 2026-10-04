@@ -12,7 +12,7 @@ import { Errors, FEATURES, PROTOCOL, Params, issues, ProjectName, ProjectProposa
 import { gitGuard } from "./gitguard.ts";
 import { checkClaudePolicy } from "./policycheck.ts";
 import { Ledger } from "./ledger.ts";
-import { runTurn, type GateRequest, type TurnHooks } from "./claude.ts";
+import { canonical, runTurn, type GateRequest, type TurnHooks } from "./claude.ts";
 import { runCodexTurn, codexUsage } from "./codex.ts";
 import { agyUsage } from "./agy.ts";
 import { grokUsage } from "./grok.ts";
@@ -29,6 +29,9 @@ import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot,
 import { recoveryState, recoveryStates, type RecoveryState } from "./recovery.ts";
 import { AcpCatalog } from "./acp-catalog.ts";
 import { acpPlatform, acpRunnerEligibility, inspectAcpAgent, planAcpInstall, searchAcpRegistry } from "./acp-registry.ts";
+import { AcpInstaller } from "./acp-install.ts";
+import { executableInstallSupport, installFingerprint, snapshotInstallRequest } from "./acp-install-plan.ts";
+import type { AcpInstallApproval, AcpInstallRequest } from "./acp-install-contract.ts";
 
 // ponytail: very large projects skip turn Checkpoints (hashing every file each turn).
 // Raise or make it incremental when a real project hits it.
@@ -76,6 +79,9 @@ export class Daemon {
   private sandboxOk = false;
   private connector!: Connector;         // Connect: tools sign in for GovernCode in their own homes
   private catalog = new AcpCatalog();    // public registry metadata only, loaded on explicit inspection
+  private installer?: AcpInstaller;
+  private installSeq = 0;
+  private installations = new Map<string, { abort: AbortController; owner: Socket }>();
   private sandboxReason = "self-test not run";
   // Specs run on their own (#227): beside each other, and past the turn that made them.
   private runs = new SpecRuns();
@@ -120,6 +126,7 @@ export class Daemon {
     this.gateSeq = last("gate.opened", "gate");
     this.planSeq = last("plan.proposed", "plan");
     this.proposalSeq = last("project.proposed", "proposal");
+    this.installSeq = last("acp.install.started", "operation");
   }
 
   /** A project name must be new; say which folder already has it, never a database error. */
@@ -194,6 +201,8 @@ export class Daemon {
   async listen(): Promise<void> {
     this.closeInterruptedTurns();
     this.closeInterruptedSpecs();
+    for (const operation of this.ledger.unfinishedArtifactOperations()) this.ledger.append(null, "acp.install.interrupted", "govd",
+      { operation, reason: "govd stopped; approval and unfinished artifacts are not resumed" });
     const dir = resolve(this.opts.socketPath, "..");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
@@ -216,6 +225,25 @@ export class Daemon {
 
   private stateDir(): string {
     return resolve(this.opts.ledgerPath, "..");
+  }
+
+  private artifactInstaller(): AcpInstaller {
+    return this.installer ??= new AcpInstaller(join(this.stateDir(), "acp-artifacts"));
+  }
+
+  private async artifactGate(request: AcpInstallRequest, owner: Socket, notify: (n: unknown) => void,
+    signal: AbortSignal): Promise<AcpInstallApproval> {
+    let id = "";
+    const input = { operation: request.operation, agent: request.plan.agentId, name: request.plan.name,
+      version: request.plan.version, versionEvidence: "registry-advertised", platform: request.plan.platform,
+      recipe: request.plan.kind, source: request.plan.source, sha256: request.plan.checksum!.value,
+      command: request.plan.command, fingerprint: request.fingerprint, catalog: request.catalog,
+      action: "download and store verified bytes only; do not execute" };
+    const answer = await this.decide({ id: request.operation, tool: "acp.install", input,
+      canonical: canonical(input), actor: "user" }, { project: null,
+      ctx: { project: null, turn: request.operation }, actor: "user", owner, notify, mandatory: true, signal,
+      onOpened: (opened) => { id = opened; } });
+    return { id, allowed: answer === "allow" && !signal.aborted && !this.stopping && !owner.destroyed };
   }
 
   private specOr404(id: string) {
@@ -283,6 +311,8 @@ export class Daemon {
   stop(ms = 10_000): Promise<void> {
     return this.stopped ??= (async () => {
       this.stopping = true;   // from now on no turn and no Spec starts
+      for (const { abort } of this.installations.values()) abort.abort();
+      await this.installer?.stop(); // finish transport/storage cleanup before the Trace is closed
       const ending = this.runs.ids().map((id) => this.runs.done(id)?.catch(() => null));
       this.runs.stopAll("govd stopped while it ran");
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -297,6 +327,8 @@ export class Daemon {
   close(): void {
     if (this.closed) return;
     this.closed = this.stopping = true;
+    for (const { abort } of this.installations.values()) abort.abort();
+    void this.installer?.stop().catch(() => {});
     clearInterval(this.recoveryTimer);
     this.runs.stopAll("govd stopped while it ran");
     for (const stop of this.wakeTurns.values()) stop();
@@ -394,8 +426,10 @@ export class Daemon {
    *  (Crew card) an item of a plan the user approved lets it through without asking (never past the
    *  sandbox); otherwise a Gate waits for the user. Either way the step is in the Trace. */
   private decide(req: GateRequest, o: { project: string | null; ctx: GateContext; actor: string; owner: Socket | null;
-      notify: (n: unknown) => void; planned?: () => string | null }): Promise<"allow" | "deny"> {
+      notify: (n: unknown) => void; planned?: () => string | null; mandatory?: boolean;
+      signal?: AbortSignal; onOpened?: (id: string) => void }): Promise<"allow" | "deny"> {
     return new Promise((answer) => {
+      if (o.signal?.aborted || this.stopping) return answer("deny");
       const L = this.ledger;
       const { level, quietReads } = this.settings().gates;
       const a = analyze(req);
@@ -404,9 +438,9 @@ export class Daemon {
         o.notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why });
         answer("allow");
       };
-      const planned = o.planned?.();
+      const planned = o.mandatory ? null : o.planned?.();
       if (planned) return pass("plan", planned);
-      if (!a.ask) {
+      if (!o.mandatory && !a.ask) {
         if (a.quiet && quietReads) return pass("quiet read", "a read-only command (quiet reads are on)");
         if (level === "relaxed") return pass("relaxed", "not on the always-ask list (Gates: relaxed; the sandbox still applies)");
         const rules = a.kinds.map((k) => this.allows.match(k, o.ctx));
@@ -418,12 +452,19 @@ export class Daemon {
       }
       const id = `G-${++this.gateSeq}`;
       // Only the kinds no rule covers yet are offered to remember.
-      const kinds = a.ask ? [] : a.kinds.filter((k) => !this.allows.match(k, o.ctx));
+      const kinds = o.mandatory || a.ask ? [] : a.kinds.filter((k) => !this.allows.match(k, o.ctx));
       const scopes = kinds.length ? scopesFor(kinds[0], o.ctx) : [];
+      const abort = () => { this.settle(id, "deny", "the operation ended"); };
       const gate: Gate = { id, project: o.project, tool: req.tool, canonical: req.canonical,
-        opened: new Date().toISOString(), owner: o.owner, answer, kinds, scopes, ctx: o.ctx };
-      if (!o.owner) { gate.timer = setTimeout(() => this.settle(id, "deny", "nobody answered within the hour"), GATE_WAIT_MS); gate.timer.unref?.(); }
+        opened: new Date().toISOString(), owner: o.owner,
+        answer: (choice) => { o.signal?.removeEventListener("abort", abort); answer(choice); }, kinds, scopes, ctx: o.ctx };
+      if (!o.owner || o.mandatory) {
+        gate.timer = setTimeout(() => this.settle(id, "deny", o.mandatory ? "nobody answered before the Gate expired" : "nobody answered within the hour"), GATE_WAIT_MS);
+        gate.timer.unref?.();
+      }
       this.gates.set(id, gate);
+      o.signal?.addEventListener("abort", abort, { once: true });
+      o.onOpened?.(id);
       L.append(o.project, "gate.opened", req.actor ?? o.actor, { gate: id, tool: req.tool });
       this.gatesChanged();
       o.notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical, covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
@@ -582,6 +623,7 @@ export class Daemon {
    *  is connected to see it, and no turn is running. One at a time: whatever finishes meanwhile goes
    *  in the next one, started when this one ends. Never after a restart by itself (noWake). */
   private wakeIfDue(project: string): void {
+    if (this.stopping) return; // A queued completion callback may outlive the Trace.
     const L = this.ledger;
     const found = L.project(project);
     if (this.stopping || !found || (this.turning.get(project) ?? 0) > 0 || !this.someoneSeesWakes() || !this.sandboxOk) return;
@@ -867,7 +909,53 @@ export class Daemon {
         if (!agent) throw new RpcError(Errors.notFound, `no ACP registry agent ${p.id}`);
         const eligibility = acpRunnerEligibility(agent, { platform, authentication: "subscription", connected: false,
           countedBudgetReady: false, providerUsageReady: false });
-        return { catalog, agent, platform, installation: planAcpInstall(agent, platform, p.kind), eligibility };
+        const installation = planAcpInstall(agent, platform, p.kind);
+        return { catalog, agent, platform, installation, eligibility, ...(installation.supported ? {
+          fingerprint: installFingerprint(catalog, installation.plan), executor: executableInstallSupport(installation.plan) } : {}) };
+      }
+      case "acp.installed":
+        return { installations: await this.refusingAsync(() => this.artifactInstaller().installed(p.limit)) };
+      case "acp.install.cancel": {
+        const operation = this.installations.get(p.id);
+        if (!operation) throw new RpcError(Errors.notFound, `no artifact installation ${p.id} is active`);
+        operation.abort.abort();
+        return { id: p.id, cancelled: true };
+      }
+      case "acp.install": {
+        if (this.stopping || sock.destroyed) throw new RpcError(Errors.refused, "the installation requester is no longer connected");
+        const platform = acpPlatform(process.platform, process.arch);
+        if (!platform) throw new RpcError(Errors.refused, "this host architecture is unsupported");
+        // Bind the request to fresh official metadata, never client-provided URLs or hashes.
+        const { registry, ...catalog } = await this.refusingAsync(() => this.catalog.read(true));
+        if (this.stopping || sock.destroyed) throw new RpcError(Errors.refused, "the installation requester is no longer connected");
+        const agent = inspectAcpAgent(registry, p.id);
+        if (!agent) throw new RpcError(Errors.notFound, `no ACP registry agent ${p.id}`);
+        const planned = planAcpInstall(agent, platform, p.kind);
+        if (!planned.supported) throw new RpcError(Errors.refused, planned.reason);
+        const supported = executableInstallSupport(planned.plan);
+        if (!supported.supported) throw new RpcError(Errors.refused, supported.reason);
+        if (installFingerprint(catalog, planned.plan) !== p.fingerprint)
+          throw new RpcError(Errors.refused, "the installation changed since inspection; inspect it again");
+        const operation = `I-${++this.installSeq}`, abort = new AbortController();
+        const request = snapshotInstallRequest({ operation, catalog, plan: planned.plan, fingerprint: p.fingerprint });
+        const disconnected = () => abort.abort();
+        this.installations.set(operation, { abort, owner: sock });
+        sock.once("close", disconnected);
+        L.append(null, "acp.install.started", "user", { operation, agent: p.id, fingerprint: p.fingerprint });
+        notify({ kind: "acp.install", id: operation });
+        try {
+          const receipt = await this.refusingAsync(() => this.artifactInstaller().install(request,
+            { signal: abort.signal, gate: (frozen) => this.artifactGate(frozen, sock, notify, abort.signal) }));
+          if (!this.closed) L.append(null, "acp.install.completed", "govd", { operation, installation: receipt.installationId,
+            agent: receipt.plan.agentId, bytes: receipt.bytes, sha256: receipt.sha256, gate: receipt.gate });
+          return { receipt };
+        } catch (error) {
+          if (!this.closed) L.append(null, "acp.install.failed", "govd", { operation, reason: error instanceof Error ? error.message : "installation failed" });
+          throw error;
+        } finally {
+          sock.removeListener("close", disconnected);
+          this.installations.delete(operation);
+        }
       }
       case "tools.list": {
         const tools = this.connector.list();

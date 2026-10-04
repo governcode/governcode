@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry", "acp-install"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -228,6 +228,10 @@ export const Params = {
   "acp.inspect": z.object({ id: z.string().max(96).regex(/^[a-z][a-z0-9-]*$/),
     platform: z.enum(["darwin-aarch64", "darwin-x86_64", "linux-aarch64", "linux-x86_64", "windows-aarch64", "windows-x86_64"]).optional(),
     kind: z.enum(["binary", "npx", "uvx"]).optional(), refresh: z.boolean().default(false) }),
+  "acp.install": z.object({ id: z.string().max(96).regex(/^[a-z][a-z0-9-]*$/),
+    kind: z.enum(["binary", "npx", "uvx"]), fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  "acp.installed": z.object({ limit: z.number().int().min(1).max(100).default(50) }).strict(),
+  "acp.install.cancel": z.object({ id: z.string().regex(/^I-\d{1,16}$/) }).strict(),
   "connect.start": z.object({ tool: z.enum(["agy", "claude", "codex", "grok"]) }),
   "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),
   "connect.cancel": z.object({ id: z.string().regex(/^C-\d+$/) }),
@@ -271,6 +275,7 @@ export type TraceEvent = {
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.discarded" | "spec.undone" | "spec.cancel" | "spec.cancelled" | "spec.followup"
     | "recovery.set" | "recovery.resumed" | "recovery.cleared"
+    | "acp.install.started" | "acp.install.completed" | "acp.install.failed" | "acp.install.interrupted"
     | "tool.connected" | "tool.disconnected" | "notes.updated" | "context.shared" | "crew.set" | "plan.proposed" | "plan.answered" | "spec.step";
   actor: string; // "user", "govd", "controller · claude-code"
   data: Record<string, unknown>;

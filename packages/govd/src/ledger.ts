@@ -72,6 +72,16 @@ export class Ledger {
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
+  /** Open artifact operations across the entire Trace, without loading finished history. */
+  unfinishedArtifactOperations(): string[] {
+    const rows = this.db.prepare(`SELECT json_extract(data, '$.operation') AS operation FROM events
+      WHERE project IS NULL AND kind IN ('acp.install.started', 'acp.install.completed', 'acp.install.failed', 'acp.install.interrupted')
+      GROUP BY operation
+      HAVING MAX(CASE WHEN kind = 'acp.install.started' THEN seq END) >
+        COALESCE(MAX(CASE WHEN kind != 'acp.install.started' THEN seq END), 0)`).all();
+    return rows.map((row) => String(row.operation));
+  }
+
   /** A project's events of some kinds strictly between `after` and `before` (seq numbers): the
    *  newest `limit` of them, or with `oldest` the first `limit`, newest last either way. */
   eventsOfKindIn(project: string | null, kinds: TraceEvent["kind"][], after: number, before: number, limit: number, oldest = false): TraceEvent[] {

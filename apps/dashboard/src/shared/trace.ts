@@ -17,6 +17,8 @@ export const KIND_LABEL: Record<ProtocolTraceEvent["kind"], string> = {
   "spec.failed": "Spec failed", "spec.accepted": "Spec accepted", "spec.discarded": "Spec discarded",
   "spec.undone": "Spec discarded",   // what older records call a discarded Spec
   "recovery.set": "Resume set", "recovery.resumed": "Resumed", "recovery.cleared": "Resume cleared",
+  "acp.install.started": "Artifact install started", "acp.install.completed": "Artifact stored",
+  "acp.install.failed": "Artifact install failed", "acp.install.interrupted": "Artifact install interrupted",
   "tool.connected": "Tool connected", "tool.disconnected": "Tool disconnected", "notes.updated": "Notes updated",
   "context.shared": "Context shared", "crew.set": "Crew card saved", "plan.proposed": "Plan proposed", "plan.answered": "Plan answered",
   "spec.step": "Spec step", "spec.cancel": "Cancel asked", "spec.cancelled": "Spec cancelled", "spec.followup": "Spec follow-up",

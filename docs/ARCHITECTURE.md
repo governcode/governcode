@@ -231,8 +231,46 @@ Eligibility comes from local safety profiles, never registry fields. It requires
 agent/version/platform, verified isolation and permission behavior, subscription authentication,
 and ready counted or provider usage accounting. The OpenCode descriptor is blocked: its ACP
 implementation's HTTP listener conflicts with no-bind, and its runtime isolation has not been
-verified here. All registry agents remain ineligible. There is no installer, probe, sign-in,
-Runner adapter, or Controller-tool exposure for this discovery feature.
+verified here. All registry agents remain ineligible. There is no production probe launcher,
+sign-in, Runner adapter, or Controller-tool exposure for this feature.
+
+`acp.install`, `acp.installed` and `acp.install.cancel` are user-socket operations. Installation
+refreshes the fixed catalog, rebuilds the exact host plan, and matches the inspection fingerprint
+before opening a mandatory, nonrememberable Gate. That binding covers the catalog source/digest
+and every recipe field; fetch time is provenance rather than recipe identity. Client-supplied
+URLs, checksums and storage paths are rejected. Plans, standing allows, quiet reads and relaxed
+mode cannot approve this Gate. Denial, cancellation, requester disconnect and shutdown abort work;
+shutdown waits for store cleanup. Operation starts and outcomes enter the Trace; interrupted
+operations are recorded on restart and never resumed.
+
+The executor stores only SHA-256 raw ELF64 binaries for the current Linux architecture. It
+does not unpack archives or run npm/uv. Download uses direct HTTPS with connection-time public
+address validation and pinning, a dedicated agent, no redirects or proxy settings, strict full
+response framing, a 128 MiB cap, a sixty-second total limit and ten-second inactivity limit.
+The store walks directories through descriptors without symlinks, uses owner-only modes and a
+cross-process lock, verifies the hash and ELF header, syncs bytes and receipt, and publishes
+atomically, then rechecks published identities and evidence before reporting success. Listing and
+reuse verify every stored sibling's receipt and artifact, including beyond the result limit.
+Cleanup captures entries before checking ownership, retaining detected replacements; lock release
+retires its name before deletion so a new cooperative owner's lock cannot be removed.
+Ambiguous leftovers, stale locks and
+tampering are refused, never automatically adopted, stolen or repaired. A receipt's version is
+registry-advertised; no artifact is executed for verification.
+
+The owner-only store must remain inaccessible to untrusted actors, including AI tools. Node
+does not provide inode-conditional rename or deletion. A raced replacement can reach the
+publication name before verification rejects it. Checksums and identity checks do not authenticate
+state against a malicious same-user owner, or prevent that owner from replacing private capture
+entries immediately before deletion. The store makes no absolute guarantee against that actor.
+
+`acp-probe.ts` is a separate supplied-`AcpRpc` discovery foundation tested only with fake RPCs.
+It decodes bounded v1 initialize/session metadata, gives configOptions precedence over legacy
+selectors, rejects every incoming client request, limits notifications, and closes on timeout,
+cancellation or malformed metadata. One monotonic deadline covers all requests; runtime closure
+must be confirmed before a report is returned. Optional session creation requires the caller's
+fresh-directory assertion, which is not a filesystem or isolation check. This module provides
+neither a launcher nor proof of authentication, subscription, metering, isolation or arbitrary
+descendant termination. Reported metadata and stored bytes do not confer Runner eligibility.
 
 ## Proposing a project from Home
 
@@ -264,7 +302,8 @@ the sandbox status; clients check features, not versions. Methods, by area:
   (a project's Checkpoints: id, time, files, whether undone), `turn.undo`;
 - Limits, settings and tools: `limits.list`, `settings.get`, `settings.set`, `tools.list`,
   `connect.start`, `connect.input`, `connect.cancel`, `tools.disconnect`;
-- official ACP catalog inspection: `acp.search`, `acp.inspect`;
+- official ACP catalog inspection and artifact storage: `acp.search`, `acp.inspect`, `acp.install`,
+  `acp.installed`, `acp.install.cancel`;
 - recovery: `recovery.list`, `recovery.set`, `recovery.resume`, `recovery.clear`; Controller
   turns continue through `ask` with `continuationOf`, not `recovery.resume`;
 - the record: `trace.list`, and `watch`: after it, the connection also receives every Trace
@@ -274,7 +313,7 @@ the sandbox status; clients check features, not versions. Methods, by area:
   at-reset recovery while it stays connected.
 
 The current feature list is `projects`, `trace`, `ask`, `gates`, `home`, `delegate`, `specs`,
-`watch`, `parallel-specs`, `recovery` and `acp-registry`. Parameters are validated with Zod schemas in
+`watch`, `parallel-specs`, `recovery`, `acp-registry` and `acp-install`. Parameters are validated with Zod schemas in
 `packages/protocol`. `settings.set` preserves saved top-level keys omitted by the request,
 so older clients do not erase settings added later.
 

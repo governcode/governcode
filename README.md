@@ -343,7 +343,7 @@ Honest limits, for now:
 
 Gemini CLI (for Gemini API keys) comes later, once GovernCode can hold a key safely.
 
-### ACP registry discovery (development)
+### ACP registry and artifact storage (development)
 
 The development checkout can search the official Agent Client Protocol registry and inspect an
 agent's advertised distribution and Runner eligibility:
@@ -357,8 +357,30 @@ gov acp search --refresh
 
 Inspection shows the exact version, source, SHA-256 or pinned package version, and the catalog's
 fetch time and digest. Multiple distributions require an explicit `--kind`; unsupported recipes
-explain why they cannot be planned. These commands read metadata only. Installation, sign-in and
-execution for registry agents are not enabled. Registry membership never makes an agent a Runner:
+explain why they cannot be planned. These commands read metadata only.
+
+The first storage slice accepts SHA-256 verified **raw Linux ELF binaries** for this host's exact
+architecture. Inspection also shows a review fingerprint and whether storage is supported:
+
+```sh
+gov acp install AGENT_ID --kind binary
+gov acp installed --json
+gov acp cancel I-N
+```
+
+Install refreshes the official catalog and refuses changed metadata. It shows a mandatory Gate
+with the exact source, hash, version, platform and advertised command; approval cannot be
+remembered. You can answer in an interactive terminal, the Dashboard, or with
+`gov gate G-N allow|deny`. Piped input cannot approve installation, even if it arrives after the prompt.
+Cancellation, requester disconnection and daemon shutdown stop the operation and clean normal
+staging files. Detected replacements or ambiguous state are retained for manual recovery.
+Successful bytes and a provenance receipt are stored privately and reverified on reuse.
+The version is registry-advertised; no version command runs. Interrupted state is refused for
+inspection rather than adopted or resumed. Archives, npm and uv installation are not implemented,
+so an archive distribution such as OpenCode's cannot be stored by this slice.
+
+Artifact storage grants no permission to probe, sign in, execute or spend. Registry membership
+never makes an agent a Runner:
 that requires an audited profile for its exact version and platform, a verified subscription
 connection, and ready usage accounting. OpenCode's current profile is blocked because its ACP
 process starts an HTTP listener, which conflicts with the Runner sandbox's no-bind rule.
