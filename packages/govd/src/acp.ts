@@ -338,6 +338,18 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
   const tokens = acpTokenTally();
   let asked = 0;
   let stopped: string | null = null;
+  const cancelled = Symbol("ACP turn cancelled");
+  let interrupt!: (value: typeof cancelled) => void;
+  const interrupted = new Promise<typeof cancelled>((resolve) => { interrupt = resolve; });
+  const checkStopped = () => { if (stopped !== null) throw cancelled; };
+  // Cancellation can finish preparation without waiting for the peer. The race observes
+  // late rejections too; its final check gives cancellation priority over either reply.
+  const preflight = async (method: string, params: unknown) => {
+    checkStopped();
+    try {
+      return await Promise.race([rpc.request(method, params, 60_000), interrupted]);
+    } finally { checkStopped(); }
+  };
   let sessionId = "";
   let prompting = false;            // between session/prompt sent and its answer: the only time a Gate can allow
   let ended = false;                // the prompt has been answered (or failed): nothing more is this run's
@@ -400,22 +412,33 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
     }
   });
   let closer: NodeJS.Timeout | undefined;
+  let closeFailed = false;
   const onAbort = () => {
+    if (stopped !== null) return;
     stopped = String(o.signal?.reason ?? "aborted");
+    interrupt(cancelled);
     drain();
-    if (sessionId) rpc.notify("session/cancel", { sessionId });
+    if (!prompting) {
+      try { rpc.close(); } catch { closeFailed = true; }
+      return;
+    }
+    rpc.notify("session/cancel", { sessionId });
     // The agent should answer the prompt with "cancelled" now; if it does not, it is ended.
     closer = setTimeout(() => rpc.close(), 10_000); closer.unref();
   };
-  if (o.signal?.aborted) onAbort(); else o.signal?.addEventListener("abort", onAbort, { once: true });
-  const stoppedResult = () => ({ ok: false, summary: `stopped: ${stopped}`, usage: tokens.usage(false) });
+  const stoppedResult = () => ({ ok: false, summary: closeFailed ? "stopped: ACP close request failed" : `stopped: ${stopped}`, usage: tokens.usage(false) });
   try {
-    const init = await rpc.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: CLIENT_INFO }, 60_000);
+    if (o.signal?.aborted) onAbort(); else o.signal?.addEventListener("abort", onAbort, { once: true });
+    const init = await preflight("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: CLIENT_INFO });
+    checkStopped();
     if (init?.protocolVersion !== 1) throw new Error(`the agent speaks ACP version ${JSON.stringify(init?.protocolVersion ?? null)}, not 1`);
-    const s = await rpc.request("session/new", { cwd: o.cwd, mcpServers: [] }, 60_000);
-    if (!s || typeof s.sessionId !== "string" || !s.sessionId) throw new Error("the agent opened no session");
-    sessionId = s.sessionId;
-    if (stopped !== null) { rpc.notify("session/cancel", { sessionId }); return stoppedResult(); }
+    const s = await preflight("session/new", { cwd: o.cwd, mcpServers: [] });
+    checkStopped();
+    const id = s?.sessionId;
+    if (typeof id !== "string" || !id) throw new Error("the agent opened no session");
+    // No await between this last admission check and sending the prompt.
+    checkStopped();
+    sessionId = id;
     prompting = true;
     // The prompt has a deadline (a Runner is one job, not a service); past it the agent is ended.
     const r = await rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text: o.prompt }] }, o.promptTimeoutMs ?? 2 * 60 * 60_000);
