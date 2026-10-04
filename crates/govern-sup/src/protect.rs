@@ -194,6 +194,15 @@ mod tests {
     }
 
     #[test]
+    fn child_restrictions_are_rejected_in_protect_mode() {
+        for value in ["null", "false", "[]", "[true,true]", "{}", r#"{"deny_network":true,"deny_chmod":true}"#] {
+            let text = format!(r#"{{"version":1,"mode":"protect","protect":["/fixture"],"cwd":"/","child_restrictions":{value}}}"#);
+            assert!(is_protect(&text));
+            assert!(parse(&text).err().unwrap().contains("unknown field `child_restrictions`"));
+        }
+    }
+
+    #[test]
     fn grants_everything_beside_the_way_and_nothing_on_the_target() {
         let dir = std::env::temp_dir().join(format!("gs-protect-{}", std::process::id()));
         let ctl = dir.join("control");

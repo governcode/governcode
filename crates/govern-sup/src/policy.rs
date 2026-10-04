@@ -37,6 +37,9 @@ pub struct Policy {
     /// Optional per-process ceilings, applied only to the forked child before exec.
     #[serde(default, deserialize_with = "child_limits")]
     pub child_limits: Option<ChildLimits>,
+    /// Fixed opt-in syscall restrictions; only omission means absent.
+    #[serde(default, deserialize_with = "child_restrictions")]
+    pub child_restrictions: Option<ChildRestrictions>,
     pub cwd: PathBuf,
 }
 
@@ -78,6 +81,37 @@ fn child_limits<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ChildLi
     d.deserialize_map(LimitsObject)
 }
 
+/// Presence means both network creation and chmod-family syscalls must be denied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildRestrictions;
+
+fn child_restrictions<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ChildRestrictions>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Fields {
+        deny_network: bool,
+        deny_chmod: bool,
+    }
+    struct RestrictionsObject;
+    impl<'de> serde::de::Visitor<'de> for RestrictionsObject {
+        type Value = Option<ChildRestrictions>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a child_restrictions object with deny_network and deny_chmod both true")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            let fields = Fields::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+            if !fields.deny_network || !fields.deny_chmod {
+                return Err(serde::de::Error::custom("child_restrictions requires deny_network and deny_chmod both true"));
+            }
+            Ok(Some(ChildRestrictions))
+        }
+    }
+    // Derived structures alone also accept arrays; this block must be a named map.
+    d.deserialize_map(RestrictionsObject)
+}
+
 fn default_ports() -> Vec<u16> {
     vec![443]
 }
@@ -107,6 +141,7 @@ pub struct Resolved {
     pub tcp_bind: Vec<u16>,
     pub unix_connect: Vec<Rule>,
     pub child_limits: Option<ChildLimits>,
+    pub child_restrictions: Option<ChildRestrictions>,
     pub cwd: PathBuf,
     /// Non-fatal notes (skipped missing read/exec paths) for stderr.
     pub warnings: Vec<String>,
@@ -231,12 +266,26 @@ fn resolve(p: Policy) -> Result<Resolved, String> {
     if p.version != 1 {
         return Err(format!("unsupported policy version {} (expected 1)", p.version));
     }
+    // Validate raw grants before opening any paths: a missing Unix socket must not
+    // disappear as a warning and turn a contradictory policy into an accepted one.
+    if p.child_restrictions.is_some() {
+        for (key, nonempty) in [
+            ("tcp_connect", !p.tcp_connect.is_empty()),
+            ("tcp_bind", !p.tcp_bind.is_empty()),
+            ("unix_connect", !p.unix_connect.is_empty()),
+        ] {
+            if nonempty {
+                return Err(format!("child_restrictions requires empty {key}"));
+            }
+        }
+    }
     let mut out = Resolved {
         paths: Vec::new(),
         tcp_connect: p.tcp_connect,
         tcp_bind: p.tcp_bind,
         unix_connect: Vec::new(),
         child_limits: p.child_limits,
+        child_restrictions: p.child_restrictions,
         cwd: PathBuf::new(),
         warnings: Vec::new(),
     };
@@ -354,6 +403,7 @@ mod tests {
         assert_eq!(r.paths.len(), 1);
         assert!(r.warnings.is_empty());
         assert_eq!(r.child_limits, None);
+        assert_eq!(r.child_restrictions, None);
     }
 
     #[test]
@@ -385,6 +435,46 @@ mod tests {
         }
         // Duplicate fields are also disagreement, never last-value-wins.
         rejects(&policy(&t, r#","child_limits":{"cpu_seconds":1,"cpu_seconds":2,"address_space_bytes":1,"open_files":1}"#), "duplicate field");
+    }
+
+    #[test]
+    fn restrictions_require_a_strict_true_true_map() {
+        let t = TempDir::new("restrictions-shapes");
+        for block in ["null", "false", "true", "1", "1.0", "\"true\"", "[]", "[true,true]", "{}",
+            r#"{"deny_network":true}"#, r#"{"deny_chmod":true}"#,
+            r#"{"deny_network":true,"deny_chmod":true,"extra":true}"#] {
+            rejects(&policy(&t, &format!(",\"child_restrictions\":{block}")), "invalid policy");
+        }
+        for field in ["deny_network", "deny_chmod"] {
+            let other = if field == "deny_network" { "deny_chmod" } else { "deny_network" };
+            for bad in ["false", "null", "0", "1", "1.0", "\"true\"", "[]", "{}"] {
+                rejects(&policy(&t, &format!(r#", "child_restrictions":{{"{field}":{bad},"{other}":true}}"#)), "invalid policy");
+            }
+            rejects(&policy(&t, &format!(r#", "child_restrictions":{{"{field}":true,"{field}":true,"{other}":true}}"#)), "duplicate field");
+        }
+        rejects(&policy(&t, r#", "child_restrictions":{"deny_network":true,"deny_chmod":true},"child_restrictions":{"deny_network":true,"deny_chmod":true}"#), "duplicate field");
+    }
+
+    #[test]
+    fn restrictions_reject_raw_conflicts_before_filesystem_resolution() {
+        // No such cwd/write path: each conflict must be the error before any path lookup.
+        let base = r#"{"version":1,"write":["relative"],"cwd":"relative","child_restrictions":{"deny_network":true,"deny_chmod":true}"#;
+        for (extra, key) in [
+            ("", "tcp_connect"),
+            (r#", "tcp_connect":[80]"#, "tcp_connect"),
+            (r#", "tcp_connect":[0]"#, "tcp_connect"),
+            (r#", "tcp_connect":[],"tcp_bind":[0]"#, "tcp_bind"),
+            (r#", "tcp_connect":[],"tcp_bind":[443]"#, "tcp_bind"),
+            (r#", "tcp_connect":[],"unix_connect":["/missing-restriction-fixture/socket"]"#, "unix_connect"),
+            (r#", "tcp_connect":[],"unix_connect":["relative"]"#, "unix_connect"),
+        ] {
+            rejects(&format!("{base}{extra}}}"), &format!("child_restrictions requires empty {key}"));
+        }
+        let t = TempDir::new("restrictions-valid");
+        let r = parse(&policy(&t, r#", "tcp_connect":[],"tcp_bind":[],"unix_connect":[],"child_restrictions":{"deny_network":true,"deny_chmod":true},"child_limits":{"cpu_seconds":2,"address_space_bytes":67108864,"open_files":32}"#)).unwrap();
+        assert_eq!(r.child_restrictions, Some(ChildRestrictions));
+        assert!(r.child_limits.is_some());
+        assert!(r.warnings.is_empty());
     }
 
     #[test]

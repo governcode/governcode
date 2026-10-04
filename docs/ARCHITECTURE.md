@@ -294,6 +294,15 @@ remain outside that bound. Output failure does not prove supervisor exit or desc
 the existing shutdown timers and lifetime gap remain. No production profile selects this option,
 and no registry-agent launcher is enabled by it.
 
+The native supervisor also has a fixed, opt-in `child_restrictions` primitive requiring
+`deny_network: true` and `deny_chmod: true` together. Its strict map-only parser rejects
+contradictory TCP/Unix grants before resolving paths. The existing seccomp builder adds
+unconditional socket/socketpair, io_uring entry/registration and architecture-specific
+chmod-family denials before its ABI-dependent branches. Existing policies and generators do
+not select the block. Native fixture tests cover its enforcement; older-ABI filter simulations
+are not live kernel evidence. This neither validates arbitrary inherited stdio nor supplies
+credential-free homes, immutable file modes or independently owned descendant lifetimes.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the

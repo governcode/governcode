@@ -3,7 +3,7 @@
 //! Every step is a hard requirement. If the kernel cannot enforce a rule, `apply` returns
 //! an error naming the rule and the caller exits without running the tool.
 
-use crate::policy::{Kind, Resolved};
+use crate::policy::{ChildRestrictions, Kind, Resolved};
 use landlock::{
     ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, NetPort, PathBeneath,
     Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
@@ -52,7 +52,7 @@ pub fn apply(policy: &Resolved) -> Result<(), String> {
     require_abi(abi)?;
     // Build the seccomp program first so an unsupported architecture fails before any
     // restriction is half-applied.
-    let filter = seccomp_filter(abi)?;
+    let filter = seccomp_filter(abi, policy.child_restrictions)?;
     set_no_new_privs()?;
     landlock(policy, abi)?;
     install_seccomp(&filter)
@@ -235,8 +235,38 @@ const DENIED: [libc::c_long; 27] = [
     SYS_REMOVEXATTRAT, SYS_FILE_SETATTR,
 ];
 
+// fchmodat2 is 452 in both supported native tables. Locked libc exposes it only
+// on x86_64. file_setattr above carries filesystem attributes, not a POSIX mode.
+const SYS_FCHMODAT2: libc::c_long = 452;
+
+// Native constants where libc supplies them; numeric tables also permit tests of
+// the other architecture without pretending to execute on that architecture.
+#[cfg(target_arch = "x86_64")]
+const CHMOD_X86_64: &[libc::c_long] = &[libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat, SYS_FCHMODAT2];
+#[cfg(not(target_arch = "x86_64"))]
+const CHMOD_X86_64: &[libc::c_long] = &[90, 91, 268, SYS_FCHMODAT2];
+#[cfg(target_arch = "aarch64")]
+const CHMOD_AARCH64: &[libc::c_long] = &[libc::SYS_fchmod, libc::SYS_fchmodat, SYS_FCHMODAT2];
+#[cfg(not(target_arch = "aarch64"))]
+const CHMOD_AARCH64: &[libc::c_long] = &[52, 53, SYS_FCHMODAT2];
+
+fn restriction_chmod_syscalls(arch: &str, os: &str, little_endian: bool, pointer_bits: u32) -> Result<&'static [libc::c_long], String> {
+    if os == "linux" && little_endian && pointer_bits == 64 {
+        match arch {
+            "x86_64" => return Ok(CHMOD_X86_64),
+            // No native chmod syscall on aarch64; 90 is capget, not chmod.
+            "aarch64" => return Ok(CHMOD_AARCH64),
+            _ => {},
+        }
+    }
+    Err("cannot enforce child_restrictions: requires native little-endian Linux LP64 x86_64 or aarch64".into())
+}
+
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub fn seccomp_filter(abi: i32) -> Result<Vec<libc::sock_filter>, String> {
+pub fn seccomp_filter(abi: i32, restrictions: Option<ChildRestrictions>) -> Result<Vec<libc::sock_filter>, String> {
+    let chmod = if restrictions.is_some() {
+        restriction_chmod_syscalls(std::env::consts::ARCH, std::env::consts::OS, cfg!(target_endian = "little"), usize::BITS)?
+    } else { &[] };
     let mut f = vec![
         // A syscall made through another ABI (e.g. int 0x80 on x86_64) would bypass every
         // number below, so any foreign-arch syscall kills the process.
@@ -265,10 +295,18 @@ pub fn seccomp_filter(abi: i32) -> Result<Vec<libc::sock_filter>, String> {
     // Local IPC that no path rule covers (security review 2026-09-27): System V shared
     // memory, message queues and semaphores, and POSIX message queues, would let the tool
     // read or change another same-user program's state. Ownership and extended attributes
-    // are metadata Landlock does not mediate, so they are refused outright; chmod stays (npm
-    // and git need it), a documented limit.
+    // are metadata Landlock does not mediate, so they are refused outright. Default
+    // policies still permit chmod (npm and git need it), a documented limit.
     for nr in DENIED.into_iter().chain(LEGACY) {
         f.extend([if_nr(nr, 1), ret(errno(libc::EPERM))]);
+    }
+    if restrictions.is_some() {
+        // A syscall primitive: existing stdio/external handles and generic I/O are
+        // not validated here. All socketpairs are denied; pipe/pipe2 stay available.
+        for nr in [libc::SYS_socket, libc::SYS_socketpair, libc::SYS_io_uring_enter, libc::SYS_io_uring_register]
+            .into_iter().chain(chmod.iter().copied()) {
+            f.extend([if_nr(nr, 1), ret(errno(libc::EPERM))]);
+        }
     }
     // Terminal ioctls that type into, or drive, the terminal a descriptor points at
     // (TIOCSTI, TIOCLINUX). The kernel reads the command as a 32-bit int, so the low word
@@ -310,7 +348,7 @@ pub fn seccomp_filter(abi: i32) -> Result<Vec<libc::sock_filter>, String> {
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub fn seccomp_filter(_abi: i32) -> Result<Vec<libc::sock_filter>, String> {
+pub fn seccomp_filter(_abi: i32, _restrictions: Option<ChildRestrictions>) -> Result<Vec<libc::sock_filter>, String> {
     Err("cannot enforce the seccomp rules: they are defined only for x86_64 and aarch64".into())
 }
 
@@ -336,7 +374,7 @@ mod tests {
 
     #[test]
     fn seccomp_filter_is_well_formed() {
-        let f = seccomp_filter(6).unwrap();
+        let f = seccomp_filter(6, None).unwrap();
         // Every path must end in a return, and every jump must land inside the program.
         assert_eq!(f.last().unwrap().code as u32, libc::BPF_RET | libc::BPF_K);
         for (i, ins) in f.iter().enumerate() {
@@ -345,5 +383,116 @@ mod tests {
             }
         }
         assert!(f.len() < 128);
+    }
+    // Interpret the actual generated classic BPF program, including branch offsets.
+    fn decision(f: &[libc::sock_filter], nr: u32, arch: u32, arg0: u32, arg1: u32) -> u32 {
+        let mut pc = 0;
+        let mut a = 0;
+        for _ in 0..f.len() {
+            let ins = &f[pc];
+            let code = ins.code as u32;
+            if code == libc::BPF_LD | libc::BPF_W | libc::BPF_ABS {
+                a = match ins.k { NR => nr, ARCH => arch, ARG0 => arg0, ARG1 => arg1, _ => panic!("bad load") };
+            } else if code == libc::BPF_RET | libc::BPF_K {
+                return ins.k;
+            } else if code == libc::BPF_ALU | libc::BPF_AND | libc::BPF_K {
+                a &= ins.k;
+            } else {
+                let yes = if code == libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K { a == ins.k }
+                    else if code == libc::BPF_JMP | libc::BPF_JGE | libc::BPF_K { a >= ins.k }
+                    else { panic!("unknown BPF instruction") };
+                pc += if yes { ins.jt } else { ins.jf } as usize;
+            }
+            pc += 1;
+            assert!(pc < f.len(), "BPF jump left filter");
+        }
+        panic!("BPF did not return")
+    }
+
+    #[test]
+    fn opt_in_target_validation_and_chmod_tables_are_architecture_correct() {
+        assert_eq!(restriction_chmod_syscalls("x86_64", "linux", true, 64).unwrap(), [90, 91, 268, 452]);
+        assert_eq!(restriction_chmod_syscalls("aarch64", "linux", true, 64).unwrap(), [52, 53, 452]);
+        for arch in ["x86_64", "aarch64", "x86", "arm", "riscv64", "unknown"] {
+            for os in ["linux", "other"] {
+                for little in [true, false] {
+                    for bits in [16, 32, 64, 128] {
+                        let supported = matches!(arch, "x86_64" | "aarch64") && os == "linux" && little && bits == 64;
+                        assert_eq!(restriction_chmod_syscalls(arch, os, little, bits).is_ok(), supported);
+                    }
+                }
+            }
+        }
+        // Simulated architecture table decisions, not a live aarch64 kernel check.
+        for (arch, denied, allowed) in [("x86_64", vec![90, 91, 268, 452], 52), ("aarch64", vec![52, 53, 452], 90)] {
+            let mut f = vec![load(NR)];
+            for &nr in restriction_chmod_syscalls(arch, "linux", true, 64).unwrap() {
+                f.extend([if_nr(nr, 1), ret(errno(libc::EPERM))]);
+            }
+            f.push(ret(libc::SECCOMP_RET_ALLOW));
+            for nr in denied { assert_eq!(decision(&f, nr, 0, 0, 0), errno(libc::EPERM)); }
+            assert_eq!(decision(&f, allowed, 0, 0, 0), libc::SECCOMP_RET_ALLOW);
+        }
+    }
+
+    #[test]
+    fn actual_filters_preserve_default_decisions_and_enforce_opt_in_at_each_abi() {
+        for abi in [6, 8, 9, 10] {
+            let absent = seccomp_filter(abi, None).unwrap();
+            let present = seccomp_filter(abi, Some(ChildRestrictions)).unwrap();
+            // Removing exactly the inserted denials must recover every default BPF
+            // instruction byte, including the old ABI branch and ioctl jump offsets.
+            let insertion = absent.iter().position(|ins| ins.k == libc::SYS_ioctl as u32
+                && ins.code as u32 == libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K).unwrap();
+            let added = 2 * (4 + restriction_chmod_syscalls(std::env::consts::ARCH, "linux", true, 64).unwrap().len());
+            let words = |ins: &libc::sock_filter| (ins.code, ins.jt, ins.jf, ins.k);
+            assert_eq!(absent.iter().map(words).collect::<Vec<_>>(), present[..insertion].iter()
+                .chain(present[insertion + added..].iter()).map(words).collect::<Vec<_>>());
+            for f in [&absent, &present] {
+                for (i, ins) in f.iter().enumerate() {
+                    if ins.code as u32 & 7 == libc::BPF_JMP {
+                        assert!(i + 1 + (ins.jt.max(ins.jf) as usize) < f.len());
+                    }
+                }
+                assert!(f.len() < 256);
+                assert_eq!(decision(f, libc::SYS_read as u32, AUDIT_ARCH ^ 1, 0, 0), libc::SECCOMP_RET_KILL_PROCESS);
+                #[cfg(target_arch = "x86_64")]
+                for nr in [0x4000_0000, 0x4000_0000 | libc::SYS_socket as u32, u32::MAX] {
+                    assert_eq!(decision(f, nr, AUDIT_ARCH, 0, 0), errno(libc::ENOSYS));
+                }
+                for nr in DENIED.into_iter().chain(LEGACY).chain([
+                    libc::SYS_ptrace, libc::SYS_process_vm_readv, libc::SYS_process_vm_writev,
+                    libc::SYS_pidfd_getfd, libc::SYS_io_uring_setup,
+                ]) {
+                    assert_eq!(decision(f, nr as u32, AUDIT_ARCH, 0, 0), errno(libc::EPERM));
+                }
+                for nr in [libc::SYS_read, libc::SYS_write, libc::SYS_pipe2, libc::SYS_connect,
+                    libc::SYS_accept, libc::SYS_sendto, libc::SYS_recvmsg, libc::SYS_dup, libc::SYS_umask, libc::SYS_unlinkat] {
+                    assert_eq!(decision(f, nr as u32, AUDIT_ARCH, 0, 0), libc::SECCOMP_RET_ALLOW);
+                }
+                for command in [libc::TIOCSTI as u32, libc::TIOCLINUX as u32] {
+                    assert_eq!(decision(f, libc::SYS_ioctl as u32, AUDIT_ARCH, 0, command), errno(libc::EPERM));
+                }
+                assert_eq!(decision(f, libc::SYS_ioctl as u32, AUDIT_ARCH, 0, 0), libc::SECCOMP_RET_ALLOW);
+            }
+            for nr in [libc::SYS_io_uring_enter, libc::SYS_io_uring_register].into_iter().chain(
+                restriction_chmod_syscalls(std::env::consts::ARCH, "linux", true, 64).unwrap().iter().copied()) {
+                assert_eq!(decision(&absent, nr as u32, AUDIT_ARCH, 0, 0), libc::SECCOMP_RET_ALLOW);
+                assert_eq!(decision(&present, nr as u32, AUDIT_ARCH, 0, 0), errno(libc::EPERM));
+            }
+            for family in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK, -1] {
+                for kind in [libc::SOCK_STREAM, libc::SOCK_DGRAM, libc::SOCK_SEQPACKET, -1] {
+                    for flags in [0, libc::SOCK_CLOEXEC, libc::SOCK_NONBLOCK, libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK] {
+                        let typ = (kind | flags) as u32;
+                        assert_eq!(decision(&present, libc::SYS_socket as u32, AUDIT_ARCH, family as u32, typ), errno(libc::EPERM));
+                        assert_eq!(decision(&present, libc::SYS_socketpair as u32, AUDIT_ARCH, family as u32, typ), errno(libc::EPERM));
+                        assert_eq!(decision(&absent, libc::SYS_socket as u32, AUDIT_ARCH, family as u32, typ),
+                            if abi < 9 && family == libc::AF_UNIX { errno(libc::EACCES) } else { libc::SECCOMP_RET_ALLOW });
+                        assert_eq!(decision(&absent, libc::SYS_socketpair as u32, AUDIT_ARCH, family as u32, typ),
+                            if abi < 9 && (kind & 0xf) == libc::SOCK_DGRAM { errno(libc::EACCES) } else { libc::SECCOMP_RET_ALLOW });
+                    }
+                }
+            }
+        }
     }
 }

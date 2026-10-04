@@ -184,9 +184,43 @@ address ranges and fail an otherwise generous address-space ceiling. No producti
 profile selects these ceilings yet; registry-agent discovery remains disabled. Native fixture
 tests require an installed C compiler and static libc support, and use separate wall watchdogs.
 
+## Optional child syscall restrictions (development)
+
+A version 1 deny-by-default policy can opt into this fixed restriction block:
+
+```json
+{
+  "child_restrictions": { "deny_network": true, "deny_chmod": true },
+  "tcp_connect": [],
+  "tcp_bind": [],
+  "unix_connect": []
+}
+```
+
+Both named Boolean fields are required and must be `true`. Partial blocks, arrays, null,
+false values, unknown fields and duplicates are refused. Protect mode rejects the block.
+All network grants must be empty before filesystem resolution, including Unix socket paths
+that do not exist. Omitting `tcp_connect` keeps its normal `[443]` default and conflicts with
+the restriction; callers must explicitly provide `[]`. Omitting the whole restriction block
+preserves existing behavior.
+
+The child's seccomp filter denies `socket`, `socketpair`, `io_uring_enter`, `io_uring_register`
+and native chmod-family syscalls with `EPERM`. The existing `io_uring_setup`, ownership and
+extended-attribute denials remain. Internal pipes and ordinary granted file I/O still work.
+The restriction supports native little-endian Linux LP64 x86_64 and aarch64; unsupported
+targets fail closed. Simulated filter tests do not establish live acceptance on another target.
+
+This denies socket creation, not every possible source of network traffic. Arbitrary socket-
+backed stdio, externally supplied descriptors, existing polling rings or mappings, network
+devices, remote filesystems and cooperating external processes remain outside this primitive.
+A future probe launcher must supply fresh trusted stdio and its own narrow, credential-free
+filesystem and environment setup. Blocking chmod-style operations does not freeze inode modes:
+creation modes, `umask`, unlink/replacement and kernel clearing of set-ID bits remain possible.
+This block does not repair supervisor hard-kill cleanup or enable registry-agent execution.
+
 ## Known limits
 
-- `chmod` stays allowed (npm and git set file modes), and Landlock does not mediate it, so a
+- Existing Runner policies allow `chmod` (npm and git set file modes), and Landlock does not mediate it, so a
   tool can change the permission bits of a file it can name by path, even outside its
   allowlist. It cannot read or write such a file; it could make one unreadable to you.
 - If `govern-sup` itself is killed with SIGKILL, its descendant collection is interrupted.
@@ -204,7 +238,8 @@ tests require an installed C compiler and static libc support, and use separate 
   changes (you would see that in the diff). The sandbox protects everything else; it cannot make
   a tool trustworthy with what it must hold. Keeping a Runner's login out of its own reach is
   planned with GovernCode's secrets storage.
-- UDP is not restricted (DNS needs it); TCP is, by port but not by address.
+- Existing Runner policies do not restrict UDP (DNS needs it); TCP is restricted by port,
+  not by address. The optional child syscall block above instead denies socket creation.
 - A tool that refreshes its login during a run keeps it (govd copies the new login back as it
   is). Grok's login is read-only inside a run, so when it expires, `gov connect grok` signs it in
   again.
