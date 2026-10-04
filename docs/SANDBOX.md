@@ -218,6 +218,35 @@ filesystem and environment setup. Blocking chmod-style operations does not freez
 creation modes, `umask`, unlink/replacement and kernel clearing of set-ID bits remain possible.
 This block does not repair supervisor hard-kill cleanup or enable registry-agent execution.
 
+## Passive ACP probe contexts (development)
+
+The standalone probe-context allocator creates scratch directories and policy inputs; it
+starts no process and has no production caller. A trusted caller must supply an existing,
+dedicated, owner-only scratch parent. Allocation checks directory ownership, exact `0700`
+modes and identities without following symlink components. Each context has separate empty
+working, home, configuration, cache, data, state, runtime and temporary directories, plus an
+empty search directory. Its environment contains only those paths and fixed locale values;
+no host environment, login files or shared Runner configuration is copied.
+
+Optional setup cancellation uses a signal from `createAcpProbeAbortController()`. The allocator
+rejects unregistered or altered signal shapes without invoking user accessors. Cancellation
+waits for pending filesystem operations and never deletes a successfully returned context.
+
+PATH and the system XDG search lists point to the empty directory. Filesystem inputs grant
+the eight writable leaves and read access to the empty search directory, with no executable,
+parent, project, artifact-store or system-directory grants. These inputs are an incomplete
+policy fragment, not a runnable sandbox or proof of credential isolation. A future launcher
+still needs reviewed executable/runtime access, context and receipt revalidation, fresh
+trusted stdio, the native restrictions, resource/output bounds and owned lifetime containment.
+
+Successful contexts are retained and expose no cleanup method. Transport closure, process
+exit, cancellation or elapsed time cannot authorize their deletion. Only failed setup before
+a context is returned may attempt bounded, nonrecursive rollback of recorded empty directories;
+detected replacements or unexpected contents cause retention. Node's path operations cannot
+make deletion conditional on inode identity, so malicious same-user mutation, privileged
+actors and hostile storage remain outside the allocator's trust boundary. The private runtime
+directory redirects scratch use; it does not establish a login-session lifecycle.
+
 ## Known limits
 
 - Existing Runner policies allow `chmod` (npm and git set file modes), and Landlock does not mediate it, so a

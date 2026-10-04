@@ -303,6 +303,14 @@ not select the block. Native fixture tests cover its enforcement; older-ABI filt
 are not live kernel evidence. This neither validates arbitrary inherited stdio nor supplies
 credential-free homes, immutable file modes or independently owned descendant lifetimes.
 
+A separate passive ACP probe-context allocator returns frozen directory identities, an explicit
+environment and narrow filesystem inputs. It copies no credentials, grants no executable access
+and has no production caller. Working, HOME, XDG and temporary directories are distinct, empty
+and owner-only; PATH and system XDG searches point to an empty leaf. Successful allocations are
+retained with no cleanup method. Failed setup can attempt bounded rollback, retaining detected
+replacements or unexpected contents. This foundation neither launches an agent nor establishes
+descendant death, runtime compatibility or production credential-isolation acceptance.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the
