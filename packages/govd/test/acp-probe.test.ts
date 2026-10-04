@@ -1,7 +1,8 @@
 // Invented metadata and in-memory RPCs only. No agent binaries or artifacts are used.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { AcpRpc } from "../src/acp.ts";
+import { AcpOutputBudgetError, type AcpRpc } from "../src/acp.ts";
+import { fixture as budgetFixture, message as budgetMessage, turn as budgetTurn } from "./fixtures/acp-output-budget.ts";
 import { ACP_DISCOVERY_LIMITS as limits, AcpDiscoveryCleanupError, decodeAcpInitialize,
   decodeAcpSession, discoverAcp } from "../src/acp-probe.ts";
 
@@ -363,4 +364,125 @@ test("forbidden requests, floods or cancellation during closure cannot leave a s
     rpc.finishClose(); const result = await pending;
     assert.equal(result.status, kind === "request" ? "forbidden-request" : kind === "cancel" ? "cancelled" : "notification-flood");
   }
+});
+
+
+class BudgetRpc extends FakeRpc {
+  budget = deferred<AcpOutputBudgetError | null>();
+  failure: AcpOutputBudgetError | null = null;
+  outputBudget: NonNullable<AcpRpc["outputBudget"]>;
+  constructor() {
+    super();
+    const owner = this;
+    this.outputBudget = { get failure() { return owner.failure; }, settled: this.budget.promise };
+  }
+  breach() {
+    this.failure ??= new AcpOutputBudgetError(128, "stderr");
+    this.budget.resolve(this.failure);
+  }
+}
+
+test("pre-existing local budget failure prevents all discovery requests", async () => {
+  const rpc = new BudgetRpc(); rpc.breach();
+  const result = await discoverAcp(rpc, freshOptions);
+  assert.equal(result.status, "output-budget-exceeded"); assert.equal(result.runtimeClosed, true);
+  assert.deepEqual(rpc.requests, []); assert.deepEqual(rpc.events, ["close", "closed"]);
+  assert.equal(JSON.stringify(result).includes("stack"), false);
+});
+
+test("local breach interrupts initialize or session even when a supplied request ignores rejection", async () => {
+  for (const stage of ["initialize", "session/new"]) {
+    const rpc = new BudgetRpc();
+    rpc.answer = (method) => {
+      if (method !== stage) return initialization();
+      rpc.breach(); return new Promise<never>(() => {});
+    };
+    const result = await discoverAcp(rpc, freshOptions);
+    assert.equal(result.status, "output-budget-exceeded"); assert.equal(result.runtimeClosed, true);
+    assert.equal(rpc.requests.length, stage === "initialize" ? 1 : 2);
+    if (stage === "session/new") {
+      assert.ok(result.initialization); assert.equal(result.sessionStatus, "output-budget-exceeded");
+    }
+    assert.equal(rpc.events.filter((e) => e === "close").length, 1);
+  }
+});
+
+test("actual transport latch wins between fulfilled reply and discovery continuation", async () => {
+  for (const stage of ["initialize", "session/new"]) {
+    const f = budgetFixture(2000);
+    const pending = discoverAcp(f.rpc, { ...freshOptions, cleanupTimeoutMs: 500 });
+    await budgetTurn();
+    if (stage === "session/new") {
+      f.out(budgetMessage({ id: 1, result: initialization() })); await budgetTurn();
+    }
+    f.out(budgetMessage({ id: stage === "initialize" ? 1 : 2,
+      result: stage === "initialize" ? initialization() : { sessionId: "fixture", configOptions: [config()] } }));
+    // Fulfillment was admitted, but the awaiting metadata decoder has not run yet.
+    f.err(Buffer.alloc(2001)); f.finish();
+    const result = await pending;
+    assert.equal(result.status, "output-budget-exceeded");
+    assert.equal(result.initialization === null, stage === "initialize"); assert.equal(result.session, null);
+    assert.equal(f.writes.length, stage === "initialize" ? 1 : 2);
+    assert.equal(f.signals.length, 1);
+  }
+});
+
+test("breach after success during ordinary cleanup preserves partial evidence and overrides success", async () => {
+  const f = budgetFixture(2000), pending = discoverAcp(f.rpc, { cwd: "/fixture", cleanupTimeoutMs: 500 });
+  await budgetTurn(); f.out(budgetMessage({ id: 1, result: initialization() })); await budgetTurn();
+  assert.equal(f.signals.length, 1); // discovery's ordinary close(100) has already started
+  f.err(Buffer.alloc(2001)); assert.equal(f.signals.length, 1);
+  let returned = false; void pending.then(() => { returned = true; });
+  await budgetTurn(); assert.equal(returned, false);
+  f.finish(); const result = await pending;
+  assert.equal(result.status, "output-budget-exceeded"); assert.ok(result.initialization);
+  assert.equal(result.runtimeClosed, true);
+});
+
+test("local failure during cleanup overrides timeout, protocol errors and forbidden-request status", async () => {
+  for (const kind of ["timeout", "protocol", "request"]) {
+    const rpc = new BudgetRpc(); rpc.autoClose = false;
+    rpc.answer = () => {
+      if (kind === "protocol") throw Object.assign(new Error("fixture"), { code: -32000 });
+      if (kind === "request") void rpc.reqHandler("fixture", {}).catch(() => {});
+      return new Promise<never>(() => {});
+    };
+    const pending = discoverAcp(rpc, { cwd: "/fixture", timeoutMs: 5, cleanupTimeoutMs: 500 });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.ok(rpc.events.includes("close"));
+    rpc.breach(); rpc.finishClose();
+    assert.equal((await pending).status, "output-budget-exceeded");
+  }
+});
+
+test("unconfirmed closure still throws cleanup error after a local budget breach", async () => {
+  for (const reject of [false, true]) {
+    const rpc = new BudgetRpc(); rpc.autoClose = false;
+    rpc.answer = () => { rpc.breach(); if (reject) rpc.closing.reject(new Error("fixture closure failure")); return new Promise<never>(() => {}); };
+    await assert.rejects(discoverAcp(rpc, { cwd: "/fixture", cleanupTimeoutMs: 5 }), AcpDiscoveryCleanupError);
+    rpc.finishClose();
+  }
+});
+
+test("peer codes, messages or error classes cannot manufacture local budget status", async () => {
+  for (const error of [new AcpOutputBudgetError(128, "stdout"),
+    Object.assign(new Error("ACP output byte budget exceeded"), { code: "ACP_OUTPUT_BUDGET_EXCEEDED" })]) {
+    const rpc = new BudgetRpc(); rpc.answer = () => { throw error; };
+    const result = await discoverAcp(rpc, { cwd: "/fixture" });
+    assert.equal(result.status, "error"); assert.equal(rpc.failure, null);
+  }
+  const f = budgetFixture(1000), pending = discoverAcp(f.rpc, { cwd: "/fixture" });
+  await budgetTurn();
+  f.out(budgetMessage({ id: 1, error: { code: "ACP_OUTPUT_BUDGET_EXCEEDED", message: "ACP output byte budget exceeded" } }));
+  await budgetTurn(); f.finish(); assert.equal((await pending).status, "error");
+  assert.equal(await f.rpc.outputBudget!.settled, null);
+});
+
+test("post-breach child error without native closure still fails discovery cleanup", async () => {
+  const f = budgetFixture(1);
+  const pending = assert.rejects(discoverAcp(f.rpc, { cwd: "/fixture", cleanupTimeoutMs: 20 }), AcpDiscoveryCleanupError);
+  await budgetTurn();
+  f.err("xx"); f.child.emit("error", new Error("private fixture error"));
+  try { await pending; }
+  finally { f.finish(); await f.rpc.closed; }
 });

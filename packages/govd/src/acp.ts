@@ -9,10 +9,25 @@
 // `session/cancel` and then ends the process; an agent that dies ends the turn with its last
 // words on stderr.
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+import { types } from "node:util";
 import { canonical, type GateRequest, type TurnHooks } from "./claude.ts";
 import { MAX_RUN_TOKENS } from "./codex.ts";
 
+export type AcpOutputBudget = { maxBytes: number };
+export class AcpOutputBudgetError extends Error {
+  readonly code = "ACP_OUTPUT_BUDGET_EXCEEDED";
+  readonly limitBytes: number;
+  readonly stream: "stdout" | "stderr";
+  constructor(limitBytes: number, stream: "stdout" | "stderr") {
+    super("ACP output byte budget exceeded");
+    this.limitBytes = limitBytes; this.stream = stream;
+  }
+}
+
 export type AcpRpc = {
+  /** Internal opt-in observation; only local accounting can latch this failure. */
+  outputBudget?: { readonly failure: AcpOutputBudgetError | null; readonly settled: Promise<AcpOutputBudgetError | null> };
   request(method: string, params: unknown, timeoutMs?: number): Promise<any>;
   notify(method: string, params: unknown): void;
   onRequest(f: (method: string, params: any) => Promise<unknown>): void;
@@ -32,33 +47,79 @@ const MAX_LINE = 8 * 1024 * 1024;   // larger than any real message; a longer li
 /** An agent may echo a numeric id back as its decimal string: the same id. */
 const sameId = (v: unknown): number | null => typeof v === "number" ? v : typeof v === "string" && /^(0|[1-9][0-9]{0,14})$/.test(v) ? Number(v) : null;
 
-/** Starts `bin args...` under govern-sup and speaks JSON-RPC 2.0 over its stdio. */
-export function startAcp(o: { supervisor: string; policyFile: string; bin: string; args: string[]; env: Record<string, string>; cwd: string }): AcpRpc {
-  const child = spawn(o.supervisor, ["run", "--policy", o.policyFile, "--", o.bin, ...o.args], { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
-  let stderr = "";
+// Validate descriptors without executing configuration accessors. Proxy traps and any
+// reflection errors are refused with the same local diagnostic, without a nested cause.
+function outputLimit(o: object): number | undefined {
+  try {
+    if (types.isProxy(o)) throw null;
+    const option = Object.getOwnPropertyDescriptor(o, "outputBudget");
+    if (!option) {
+      // Walk descriptors rather than using `in`: an ordinary object's prototype can
+      // itself be a Proxy whose membership trap would otherwise execute here.
+      for (let proto = Object.getPrototypeOf(o); proto !== null; proto = Object.getPrototypeOf(proto)) {
+        if (types.isProxy(proto) || Object.getOwnPropertyDescriptor(proto, "outputBudget")) throw null;
+      }
+      return undefined;
+    }
+    if (!("value" in option)) throw null;
+    const budget = option.value;
+    if (budget === undefined) return undefined;
+    if (!budget || typeof budget !== "object" || types.isProxy(budget) || Array.isArray(budget)) throw null;
+    const proto = Object.getPrototypeOf(budget);
+    if (proto !== Object.prototype && proto !== null) throw null;
+    const keys = Reflect.ownKeys(budget);
+    if (keys.length !== 1 || keys[0] !== "maxBytes") throw null;
+    const value = Object.getOwnPropertyDescriptor(budget, "maxBytes");
+    if (!value || !("value" in value) || !Number.isSafeInteger(value.value) || value.value < 1 || value.value > 1_048_576) throw null;
+    return value.value;
+  } catch { throw new Error("Invalid ACP output budget configuration"); }
+}
+
+type AcpNative = { spawn: typeof spawn; kill: typeof process.kill };
+/** Starts `bin args...` under govern-sup and speaks JSON-RPC 2.0 over its stdio.
+ * The optional native seam is for invented transport fixtures, never daemon configuration. */
+export function startAcp(o: { supervisor: string; policyFile: string; bin: string; args: string[]; env: Record<string, string>; cwd: string;
+  outputBudget?: AcpOutputBudget }, native: AcpNative = { spawn, kill: process.kill }): AcpRpc {
+  const limit = outputLimit(o); // immutable copy, validated before any spawn attempt
+  const child = native.spawn(o.supervisor, ["run", "--policy", o.policyFile, "--", o.bin, ...o.args], { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  let stderr = "", stderrBytes = Buffer.alloc(0);
   let gone = false;                 // exited, or never started
-  child.stderr?.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
-  // An agent that dies turns our next write into EPIPE; its exit is reported through `exited`.
-  child.stdin?.on("error", () => {});
+  let failure: AcpOutputBudgetError | null = null, admitted = 0;
+  let settleBudget!: (error: AcpOutputBudgetError | null) => void;
+  const outputBudget = limit === undefined ? undefined : {
+    get failure() { return failure; },
+    settled: new Promise<AcpOutputBudgetError | null>((resolve) => { settleBudget = resolve; }),
+  };
   let next = 1;
   const waiting = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void; timer?: NodeJS.Timeout }>();
+  const failAll = (why: string) => {
+    for (const w of waiting.values()) { clearTimeout(w.timer); w.fail(failure ?? new Error(why)); }
+    waiting.clear();
+  };
   let onReq: (method: string, params: any) => Promise<unknown> = async (m) => { throw new Error(`GovernCode does not answer ${m}`); };
   let onNote: (method: string, params: any) => void = () => {};
-  const send = (obj: unknown) => { if (!gone && child.stdin?.writable) child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...(obj as object) }) + "\n"); };
-  // One message per line, JSON-RPC 2.0 only; anything else (a stray print, a malformed envelope,
-  // a line too long to be a message) is ignored, never acted on. A line over the cap is dropped
-  // as it streams in, so a runaway agent cannot make govd hold it.
+  const send = (obj: unknown) => {
+    if (failure || gone || !child.stdin?.writable) return;
+    const line = JSON.stringify({ jsonrpc: "2.0", ...(obj as object) }) + "\n";
+    if (!failure && !gone && child.stdin?.writable) child.stdin.write(line);
+  };
+  // One message per line, JSON-RPC 2.0 only; malformed envelopes and overlong lines are ignored.
   let buf = "", dropping = false;
+  let decoder = limit === undefined ? undefined : new StringDecoder("utf8");
   const onLine = (line: string) => {
+    if (failure) return;
     let m: any;
-    try { m = JSON.parse(line); } catch { return; }              // not a message (a stray print): ignored
-    if (!m || typeof m !== "object" || Array.isArray(m) || m.jsonrpc !== "2.0") return;
+    try { m = JSON.parse(line); } catch { return; }
+    if (failure || !m || typeof m !== "object" || Array.isArray(m) || m.jsonrpc !== "2.0") return;
     if (m.params !== undefined && (m.params === null || typeof m.params !== "object")) return;
-    if ("method" in m && ("result" in m || "error" in m)) return;   // a request and a reply at once: neither
-    if (isId(m.id) && typeof m.method === "string") {           // a request from the agent to us
-      onReq(m.method, m.params ?? {}).then((result) => send({ id: m.id, result: result ?? null }),
-        (e) => send({ id: m.id, error: { code: -32601, message: String(e instanceof Error ? e.message : e).slice(0, 300) } }));
-    } else if (sameId(m.id) !== null && !("method" in m)) {      // a response to us
+    if ("method" in m && ("result" in m || "error" in m)) return;
+    if (isId(m.id) && typeof m.method === "string") {
+      onReq(m.method, m.params ?? {}).then((result) => {
+        if (!failure) send({ id: m.id, result: result ?? null });
+      }, (e) => {
+        if (!failure) send({ id: m.id, error: { code: -32601, message: String(e instanceof Error ? e.message : e).slice(0, 300) } });
+      });
+    } else if (sameId(m.id) !== null && !("method" in m)) {
       const w = waiting.get(sameId(m.id)!); waiting.delete(sameId(m.id)!);
       if (!w) return;
       clearTimeout(w.timer);
@@ -68,10 +129,9 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
       else w.ok(m.result);
     } else if (m.id === undefined && typeof m.method === "string") onNote(m.method, m.params ?? {});
   };
-  child.stdout!.setEncoding("utf8");
-  child.stdout!.on("data", (chunk: string) => {
+  const consume = (chunk: string) => {
     let rest = chunk;
-    while (rest.length) {
+    while (rest.length && !failure) {
       const nl = rest.indexOf("\n");
       if (nl < 0) {
         if (!dropping) { buf += rest; if (buf.length > MAX_LINE) { buf = ""; dropping = true; } }
@@ -80,43 +140,85 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
       const head = rest.slice(0, nl); rest = rest.slice(nl + 1);
       if (dropping) { dropping = false; continue; }
       const line = buf + head; buf = "";
-      if (line.length <= MAX_LINE) onLine(line);
+      if (!failure && line.length <= MAX_LINE) onLine(line);
+      // A callback can breach reentrantly; the next loop iteration must do no work.
     }
-  });
-  const tail = () => stderr.trim().split("\n").slice(-2).join(" | ").slice(0, 300);
-  const failAll = (why: string) => {
-    for (const w of waiting.values()) { clearTimeout(w.timer); w.fail(new Error(why)); }
-    waiting.clear();
   };
+  let killer: NodeJS.Timeout | undefined, over = false, stopping = false;
+  const stop = (killAfterMs = 60_000) => {
+    if (over || !child.pid || (limit !== undefined && stopping)) return;
+    stopping = true;
+    child.stdin?.end();
+    try { native.kill(-child.pid, "SIGTERM"); } catch { /* gone */ }
+    // SIGKILL may interrupt descendant collection; closed is not descendant-death proof.
+    if (!killer) { killer = setTimeout(() => { if (!over) { try { native.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } } }, killAfterMs); killer.unref(); }
+  };
+  const admit = (chunk: Buffer, stream: "stdout" | "stderr") => {
+    if (failure) return false;
+    if (chunk.length > limit! - admitted) {
+      failure = new AcpOutputBudgetError(limit!, stream);
+      settleBudget(failure);
+      failAll(failure.message);
+      buf = ""; dropping = false; decoder = undefined;
+      // Destroy endpoints instead of continuing to allocate and drain peer output.
+      child.stdout?.destroy(); child.stderr?.destroy(); child.stdin?.destroy();
+      stop();
+      return false;
+    }
+    admitted += chunk.length;
+    return true;
+  };
+  // An agent that dies can turn a write into EPIPE. Destruction must not raise an
+  // unhandled stream error; opted-in output endpoint errors are also observed.
+  child.stdin?.on("error", () => {});
+  if (limit === undefined) {
+    child.stderr?.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
+    child.stdout!.setEncoding("utf8");
+    child.stdout!.on("data", consume);
+  } else {
+    child.stdout!.on("error", () => {}); child.stderr?.on("error", () => {});
+    child.stdout!.on("data", (chunk: Buffer) => { if (admit(chunk, "stdout")) consume(decoder!.write(chunk)); });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (!admit(chunk, "stderr")) return;
+      // Copy slices: a small retained tail must not keep a large backing Buffer alive.
+      const keep = Math.min(4096, limit);
+      if (chunk.length >= keep) stderrBytes = Buffer.from(chunk.subarray(chunk.length - keep));
+      else stderrBytes = Buffer.concat([stderrBytes.subarray(Math.max(0, stderrBytes.length + chunk.length - keep)), chunk]);
+    });
+  }
+  // A raw tail cut inside a UTF-8 sequence may begin with a replacement character.
+  const diagnostic = () => failure?.message ?? (limit === undefined ? stderr : stderrBytes.toString("utf8"));
+  const tail = () => diagnostic().trim().split("\n").slice(-2).join(" | ").slice(0, 300);
   let onExit: (s: string) => void = () => {}, onClose: (c: number | null) => void = () => {};
   const exited = new Promise<string>((res) => (onExit = res));
   const closed = new Promise<number | null>((res) => (onClose = res));
-  child.on("exit", (code) => { gone = true; failAll(`the agent exited (${code ?? "signal"}): ${tail()}`); onExit(stderr); });
-  // Could not start at all (no such supervisor, no such folder): the same ending, said plainly.
-  child.on("error", (e) => { gone = true; stderr = e.message; failAll(`the agent did not start: ${e.message}`); onExit(stderr); onClose(null); });
-  child.on("close", (code) => { onClose(code); });
-  let killer: NodeJS.Timeout | undefined;
-  let over = false;
+  child.on("exit", (code) => { gone = true; failAll(failure?.message ?? `the agent exited (${code ?? "signal"}): ${tail()}`); onExit(diagnostic()); });
+  child.on("error", (e) => {
+    // Once pipes have produced enough data to breach, an error is not evidence of
+    // process exit or stdio closure. Keep the stop timer until native lifecycle events.
+    if (failure) { failAll(failure.message); return; }
+    gone = true;
+    stderr = e.message;
+    failAll(`the agent did not start: ${e.message}`);
+    onExit(stderr); onClose(null);
+    if (outputBudget) settleBudget(null);
+  });
+  child.on("close", (code) => { onClose(code); if (!failure && outputBudget) settleBudget(null); });
   void closed.then(() => { over = true; clearTimeout(killer); });
   return {
+    ...(outputBudget ? { outputBudget } : {}),
     request: (method, params, timeoutMs) => new Promise((ok, fail) => {
+      if (failure) return fail(failure);
       if (gone) return fail(new Error(`the agent is gone: ${tail()}`));
       const id = next++;
-      const timer = timeoutMs ? setTimeout(() => { waiting.delete(id); fail(new Error(`${method}: no answer in ${Math.round(timeoutMs / 1000)}s`)); }, timeoutMs) : undefined;
+      const timer = timeoutMs ? setTimeout(() => { waiting.delete(id); fail(failure ?? new Error(`${method}: no answer in ${Math.round(timeoutMs / 1000)}s`)); }, timeoutMs) : undefined;
       waiting.set(id, { ok, fail, timer });
       send({ id, method, params });
     }),
     notify: (method, params) => send({ method, params }),
     onRequest: (f) => (onReq = f),
     onNotify: (f) => (onNote = f),
-    close: (killAfterMs = 60_000) => {
-      if (over || !child.pid) return;
-      child.stdin?.end();
-      try { process.kill(-child.pid, "SIGTERM"); } catch { /* gone */ }
-      // Normal supervisor exit follows descendant collection. This last-resort SIGKILL can
-      // interrupt that collection, so `closed` alone is not proof that all descendants died.
-      if (!killer) { killer = setTimeout(() => { if (!over) { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } } }, killAfterMs); killer.unref(); }
-    },
+    close: stop,
     exited, closed,
   };
 }

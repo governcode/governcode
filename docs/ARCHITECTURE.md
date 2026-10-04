@@ -263,7 +263,8 @@ publication name before verification rejects it. Checksums and identity checks d
 state against a malicious same-user owner, or prevent that owner from replacing private capture
 entries immediately before deletion. The store makes no absolute guarantee against that actor.
 
-`acp-probe.ts` is a separate supplied-`AcpRpc` discovery foundation tested only with fake RPCs.
+`acp-probe.ts` is a separate supplied-`AcpRpc` discovery foundation tested with invented RPC
+and stream fixtures.
 It decodes bounded v1 initialize/session metadata, gives configOptions precedence over legacy
 selectors, rejects every incoming client request, limits notifications, and closes on timeout,
 cancellation or malformed metadata. One monotonic deadline covers all requests; runtime closure
@@ -271,6 +272,27 @@ must be confirmed before a report is returned. Optional session creation require
 fresh-directory assertion, which is not a filesystem or isolation check. This module provides
 neither a launcher nor proof of authentication, subscription, metering, isolation or arbitrary
 descendant termination. Reported metadata and stored bytes do not confer Runner eligibility.
+
+The ACP transport has an internal, opt-in `outputBudget: { maxBytes }` prerequisite for future
+discovery. Configuration is checked before spawn: one named data field, a positive safe integer,
+at most 1 MiB. Omission preserves the existing Runner transport behavior. A shared lifetime
+counter admits raw stdout and stderr bytes before decoding, line scanning, JSON parsing or
+stderr retention. Exactly reaching the ceiling is allowed; a chunk that would exceed it is
+discarded whole, including any valid message inside it. Admission therefore depends on chunk
+boundaries, and messages already delivered cannot be withdrawn.
+
+The opted-in transport copies at most 4,096 admitted raw stderr bytes into its diagnostic tail;
+cutting a UTF-8 character at the tail boundary may produce a replacement character. A breach
+latches a fixed local error, rejects pending and future requests, suppresses further protocol
+delivery and writes, destroys the pipes, and requests shutdown once. Discovery observes that
+local failure through cleanup and reports `output-budget-exceeded`; peer error text or codes
+cannot manufacture that status. Unconfirmed transport closure still raises a cleanup error.
+
+This bounds bytes admitted to transport decoding and parsing, rather than exact process memory
+or CPU use. Delivered chunk allocations, OS buffering and work already dispatched to callbacks
+remain outside that bound. Output failure does not prove supervisor exit or descendant death;
+the existing shutdown timers and lifetime gap remain. No production profile selects this option,
+and no registry-agent launcher is enabled by it.
 
 ## Proposing a project from Home
 

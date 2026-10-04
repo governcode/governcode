@@ -8,7 +8,7 @@ export const ACP_DISCOVERY_LIMITS = Object.freeze({
   string: 4096, id: 256, configOptions: 32, authMethods: 16, notifications: 128,
 });
 export type AcpDiscoveryStatus = "reported" | "missing" | "unsupported" | "malformed" |
-  "auth-required" | "cancelled" | "timeout" | "forbidden-request" | "notification-flood" | "error";
+  "auth-required" | "cancelled" | "timeout" | "forbidden-request" | "notification-flood" | "output-budget-exceeded" | "error";
 export type AcpReportedChoice = { id: string; name: string; description?: string };
 export type AcpReportedSelection = { current: string; available: AcpReportedChoice[] };
 export type AcpReportedConfig = {
@@ -233,9 +233,17 @@ export async function discoverAcp(rpc: AcpRpc, options: AcpDiscoveryOptions): Pr
     try { rpc.close(100); } catch { closeFailed = true; }
   };
   const stop = (reason: AcpDiscoveryStatus) => {
-    if (stopped) return;
+    if (stopped && reason !== "output-budget-exceeded") return;
     stopped = reason; interrupt(); close();
   };
+  const observeBudget = () => {
+    if (rpc.outputBudget?.failure) stop("output-budget-exceeded");
+  };
+  // Keep this observation alive through cleanup. Peer errors never set this local status.
+  if (rpc.outputBudget) void rpc.outputBudget.settled.then((failure) => {
+    if (failure) stop("output-budget-exceeded");
+  });
+  observeBudget();
   const abort = () => stop("cancelled");
   // Observe closure immediately, including a transport that fails while a request hangs.
   // Reflect rejection so it can never become an unhandled rejection before finalization.
@@ -244,6 +252,7 @@ export async function discoverAcp(rpc: AcpRpc, options: AcpDiscoveryOptions): Pr
     return true;
   }, () => { stop("error"); return false; });
   const remainingTime = () => {
+    observeBudget();
     const remaining = deadline - performance.now();
     if (remaining <= 0) stop("timeout");
     if (stopped) throw new DecodeError(stopped);
@@ -278,19 +287,24 @@ export async function discoverAcp(rpc: AcpRpc, options: AcpDiscoveryOptions): Pr
     if (options.signal?.aborted) abort();
     deadline = performance.now() + timeout;
     timer = setTimeout(() => stop("timeout"), timeout);
-    initialization = decodeAcpInitialize(await request("initialize", {
+    const initialReply = await request("initialize", {
       protocolVersion: 1,
       clientInfo: { name: "governcode-discovery", version: "0.1.0" },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: false } },
-    }));
+    });
+    remainingTime();
+    initialization = decodeAcpInitialize(initialReply);
     if (options.createSession) {
       sessionStatus = "reported";
-      session = decodeAcpSession(await request("session/new", { cwd: options.cwd, mcpServers: [] }));
+      const sessionReply = await request("session/new", { cwd: options.cwd, mcpServers: [] });
+      remainingTime();
+      session = decodeAcpSession(sessionReply);
       sessionStatus = session.source === "missing" ? "missing" : session.unsupportedConfigTypes.length ? "unsupported" : "reported";
       status = sessionStatus;
     }
     remainingTime();
   } catch (error) {
+    observeBudget();
     // Only protocol codes are interpreted; messages such as "sign in" prove nothing.
     const code = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
     status = stopped ?? (error instanceof DecodeError ? error.status : code === -32000 ? "auth-required" :
@@ -304,10 +318,12 @@ export async function discoverAcp(rpc: AcpRpc, options: AcpDiscoveryOptions): Pr
       const confirmed = await Promise.race([closure, new Promise<never>((_, reject) => {
         cleanupTimer = setTimeout(() => reject(new AcpDiscoveryCleanupError()), cleanupTimeout);
       })]);
+      observeBudget();
       if (!confirmed || closeFailed) throw new AcpDiscoveryCleanupError();
     } catch { throw new AcpDiscoveryCleanupError(); }
     finally { clearTimeout(cleanupTimer); options.signal?.removeEventListener("abort", abort); }
   }
+  observeBudget();
   status = stopped ?? status;
   if (stopped && options.createSession && initialization) sessionStatus = stopped;
   return { evidence: "agent-reported", status, initialization, session, sessionStatus, runtimeClosed: true };
