@@ -320,6 +320,13 @@ descendants and verifier loss. No production proof transport or context deletion
 unconfirmed teardown and loss of the verifier retain uncertainty. Existing Runner supervision
 and its hard-kill limit remain unchanged.
 
+A passive ELF64 inspector separately examines a private snapshot of supplied bytes for an
+explicit platform. Bounded program-header parsing can report `no-interpreter-or-dynamic-segments`
+for its conservative supported layout. This is descriptive metadata, not checksum verification,
+runtime compatibility or execution authority. It has no production caller and does not tighten
+the installer's existing header-only contract. Runtime access, receipt-to-execution binding and
+production lifetime proof transport remain separate prerequisites.
+
 ## Proposing a project from Home
 
 At Home the Controller's turn socket offers one tool, `propose_project`. govd checks the

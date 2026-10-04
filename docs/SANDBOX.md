@@ -275,6 +275,27 @@ establish acceptance only on the tested host; other architectures and kernels re
 The primitive adds no aggregate CPU, memory or task bound and does not establish credential or
 network isolation. No real registry agent is launched by this feature.
 
+## Passive ELF program-header evidence (development)
+
+A standalone synchronous inspector examines supplied bytes for an explicit Linux x86_64 or
+aarch64 platform. It copies only the supplied byte view into private memory, refusing shared,
+resizable or detached backing. It accepts a conservative ELF64 little-endian layout with at
+most 256 program headers and a 128 MiB artifact bound. The program table and file ranges must
+fit that snapshot; load memory ranges are checked for overflow. Extended program-header counts
+and unsupported segment types are refused.
+
+Its positive result is only `no-interpreter-or-dynamic-segments`: every declared program header
+in the supported layout was inspected and none was `PT_INTERP` or `PT_DYNAMIC`. Both ET_EXEC
+and ET_DYN may yield this evidence. Sections, instructions, relocations, runtime dependencies
+and custom loading behavior are not inspected. This evidence does not establish full ELF
+validity, execution compatibility, credential isolation or absence of dependencies, and verifies
+no checksum or receipt identity.
+
+The inspector has no production caller and changes no installer acceptance, Runner eligibility
+or filesystem grants. Future probing still needs receipt-to-byte and exact-execution binding,
+reviewed runtime access, a narrow policy, context association and native lifetime proof transport.
+No real artifact is executed by this inspection.
+
 ## Known limits
 
 - Existing Runner policies allow `chmod` (npm and git set file modes), and Landlock does not mediate it, so a
