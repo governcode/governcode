@@ -34,7 +34,48 @@ pub struct Policy {
     /// every other local socket stays out of reach. Enforced per path from Landlock ABI 9.
     #[serde(default)]
     pub unix_connect: Vec<PathBuf>,
+    /// Optional per-process ceilings, applied only to the forked child before exec.
+    #[serde(default, deserialize_with = "child_limits")]
+    pub child_limits: Option<ChildLimits>,
     pub cwd: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChildLimits {
+    #[serde(deserialize_with = "finite_limit")]
+    pub cpu_seconds: libc::rlim_t,
+    #[serde(deserialize_with = "finite_limit")]
+    pub address_space_bytes: libc::rlim_t,
+    #[serde(deserialize_with = "finite_limit")]
+    pub open_files: libc::rlim_t,
+}
+
+fn finite_limit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<libc::rlim_t, D::Error> {
+    // Deserialize directly into the native type: no truncating conversion or floats.
+    let value = libc::rlim_t::deserialize(d)?;
+    if value == 0 || value == libc::RLIM_INFINITY {
+        return Err(serde::de::Error::custom("child limit must be a finite positive integer"));
+    }
+    Ok(value)
+}
+
+fn child_limits<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ChildLimits>, D::Error> {
+    // Only an omitted key means absent. Derived struct deserialization accepts positional
+    // arrays, so require a map first and let the struct retain strict/duplicate field checks.
+    struct LimitsObject;
+    impl<'de> serde::de::Visitor<'de> for LimitsObject {
+        type Value = Option<ChildLimits>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a child_limits object with named fields")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            ChildLimits::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(Some)
+        }
+    }
+    d.deserialize_map(LimitsObject)
 }
 
 fn default_ports() -> Vec<u16> {
@@ -65,6 +106,7 @@ pub struct Resolved {
     pub tcp_connect: Vec<u16>,
     pub tcp_bind: Vec<u16>,
     pub unix_connect: Vec<Rule>,
+    pub child_limits: Option<ChildLimits>,
     pub cwd: PathBuf,
     /// Non-fatal notes (skipped missing read/exec paths) for stderr.
     pub warnings: Vec<String>,
@@ -194,6 +236,7 @@ fn resolve(p: Policy) -> Result<Resolved, String> {
         tcp_connect: p.tcp_connect,
         tcp_bind: p.tcp_bind,
         unix_connect: Vec::new(),
+        child_limits: p.child_limits,
         cwd: PathBuf::new(),
         warnings: Vec::new(),
     };
@@ -310,6 +353,38 @@ mod tests {
         assert!(r.tcp_bind.is_empty(), "no AI tool listens unless the policy says so");
         assert_eq!(r.paths.len(), 1);
         assert!(r.warnings.is_empty());
+        assert_eq!(r.child_limits, None);
+    }
+
+    #[test]
+    fn child_limits_are_checked_and_carried_into_resolved() {
+        let t = TempDir::new("limits");
+        let r = parse(&policy(&t, r#","child_limits":{"cpu_seconds":2,"address_space_bytes":67108864,"open_files":32}"#)).unwrap();
+        assert_eq!(r.child_limits, Some(ChildLimits { cpu_seconds: 2, address_space_bytes: 67108864, open_files: 32 }));
+    }
+
+    #[test]
+    fn child_limits_reject_malformed_or_unbounded_values() {
+        let t = TempDir::new("bad-limits");
+        for block in ["null", "[]", "[2,67108864,32]", "{}", r#"{"cpu_seconds":1,"address_space_bytes":1}"#,
+            r#"{"cpu_seconds":1,"address_space_bytes":1,"open_files":1,"extra":1}"#] {
+            rejects(&policy(&t, &format!(",\"child_limits\":{block}")), "invalid policy");
+        }
+        for field in ["cpu_seconds", "address_space_bytes", "open_files"] {
+            let mut missing = serde_json::json!({"cpu_seconds":1,"address_space_bytes":1,"open_files":1});
+            missing.as_object_mut().unwrap().remove(field);
+            rejects(&policy(&t, &format!(",\"child_limits\":{missing}")), "missing field");
+            for bad in ["0", "-1", "1.5", "1.0", "1e2", "null", "\"1\"", "true", "1e999", "18446744073709551616"]
+                .into_iter().chain([libc::RLIM_INFINITY.to_string().as_str()]) {
+                let mut block = serde_json::json!({"cpu_seconds":1,"address_space_bytes":1,"open_files":1});
+                block.as_object_mut().unwrap().remove(field);
+                let block = block.to_string();
+                let extra = format!(",\"child_limits\":{{{},{field:?}:{bad}}}", &block[1..block.len() - 1]);
+                rejects(&policy(&t, &extra), "invalid policy");
+            }
+        }
+        // Duplicate fields are also disagreement, never last-value-wins.
+        rejects(&policy(&t, r#","child_limits":{"cpu_seconds":1,"cpu_seconds":2,"address_space_bytes":1,"open_files":1}"#), "duplicate field");
     }
 
     #[test]

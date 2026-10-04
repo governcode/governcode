@@ -243,7 +243,7 @@ export async function readGrokUsage(o: Opts & { scratch: string }): Promise<Meas
     return null;
   } finally {
     rpc.close(10_000);
-    await rpc.closed;   // the home and the hold go only once every process of the check is gone
+    await rpc.closed;   // waits for supervisor/stdio closure; see AcpRpc.closed's hard-kill limit
     cleanup();
   }
 }
@@ -291,15 +291,15 @@ export async function runGrokTurn(o: Opts & { worktree: string; writePaths: stri
     writeFileSync(policyFile, JSON.stringify(grokPolicy({ work: o.worktree, tmp, home: rh.home, bin, writePaths: o.writePaths, gitDir: o.gitDir, login: rh.login })), { mode: 0o600 });
     const args = ["agent", "--no-leader", ...(o.model ? ["-m", o.model] : []), ...(o.effort ? ["--reasoning-effort", o.effort] : []), "stdio"];
     const rpc = startAcp({ supervisor: o.supervisor, policyFile, bin, args, env: GROK_ENV(tmp, rh.home), cwd: o.worktree });
-    // The run's home goes once govern-sup has closed (every process of the run gone), whether the
-    // turn ends normally or Grok dies first.
+    // The run's home goes once govern-sup and its stdio have closed. Normal supervisor exit
+    // follows descendant collection; forced supervisor death does not prove that collection.
     void rpc.closed.then(() => rh.finish());
     let result;
     try {
       result = await runAcpTurn({ rpc, agent: "grok", cwd: o.worktree, prompt: `${RUNNER_CONTEXT}\n\n${o.prompt}`, hooks: o.hooks, signal: o.signal });
     } finally {
-      // Nothing is checked or recorded until the sandbox reports every process gone (a snapshot
-      // taken earlier could miss a last write).
+      // Wait for supervisor/stdio closure before checking or recording. On normal supervisor
+      // exit this follows descendant collection; hard-kill closure has no such guarantee.
       rpc.close();
       await rpc.closed;
     }

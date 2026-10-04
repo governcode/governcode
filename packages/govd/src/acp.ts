@@ -22,7 +22,8 @@ export type AcpRpc = {
   close(killAfterMs?: number): void;
   /** Resolves with the tail of stderr once the process has exited (or could not start). */
   exited: Promise<string>;
-  /** Resolves once the sandbox (govern-sup) has closed: every process of the run is gone. */
+  /** Resolves once the supervisor and its stdio have closed. This alone does not prove
+   *  descendant death: SIGKILL can interrupt govern-sup's collection of detached children. */
   closed: Promise<number | null>;
 };
 
@@ -112,7 +113,8 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
       if (over || !child.pid) return;
       child.stdin?.end();
       try { process.kill(-child.pid, "SIGTERM"); } catch { /* gone */ }
-      // govern-sup reaps every descendant itself and only then exits; SIGKILL is the last resort.
+      // Normal supervisor exit follows descendant collection. This last-resort SIGKILL can
+      // interrupt that collection, so `closed` alone is not proof that all descendants died.
       if (!killer) { killer = setTimeout(() => { if (!over) { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } } }, killAfterMs); killer.unref(); }
     },
     exited, closed,

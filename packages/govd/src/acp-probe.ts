@@ -206,8 +206,9 @@ export type AcpDiscoveryOptions = {
   freshCwd?: true;
   cleanupTimeoutMs?: number;
 };
-/** A broken closure contract must not be reported as successful cleanup. Keep the cwd until
- * rpc.closed actually resolves. This error deliberately carries no agent text or paths. */
+/** A broken transport closure contract must not be reported as successful cleanup. Even after
+ * rpc.closed resolves, a real launcher needs independent descendant-death evidence before
+ * removing its cwd. This error deliberately carries no agent text or paths. */
 export class AcpDiscoveryCleanupError extends Error {
   constructor() { super("ACP discovery runtime closure was not confirmed; retain its cwd until rpc.closed resolves"); }
 }
@@ -216,6 +217,7 @@ export class AcpDiscoveryCleanupError extends Error {
  * A result is returned only after rpc.closed fulfills. Work has one overall deadline;
  * closure has a separate bounded wait and rejects if the transport breaks its contract.
  * No filesystem checks/cleanup occur here: freshCwd is a caller assertion, not a sandbox.
+ * Transport closure is not descendant-death evidence; production launch/cleanup is not wired.
  */
 export async function discoverAcp(rpc: AcpRpc, options: AcpDiscoveryOptions): Promise<AcpDiscoveryReport> {
   let initialization: AcpReportedInitialization | null = null, session: AcpReportedSession | null = null;

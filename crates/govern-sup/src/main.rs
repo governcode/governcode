@@ -1,5 +1,6 @@
 //! govern-sup: starts one AI tool inside a deny-by-default sandbox (see docs/SANDBOX.md).
 
+mod limits;
 mod policy;
 mod protect;
 mod sandbox;
@@ -63,6 +64,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     std::env::set_current_dir(&policy.cwd).map_err(|e| format!("cwd {}: {e}", policy.cwd.display()))?;
     supervise::run(argv, || {
         sandbox::apply(&policy)?;
-        sandbox::close_inherited()
+        sandbox::close_inherited()?;
+        if let Some(limits) = &policy.child_limits {
+            limits::apply(limits)?;
+        }
+        Ok(())
     })
 }

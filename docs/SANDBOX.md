@@ -49,9 +49,11 @@ mode is not a boundary; this sandbox is.
    outside the sandbox and scopes signals and abstract Unix sockets.
 7. **No privilege gain.** `no_new_privs` is set; setuid binaries do not elevate. Changing a
    file's owner or its extended attributes is refused.
-8. **Nothing outlives the run.** The tool runs as a child of `govern-sup`, which stays
-   outside the sandbox as its subreaper: when the tool exits, or `govd` stops the run, every
-   process it started, detached or not, is killed.
+8. **Descendants are collected before normal supervisor exit.** The tool runs as a child of
+   `govern-sup`, which stays outside the sandbox as its subreaper. When the tool exits or the
+   supervisor handles a stop signal, it kills and reaps descendants, detached or not, and
+   refuses a clean result if collection fails. Killing the supervisor itself with SIGKILL
+   can interrupt this collection; see Known limits below.
 9. **Fail closed.** If the kernel lacks what a rule needs, `govern-sup` refuses to start the
    tool and says which rule and why. There is no "run unsandboxed" switch. The self-test
    proves each rule on your machine, against a control run without the sandbox, before any
@@ -147,15 +149,55 @@ One bad path refuses the whole answer, so nothing is half-written. The model nev
 anything, and the change still waits for your review. Its Limit is the machine's (how many at
 once, how many minutes each), since there is no quota to measure.
 
+## Optional child resource ceilings (development)
+
+A version 1 deny-by-default supervisor policy may include this block:
+
+```json
+"child_limits": {
+  "cpu_seconds": 2,
+  "address_space_bytes": 67108864,
+  "open_files": 32
+}
+```
+
+These are example fixture values, not an accepted profile for a real agent. All three fields
+are required when the block is present, and the block must be an object with named fields.
+Values must be positive finite native integers; arrays, null, unknown or duplicate fields,
+fractions, overflow and the unlimited sentinel are refused.
+Omitting the block preserves inherited limits. Protect mode rejects it.
+
+After sandbox setup, only the forked child lowers its soft and hard `RLIMIT_CPU`, `RLIMIT_AS`
+and `RLIMIT_NOFILE` values. Each becomes the smaller of its inherited value and the requested
+ceiling. Exact readback is required before exec; a failed syscall or mismatch prevents the
+target from starting. The supervisor's own limits remain unchanged. An unprivileged child
+cannot raise its lowered hard ceilings, and descendants inherit them.
+
+CPU seconds count each process's CPU time, not elapsed wall time or the run's total CPU use.
+Address-space bytes bound each process's virtual mappings, not resident memory or the run's
+total memory. `open_files` bounds descriptor numbers per process; it does not close existing
+descriptors or bound pipe output. These Linux semantics follow [getrlimit(2)](https://man7.org/linux/man-pages/man2/getrlimit.2.html).
+
+This foundation provides no aggregate resource, process-count or output-byte bound, and does
+not repair the supervisor hard-kill lifetime gap below. Real agents may reserve large virtual
+address ranges and fail an otherwise generous address-space ceiling. No production agent
+profile selects these ceilings yet; registry-agent discovery remains disabled. Native fixture
+tests require an installed C compiler and static libc support, and use separate wall watchdogs.
+
 ## Known limits
 
 - `chmod` stays allowed (npm and git set file modes), and Landlock does not mediate it, so a
   tool can change the permission bits of a file it can name by path, even outside its
   allowlist. It cannot read or write such a file; it could make one unreadable to you.
-- If `govern-sup` itself is killed with SIGKILL (not how `govd` stops a run), the tool dies
-  with it (unless it cleared that itself), but processes the tool started are not collected.
-  A stopped run gets 3 seconds to end on its own; then everything it started is killed. A per-run cgroup would close
-  that; it is not needed for how GovernCode runs tools today.
+- If `govern-sup` itself is killed with SIGKILL, its descendant collection is interrupted.
+  The direct tool receives a parent-death signal unless it cleared that registration;
+  detached descendants can survive. A handled stop gives the tool 3 seconds to end, then
+  collection has up to 30 seconds to kill and reap descendants. ACP transport shutdown has
+  a last-resort process-group SIGKILL timer, and discovery's supplied transport is asked to
+  close after 100 ms. That can kill the supervisor before collection finishes. Supervisor
+  and stdio closure alone therefore do not prove that every descendant died. Production
+  registry-agent discovery remains disabled pending independent lifetime containment and
+  descendant-death evidence before its temporary directories can be removed.
 - The tool can read its own credentials (it needs them) and reach any address on port
   443, so a misbehaving tool could send its own credentials away. Reading them is a quiet read,
   so no Gate asks first, and a Runner could repeat them in its words or write them into its

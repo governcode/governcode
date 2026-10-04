@@ -185,6 +185,15 @@ mod tests {
     }
 
     #[test]
+    fn child_limits_are_not_supported_in_protect_mode() {
+        for limits in ["null", r#"{"cpu_seconds":1,"address_space_bytes":67108864,"open_files":32}"#] {
+            let text = format!(r#"{{"version":1,"mode":"protect","protect":["/fixture"],"cwd":"/","child_limits":{limits}}}"#);
+            assert!(is_protect(&text));
+            assert!(parse(&text).err().unwrap().contains("unknown field `child_limits`"));
+        }
+    }
+
+    #[test]
     fn grants_everything_beside_the_way_and_nothing_on_the_target() {
         let dir = std::env::temp_dir().join(format!("gs-protect-{}", std::process::id()));
         let ctl = dir.join("control");
