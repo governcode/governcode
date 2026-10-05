@@ -37,6 +37,10 @@ case "$(cat scenario)" in
     echo '{"type":"control_request","request_id":"gate","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"true"}}}'
     read -r line
     echo '{"type":"result","is_error":false,"subtype":"success","api_error_status":200,"result":"completed after gate"}' ;;
+  "late result")
+    # The process exits before its last line is read: the output, not the exit, ends the turn.
+    ( sleep .3; echo '{"type":"result","is_error":false,"subtype":"success","result":"arrived after exit"}' ) &
+    exit 0 ;;
   "old text") echo '{"type":"result","is_error":true,"subtype":"error","result":"Usage limit reached|1900000200"}' ;;
   *) echo '{"type":"result","is_error":true,"subtype":"error","terminal_reason":"api_error","api_error_status":500,"result":"ordinary failure"}' ;;
 esac
@@ -114,4 +118,10 @@ test("an ordinary Claude error is not a usage limit", async () => {
   const result = await turn("normal error");
   assert.equal(result.limit, undefined);
   assert.equal(result.summary, "ordinary failure");
+});
+
+test("a result written as the Claude process exits still ends the turn with that result", async () => {
+  const result = await turn("late result");
+  assert.equal(result.ok, true);
+  assert.equal(result.summary, "arrived after exit");
 });

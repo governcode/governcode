@@ -353,7 +353,8 @@ export function runTurn(opts: {
       }
     }
   });
-  child.on("exit", (code) => finish({ ok: false, summary: code === 0 ? "ended without a result" :
+  // After its output closes, not at exit: a result written just before exiting may still be unread.
+  child.on("close", (code) => finish({ ok: false, summary: code === 0 ? "ended without a result" :
     `sandbox or harness exited ${code}: ${stderr.trim().split("\n").slice(-3).join(" | ")}` }));
   return { cancel: () => child.kill("SIGTERM") };
 }
