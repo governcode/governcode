@@ -22,9 +22,9 @@ test("recovery state lists limited Specs, omits running and cleared Specs, and n
   const states = deriveRecoveryStates([held, failed], events, new Set(), new Date("2026-10-03T02:00:00.000Z"));
   assert.deepEqual(states.map((s) => s.item), [
     { target: "S-0001", project: "p", kind: "held", provider: "codex", resetsAt: "2026-10-03T01:00:00.000Z",
-      since: held.limited!.at, why: "weekly reserve", atReset: false, due: false },
+      since: `${held.limited!.at}#1`, why: "weekly reserve", atReset: false, due: false },
     { target: "S-0002", project: "p", kind: "spec", provider: "codex", resetsAt: null,
-      since: failed.limited!.at, why: "codex hit its usage limit", atReset: false, due: false },
+      since: `${failed.limited!.at}#2`, why: "codex hit its usage limit", atReset: false, due: false },
   ]);
   assert.deepEqual(deriveRecoveryStates([held, failed], events, new Set([held.id])).map((s) => s.item.target), [failed.id]);
   assert.deepEqual(deriveRecoveryStates([held, failed], [...events, event(3, "recovery.cleared", { target: failed.id })])
@@ -51,15 +51,38 @@ test("the latest matching at-reset choice drives due state, and a resumed event 
   assert.equal(rearmed.guarded, false, "choosing at-reset again arms another attempt");
 });
 
-test("a failed Spec held again after resume starts a new recovery episode", () => {
-  const failed = spec("S-0001", "failed", "2026-10-03T01:00:00.000Z", "2026-10-03T00:00:04.000Z");
-  const state = deriveRecoveryStates([failed], [
-    event(1, "spec.failed", { spec: failed.id }),
-    event(2, "recovery.set", { target: failed.id, resetsAt: failed.limited!.resetsAt, atReset: true }),
-    event(3, "recovery.resumed", { target: failed.id, resetsAt: failed.limited!.resetsAt, by: "govd" }),
-  ], new Set(), new Date("2026-10-03T02:00:00.000Z"))[0];
+test("a resume recorded at or before the limit's own time keeps and guards that limit's choice", () => {
+  const at = "2026-10-03T00:00:05.000Z";
+  for (const status of ["held", "failed"] as const) {
+    for (const resumedAt of [at, "2026-10-03T00:00:00.000Z"]) {
+      const limited = spec("S-0001", status, "2026-10-03T01:00:00.000Z", at);
+      const state = deriveRecoveryStates([limited], [
+        { ...event(1, status === "held" ? "spec.held" : "spec.failed", { spec: limited.id }), ts: at },
+        { ...event(2, "recovery.set", { target: limited.id, resetsAt: limited.limited!.resetsAt, atReset: true }), ts: at },
+        { ...event(3, "recovery.resumed", { target: limited.id, resetsAt: limited.limited!.resetsAt, by: "govd" }), ts: resumedAt },
+      ], new Set(), new Date("2026-10-03T02:00:00.000Z"))[0];
+      assert.deepEqual({ atReset: state.item.atReset, due: state.item.due, guarded: state.guarded, choiceSeq: state.choiceSeq },
+        { atReset: true, due: true, guarded: true, choiceSeq: 2 }, `${status}, resumed at ${resumedAt}`);
+      assert.equal(state.item.since, `${at}#1`, "its own resume does not change the item the user chose on");
+    }
+  }
+});
+
+test("a renewed limit starts a new recovery episode, even at the same moment", () => {
+  const at = "2026-10-03T00:00:05.000Z";
+  const failed = spec("S-0001", "failed", "2026-10-03T01:00:00.000Z", at);
+  const renewed = (between: TraceEvent) => deriveRecoveryStates([failed], [
+    { ...event(1, "spec.failed", { spec: failed.id }), ts: at },
+    { ...between, ts: at },
+    { ...event(3, "recovery.resumed", { target: failed.id, resetsAt: failed.limited!.resetsAt, by: "user" }), ts: at },
+    { ...event(4, "spec.failed", { spec: failed.id }), ts: at },
+  ], new Set(), new Date("2026-10-03T02:00:00.000Z"));
+  const [state] = renewed(event(2, "recovery.set", { target: failed.id, resetsAt: failed.limited!.resetsAt, atReset: true }));
   assert.equal(state.item.atReset, false, "the old choice does not carry into the renewed limit");
   assert.equal(state.guarded, false, "the resume before the renewed limit does not guard its new choice");
+  assert.equal(state.item.since, `${at}#4`, "a choice listed on the old limit is refused for the new one");
+  assert.equal(renewed(event(2, "recovery.cleared", { target: failed.id })).length, 1,
+    "forgetting the old limit does not hide the new one");
 });
 
 test("only the latest project turn is recoverable, and reset or Controller changes make it stale", () => {

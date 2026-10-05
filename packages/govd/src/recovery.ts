@@ -53,6 +53,13 @@ function stateOf(item: Omit<RecoveryItem, "atReset" | "due">, events: TraceEvent
   return { item: { ...item, atReset: choice.atReset, due: isDue(item.resetsAt, choice.atReset, now) }, guarded, choiceSeq: choice.seq };
 }
 
+/** The Trace sequence of a limited Spec's current limit: every limit, renewals included, is
+ *  recorded with its status. 0 when the Trace has none. Its own resume does not change it. */
+function specEpisodeOf(spec: Spec, ordered: readonly TraceEvent[]): number {
+  return ordered.filter((e) => e.project === spec.project && e.data.spec === spec.id
+    && e.kind === (spec.status === "held" ? "spec.held" : "spec.failed")).at(-1)?.seq ?? 0;
+}
+
 /** Derive recovery state from already-read projections. Inputs are not changed. */
 export function deriveRecoveryStates(specs: readonly Spec[], events: readonly TraceEvent[],
     running: RunningSpecs = new Set(), now = new Date()): RecoveryState[] {
@@ -61,16 +68,13 @@ export function deriveRecoveryStates(specs: readonly Spec[], events: readonly Tr
 
   for (const spec of specs) {
     if (running.has(spec.id) || !spec.limited || (spec.status !== "held" && spec.status !== "failed")) continue;
-    const transition = ordered.filter((e) => e.project === spec.project && e.data.spec === spec.id
-      && e.kind === (spec.status === "held" ? "spec.held" : "spec.failed")).at(-1);
-    // A Runner-limited failed Spec that is retried but still held stays failed, so it has no new
-    // spec.failed event. Its recovery.resumed is the boundary of the new limited episode: an old
-    // choice or clear must not carry across it.
-    const retried = ordered.filter((e) => e.kind === "recovery.resumed" && targetOf(e) === spec.id && e.ts <= spec.limited!.at).at(-1);
-    const sinceSeq = Math.max(transition?.seq ?? 0, retried?.seq ?? 0);
+    // A choice or clear belongs to one limit: one made before a renewed limit does not carry over,
+    // even when the renewal has the same time. The sequence is part of `since` for the same reason.
+    const sinceSeq = specEpisodeOf(spec, ordered);
     if (wasCleared(ordered, spec.id, sinceSeq, spec.limited.at)) continue;
     out.push(stateOf({ target: spec.id, project: spec.project, kind: spec.status === "held" ? "held" : "spec",
-      provider: spec.to, resetsAt: spec.limited.resetsAt, since: spec.limited.at, why: spec.limited.why },
+      provider: spec.to, resetsAt: spec.limited.resetsAt, why: spec.limited.why,
+      since: sinceSeq ? `${spec.limited.at}#${sinceSeq.toString(36)}` : spec.limited.at },
     ordered, sinceSeq, now));
   }
 
@@ -109,4 +113,9 @@ export function recoveryStates(L: Ledger, options: { project?: string; running?:
 
 export function recoveryState(L: Ledger, target: string, options: { running?: RunningSpecs; now?: Date } = {}): RecoveryState | undefined {
   return recoveryStates(L, options).find((state) => state.item.target === target);
+}
+
+/** The current limit of a Spec, as a Trace sequence (see specEpisodeOf). */
+export function specEpisode(L: Ledger, spec: Spec): number {
+  return specEpisodeOf(spec, L.eventsOfKind(spec.project, ["spec.held", "spec.failed"], 2_147_483_647));
 }

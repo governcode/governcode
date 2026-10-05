@@ -266,6 +266,42 @@ test("a recovery choice is bound to the limited episode the client saw", async (
   assert.equal(refused.error.message, `${id} has changed since you looked (a newer limit): look again (gov limited)`);
 });
 
+test("an automatic resume recorded at or before its limit's own time still runs the chosen Spec", async () => {
+  const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() - 60_000) / 1000) });
+  const id = await handoff(t);
+  // The clock reading of the resume can equal (or, after a clock step, precede) the limit's own.
+  // Moving the limit's time ahead gives the same order without waiting on the clock.
+  const limited = t.d.ledger.spec(id)!.limited!;
+  t.d.ledger.updateSpec(id, { limited: { ...limited, at: new Date(Date.now() + 3_600_000).toISOString() } }, "govd");
+  await t.c.call("recovery.set", { target: id, since: await recoverySince(t, id), atReset: true });
+  setRunner(t.dir, { used: 10 });
+  await t.c.call("watch", { wake: true });
+  await until(() => t.d.ledger.spec(id)?.status === "needs-review", 5000);
+  assert.equal(t.d.ledger.eventsOfKind("p", ["recovery.resumed"]).length, 1);
+});
+
+test("a choice made on a limit is refused once the limit is renewed, even with the same time", async () => {
+  const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() + 60_000) / 1000) });
+  const id = await handoff(t);
+  const since = await recoverySince(t, id);
+  t.d.ledger.updateSpec(id, { status: "held", limited: t.d.ledger.spec(id)!.limited }, "govd");
+  const refused = await t.c.call("recovery.set", { target: id, since, atReset: true });
+  assert.equal(refused.error?.message, `${id} has changed since you looked (a newer limit): look again (gov limited)`);
+  assert.ok((await t.c.call("recovery.set", { target: id, since: await recoverySince(t, id), atReset: true })).result);
+});
+
+test("resume now stops when its limit is renewed during measurement, even with the same time", async () => {
+  const t = await setup({ used: 100, resetsAt: Math.floor((Date.now() + 60_000) / 1000) });
+  const id = await handoff(t);
+  const marker = join(t.dir, "read-started");
+  setRunner(t.dir, { used: 10, readDelay: 300, readStarted: marker });
+  const resumed = t.c.call("recovery.resume", { id, since: await recoverySince(t, id) });
+  await until(() => existsSync(marker));
+  t.d.ledger.updateSpec(id, { status: "held", limited: t.d.ledger.spec(id)!.limited }, "govd");
+  assert.match((await resumed).error?.message ?? "", /Limit changed while it was being resumed/);
+  assert.equal(t.d.ledger.eventsOfKind("p", ["spec.started"]).length, 0);
+});
+
 test("a held transition records the Limit and Runner in the Trace", async () => {
   const reset = Math.floor((Date.now() + 60_000) / 1000);
   const t = await setup({ used: 100, resetsAt: reset });
@@ -475,6 +511,9 @@ test("a Runner-limited Spec continues in its existing copy and keeps both rounds
   assert.equal((await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) })).result.status, "failed");
   const renewed = (await recoveries(t)).find((item) => item.target === id);
   assert.equal(renewed.atReset, false, "the old at-reset choice does not carry into the renewed limit");
+  const failures = t.d.ledger.eventsOfKind("p", ["spec.failed"]);
+  assert.equal(failures.length, 2, "the renewed limit is recorded as its own transition");
+  assert.deepEqual(failures.at(-1)!.data.limited, t.d.ledger.spec(id)!.limited);
   setRunner(t.dir, { used: 10, append: true, text: "second\n", summary: "second round", promptFile });
   assert.equal((await t.c.call("recovery.resume", { id, since: await recoverySince(t, id) })).result.id, id);
   await until(() => t.d.ledger.spec(id)?.status === "needs-review");

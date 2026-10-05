@@ -20,6 +20,7 @@ import { runAgyTurn } from "./agy.ts";
 import { runGrokTurn } from "./grok.ts";
 import { mayShare, notesOf, setNotes, readConversation } from "./memory.ts";
 import { runnerAllowed } from "./crew.ts";
+import { specEpisode } from "./recovery.ts";
 import type { CrewValue } from "@governcode/protocol";
 
 /** A Spec this Controller may look at: any, when the project's context is shared with it; else
@@ -778,6 +779,7 @@ export async function resumeSpec(ctx: DelegationContext, spec: Spec, by: "user" 
   if (by === "govd" && changed) return { id: current.id, status: current.status,
     note: "the handoff changed: resume it yourself to run it as it is now" };
 
+  const episode = specEpisode(L, current);
   L.append(current.project, "recovery.resumed", by, { target: current.id, resetsAt: current.limited.resetsAt, by });
   let changeNote = changed ? `the handoff changed; resumed with the current model, effort and budget (${picked.model || "the Runner's default"} · ${picked.effort ?? "n/a"} · ${budgetPercent}%)` : null;
   if (changed) L.updateSpec(current.id, { model: picked.model, effort: picked.effort, budgetPercent,
@@ -792,7 +794,7 @@ export async function resumeSpec(ctx: DelegationContext, spec: Spec, by: "user" 
   const latest = L.spec(current.id)!;
   if (ctx.runs?.has(current.id)) throw new Error(`${current.id} is already running`);
   if (!latest.limited || !["held", "failed"].includes(latest.status)) throw new Error(`${current.id} is not a limited Spec`);
-  if (latest.limited.at !== current.limited.at) throw new Error(`${current.id}'s Limit changed while it was being resumed; try again`);
+  if (latest.limited.at !== current.limited.at || specEpisode(L, latest) !== episode) throw new Error(`${current.id}'s Limit changed while it was being resumed; try again`);
   // Settings or the Crew card may have changed while it was measured.
   const again = handoffNow(ctx, latest);
   if (again.changed) {
@@ -821,8 +823,8 @@ export async function resumeSpec(ctx: DelegationContext, spec: Spec, by: "user" 
   if (!verdict.ok) {
     const limited = { resetsAt: verdict.resetsAt, at: new Date().toISOString(), why: verdict.reason };
     const note = [verdict.reason, changeNote].filter(Boolean).join("; ");
-    if (now.status === "held") L.updateSpec(now.id, { status: "held", note, limited }, "govd");
-    else L.updateSpec(now.id, { note, limited }, "govd");
+    // Recorded with its status, held or failed, so the renewed limit is a new recovery episode.
+    L.updateSpec(now.id, { status: now.status, note, limited }, "govd");
     ctx.onLimited?.(now.id);
     return { id: now.id, status: now.status, reason: `${input.to} is ${verdict.reason}`, resetsAt: verdict.resetsAt };
   }
