@@ -113,6 +113,12 @@ they cannot widen the scope or reopen an accepted or discarded Spec. The origina
 before-snapshot stays, so the diff and Accept cover every round; the last Runner summary
 is quoted as data, not trusted as instructions.
 
+For Grok ACP `execute` requests, govd sets the internal `base: "acp command"` so command
+rules inspect the command input even after the Runner display suffix is added. The Runner
+hook preserves an explicit base; the reserved display label alone never supplies it. Only
+the literal `grok` adapter authors this marker, never agent titles or tool names. govd supplies
+the Spec identity and actor; Controller and Runner rules keep separate keys and their usual scopes.
+
 Completion delivery is recorded on the Spec. An async result is `pending`; a turn reporting
 it makes it `claimed`, then `delivered` on success or `pending` again on failure. Reading a
 finished Spec with `spec_status` acknowledges it unless a reporting turn already claims it;
@@ -157,8 +163,13 @@ cannot be read or trusted holds every budget it covers and is never overwritten.
 count cannot be written, that Runner does not start.
 The count is always fresh, but it is **counted by GovernCode only**: use outside GovernCode (the
 user's own sessions, other apps) is invisible to it, so the budget should sit below the real plan,
-and it keeps no reserve unless one is set. A token budget holds if a run reported no tokens. When
-the provider has its own usage report too, both are read and every reading is checked, so the
+and it keeps no reserve unless one is set. A token budget holds if a run reported no tokens or
+an incomplete count. When an explicitly supplied `totalTokens` is invalid, the ACP reader keeps
+the run incomplete even if later reports are valid; when both input and output counts are valid,
+their sum is retained as a floor.
+An omitted or `undefined` total still permits the component sum. These counts come from run
+reports, not context occupancy or cost estimates.
+When the provider has its own usage report too, both are read and every reading is checked, so the
 stricter one decides; if either cannot be read, the Runner is held. A provider with neither a
 report nor a budget is held (running one unmetered is not offered). Local models have no quota: their Limit is the machine's (`gov local N M`: at
 most N local Specs at once, each stopped after M minutes).
@@ -229,9 +240,9 @@ Plans describe advertised argv; no command in them is executed.
 
 Eligibility comes from local safety profiles, never registry fields. It requires the exact
 agent/version/platform, verified isolation and permission behavior, subscription authentication,
-and ready counted or provider usage accounting. The OpenCode descriptor is blocked: its ACP
-implementation's HTTP listener conflicts with no-bind, and its runtime isolation has not been
-verified here. All registry agents remain ineligible. There is no production probe launcher,
+and ready counted or provider usage accounting. The local OpenCode 1.18.34 descriptor is blocked:
+it records an ACP HTTP-listener conflict with no-bind and runtime isolation not verified here.
+All registry agents remain ineligible. There is no production probe launcher,
 sign-in, Runner adapter, or Controller-tool exposure for this feature.
 
 `acp.install`, `acp.installed` and `acp.install.cancel` are user-socket operations. Installation
@@ -264,9 +275,15 @@ state against a malicious same-user owner, or prevent that owner from replacing 
 entries immediately before deletion. The store makes no absolute guarantee against that actor.
 
 `acp-probe.ts` is a separate supplied-`AcpRpc` discovery foundation tested with invented RPC
-and stream fixtures.
-It decodes bounded v1 initialize/session metadata, gives configOptions precedence over legacy
-selectors, rejects every incoming client request, limits notifications, and closes on timeout,
+and stream fixtures. It supports only v1 initialize/session metadata, with `configOptions`
+taking precedence over legacy selectors. Known boolean options retain bounded common metadata
+and an exact `true` or `false` `currentValue`, without an `options` member; select options may
+be flat or grouped. Models and modes use only the first select in the matching category: a
+boolean in that category stays metadata and cannot hide a later select. Unknown types are
+explicitly reported as unsupported; duplicate identifiers and malformed or oversized metadata
+are rejected. It makes no configuration changes.
+
+Discovery rejects every incoming client request, limits notifications, and closes on timeout,
 cancellation or malformed metadata. One monotonic deadline covers all requests; runtime closure
 must be confirmed before a report is returned. Optional session creation requires the caller's
 fresh-directory assertion, which is not a filesystem or isolation check. This module provides
