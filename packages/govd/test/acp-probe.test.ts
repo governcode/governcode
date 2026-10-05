@@ -598,7 +598,8 @@ test("success, refused info, malformed reply, timeout and cancel cannot return b
     if (kind === "info") rpc.answer = () => infoReply();
     if (kind === "timeout" || kind === "cancel") rpc.answer = () => new Promise<never>(() => {});
     let returned = false;
-    const pending = discoverAcp(rpc, { cwd: "/fixture", signal: controller.signal, timeoutMs: 10, cleanupTimeoutMs: 500 })
+    // Only the timeout case may reach the deadline; the others answer at once, even on a busy machine.
+    const pending = discoverAcp(rpc, { cwd: "/fixture", signal: controller.signal, timeoutMs: kind === "timeout" ? 10 : 10_000, cleanupTimeoutMs: 500 })
       .then((result) => { returned = true; rpc.events.push("caller-cleanup"); return result; });
     if (kind === "cancel") controller.abort();
     await rpc.closeEntered.promise;
