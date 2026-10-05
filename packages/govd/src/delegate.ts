@@ -645,7 +645,8 @@ async function runRound(ctx: DelegationContext, spec: Spec, input: SpecInput, pr
           else if (steps === 201) L.append(ctx.project.name, "spec.step", "govd", { spec: spec.id, name: "(later steps not recorded)" });
         },
         gate: (req: GateRequest) => gate({ ...req, tool: `${req.tool} (Runner · ${input.to}, ${spec.id})`, actor: `runner · ${input.to} · ${spec.id}`,
-          base: req.tool, spec: spec.id }),
+          // A display fallback must not author the reserved ACP command semantic.
+          base: req.base ?? (req.tool === "acp command" ? undefined : req.tool), spec: spec.id }),
         done,
       };
       // Written down before it starts. With a counted budget, a count that cannot be written stops

@@ -209,6 +209,11 @@ function baseTool(req: { tool: string; base?: string }): string {
   return req.base ?? req.tool;
 }
 
+// The internal ACP semantic is host-authored only as base, never inferred from a display name.
+function isCommand(req: { tool: string; base?: string }): boolean {
+  return req.base === "acp command" || COMMAND_TOOLS.has(baseTool(req));
+}
+
 /** What kind of step this is, for a standing allow; null when it must always ask. A Runner's
  *  kinds are its own: allowing a step in a Spec's workspace never covers the Controller's steps
  *  in the real project. */
@@ -275,7 +280,7 @@ function commandKind(words: string[]): Kind | null {
 
 function controllerKind(req: { tool: string; base?: string; input: Record<string, unknown> }): Kind | null {
   const tool = baseTool(req);
-  if (COMMAND_TOOLS.has(tool)) {
+  if (isCommand(req)) {
     const words = plainWords(req.input.command);
     return words ? commandKind(words) : null;
   }
@@ -289,8 +294,7 @@ function controllerKind(req: { tool: string; base?: string; input: Record<string
 
 /** A read-only command that need not ask at all (when the user keeps "quiet reads" on). */
 export function isQuietRead(req: { tool: string; base?: string; input: Record<string, unknown> }): boolean {
-  const tool = baseTool(req);
-  if (!COMMAND_TOOLS.has(tool)) return false;
+  if (!isCommand(req)) return false;
   const words = plainWords(req.input.command);
   if (!words) return false;
   // sed -n 'N,Mp' FILE...: printing a range of lines, nothing else.
@@ -357,7 +361,7 @@ export function shellSegments(text: string): string[][] | null {
 export function analyze(req: { tool: string; base?: string; spec?: string; input: Record<string, unknown> }): Analysis {
   const tool = baseTool(req);
   const runner = (k: Kind): Kind => (req.spec ? { key: `runner:${k.key}`, label: `a Runner's ${k.label}` } : k);
-  if (COMMAND_TOOLS.has(tool)) {
+  if (isCommand(req)) {
     let command = req.input.command;
     if (Array.isArray(command) && command.length === 3 && ["bash", "sh", "zsh"].includes(String(command[0])) && ["-c", "-lc"].includes(String(command[1]))) command = command[2];
     let segs: string[][] | null = null;

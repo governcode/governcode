@@ -272,7 +272,10 @@ export function permissionGate(agent: string, params: any, id: string): GateRequ
     tool = variant ? `${agent}_${variant}` : kind !== "other" && /^[a-z_]{1,30}$/.test(kind) ? `${agent}_${kind}` : `${agent} unknown tool`;
     input = { kind, ...(title ? { title } : {}), locations, input: raw };
   }
-  return { id, tool, input, canonical: canonical({ tool, input }) };
+  // Only the existing Grok adapter supplies this host-owned command semantic. Agent metadata
+  // and display labels never author it; other ACP adapters still need justified local semantics.
+  return { id, tool, input, canonical: canonical({ tool, input }),
+    ...(agent === "grok" && kind === "execute" ? { base: "acp command" } : {}) };
 }
 
 /**

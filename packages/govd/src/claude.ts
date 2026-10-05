@@ -50,7 +50,7 @@ export const RUNNER_CONTEXT = [
 ].join(" ");
 
 export type GateRequest = { id: string; tool: string; input: Record<string, unknown>; canonical: string; actor?: string;
-  base?: string; spec?: string };   // a Runner's Gate: its own tool name and Spec (for standing allows)
+  base?: string; spec?: string };   // host-owned analysis base (semantic or undecorated tool); Runner Spec for standing allows
 export type TurnHooks = {
   text(chunk: string): void;
   tool(name: string, input: Record<string, unknown>): void;
