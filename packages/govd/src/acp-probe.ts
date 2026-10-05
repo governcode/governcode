@@ -13,9 +13,10 @@ export type AcpReportedChoice = { id: string; name: string; description?: string
 export type AcpReportedSelection = { current: string; available: AcpReportedChoice[] };
 export type AcpReportedConfig = {
   id: string; name: string; description?: string; category?: string;
+} & ({
   type: "select"; currentValue: string;
   options: { value: string; name: string; description?: string; group?: string; groupName?: string }[];
-};
+} | { type: "boolean"; currentValue: boolean });
 export type AcpReportedInitialization = {
   protocolVersion: 1;
   agentInfo: { name: string; version: string; title?: string } | null;
@@ -142,12 +143,12 @@ function legacy(value: unknown, currentKey: string, availableKey: string, itemKe
   return { current, available };
 }
 function selection(config: AcpReportedConfig[], category: string): AcpReportedSelection | null {
-  const o = config.find((v) => v.category === category);
+  const o = config.find((v): v is Extract<AcpReportedConfig, { type: "select" }> => v.type === "select" && v.category === category);
   return o ? { current: o.currentValue, available: o.options.map((v) => ({ id: v.value, name: v.name,
     ...(v.description ? { description: v.description } : {}) })) } : null;
 }
 
-/** Known select schema (flat or grouped); no generic passthrough, no config writes. */
+/** Known boolean and select schemas (flat or grouped); no generic passthrough, no config writes. */
 export function decodeAcpSession(value: unknown): AcpReportedSession {
   bounded(value);
   const o = record(value);
@@ -162,9 +163,14 @@ export function decodeAcpSession(value: unknown): AcpReportedSession {
       seen.add(configId);
       const common = { id: configId, name, ...optionalText(option, "description"),
         ...(present(option.category) ? { category: id(option.category) } : {}) };
+      if (type === "boolean") {
+        if (typeof option.currentValue !== "boolean") return bad();
+        configOptions.push({ ...common, type: "boolean", currentValue: option.currentValue });
+        continue;
+      }
       if (type !== "select") { unsupportedConfigTypes.push(type); continue; }
       const currentValue = id(option.currentValue);
-      const values: AcpReportedConfig["options"] = [];
+      const values: Extract<AcpReportedConfig, { type: "select" }>["options"] = [];
       let grouped: boolean | undefined;
       const add = (value: unknown, group?: string, groupName?: string) => {
         const v = record(value);

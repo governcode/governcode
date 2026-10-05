@@ -17,6 +17,7 @@ const initialization = () => ({ protocolVersion: 1, agentCapabilities: { loadSes
   authMethods: [{ id: "fixture-login", name: "Fixture Login", description: "Invented auth method" }] });
 const config = (category = "model") => ({ id: category, name: "Fixture Selector", category, type: "select",
   currentValue: "fixture-a", options: [{ value: "fixture-a", name: "Fixture A" }, { value: "fixture-b", name: "Fixture B" }] });
+const booleanConfig = (currentValue = true) => ({ id: "toggle", name: "Fixture Toggle", type: "boolean" as const, currentValue });
 const legacyModes = () => ({ currentModeId: "fixture-mode", availableModes: [{ id: "fixture-mode", name: "Fixture Mode" }] });
 const legacyModels = () => ({ currentModelId: "fixture-model", availableModels: [{ modelId: "fixture-model", name: "Fixture Model" }] });
 const freshOptions = { cwd: "/fixture/fresh", createSession: true, freshCwd: true } as const;
@@ -26,6 +27,7 @@ class FakeRpc implements AcpRpc {
   notifications: { method: string; params: unknown }[] = [];
   events: string[] = [];
   closing = deferred<number | null>();
+  closeEntered = deferred<void>();
   closed = this.closing.promise;
   exited = Promise.resolve("");
   reqHandler: (method: string, params: unknown) => Promise<unknown> = async () => { throw new Error("unregistered"); };
@@ -42,6 +44,7 @@ class FakeRpc implements AcpRpc {
   onNotify(f: (method: string, params: unknown) => void) { this.noteHandler = f; }
   close(killAfterMs?: number) {
     this.events.push("close"); assert.equal(killAfterMs, 100);
+    this.closeEntered.resolve();
     if (this.autoClose) queueMicrotask(() => this.finishClose());
   }
   finishClose() { this.events.push("closed"); this.closing.resolve(0); }
@@ -140,7 +143,9 @@ test("configOptions exclusively win over legacy modes and models; unknown catego
 test("grouped config schema preserves order and group names; first category wins", () => {
   const grouped = { ...config(), options: [{ group: "recommended", name: "Recommended", options: config().options }] };
   const decoded = decodeAcpSession({ sessionId: "fixture", configOptions: [grouped, { ...config(), id: "second", currentValue: "fixture-b" }] });
-  assert.deepEqual(decoded.configOptions[0].options[0], { value: "fixture-a", name: "Fixture A", group: "recommended", groupName: "Recommended" });
+  const first = decoded.configOptions[0];
+  assert.ok(first.type === "select");
+  assert.deepEqual(first.options[0], { value: "fixture-a", name: "Fixture A", group: "recommended", groupName: "Recommended" });
   assert.equal(decoded.models?.current, "fixture-a");
 });
 
@@ -149,8 +154,92 @@ test("unsupported config types are explicit and never fall back to legacy or gen
     { id: "toggle", name: "Toggle", type: "boolean", currentValue: true },
     { id: "future", name: "Future", type: "fixture-unknown", currentValue: "fake", vendor: { eligible: true } },
   ], modes: legacyModes() });
-  assert.deepEqual(result.unsupportedConfigTypes, ["boolean", "fixture-unknown"]);
-  assert.deepEqual(result.configOptions, []); assert.equal(result.modes, null);
+  assert.deepEqual(result.unsupportedConfigTypes, ["fixture-unknown"]);
+  assert.deepEqual(result.configOptions, [{ id: "toggle", name: "Toggle", type: "boolean", currentValue: true }]);
+  assert.equal(result.modes, null);
+});
+
+test("boolean true and false retain only bounded common metadata, with no choices or legacy fallback", () => {
+  for (const currentValue of [true, false]) {
+    const option = { ...booleanConfig(currentValue), description: "Invented toggle", category: "model" };
+    const decoded = decodeAcpSession({ sessionId: "fixture", configOptions: [{ ...option,
+      options: config().options, _meta: { eligible: true, signedIn: true }, vendor: { command: "invented" } }],
+      models: legacyModels(), modes: legacyModes() });
+    assert.deepEqual(decoded, { source: "configOptions", configOptions: [option], unsupportedConfigTypes: [], models: null, modes: null });
+    const toggle = decoded.configOptions[0];
+    assert.ok(toggle.type === "boolean");
+    assert.equal(toggle.currentValue, currentValue);
+    assert.equal("options" in toggle, false);
+    assert.deepEqual(decodeAcpSession({ sessionId: "fixture", configOptions: [
+      { ...booleanConfig(currentValue), category: null, description: null }], models: { unknown: true } }).configOptions,
+    [booleanConfig(currentValue)]);
+  }
+});
+
+test("mixed booleans and flat or grouped selects preserve order; the first select category wins", () => {
+  for (const category of ["model", "mode"] as const) for (const booleanFirst of [true, false]) {
+    const before = { ...booleanConfig(false), id: "before", category };
+    const after = { ...booleanConfig(true), id: "after", category };
+    const first = { ...config(category), options: [{ group: "g", name: "Fixture Group", options: config().options }] };
+    const second = { ...config(category), id: "second", currentValue: "fixture-b" };
+    const options = booleanFirst ? [before, first, after, second] : [first, before, second, after];
+    const decoded = decodeAcpSession({ sessionId: "fixture", configOptions: options, models: legacyModels(), modes: legacyModes() });
+    assert.deepEqual(decoded.configOptions.map((v) => v.id), options.map((v) => v.id));
+    const grouped = decoded.configOptions.find((v) => v.id === category)!;
+    assert.ok(grouped.type === "select");
+    assert.deepEqual(grouped.options, config().options.map((v) => ({ ...v, group: "g", groupName: "Fixture Group" })));
+    assert.deepEqual(decoded[category === "model" ? "models" : "modes"], {
+      current: "fixture-a", available: config().options.map((v) => ({ id: v.value, name: v.name })) });
+    assert.equal(decoded[category === "model" ? "modes" : "models"], null);
+  }
+});
+
+test("malformed boolean values and common metadata are never coerced or masked by legacy", () => {
+  const { currentValue: _value, ...missing } = booleanConfig();
+  for (const option of [missing, ...[null, "true", "false", 0, 1, [], {}, [true]].map((currentValue) => ({ ...booleanConfig(), currentValue })),
+    { ...booleanConfig(), id: "" }, { ...booleanConfig(), name: false }, { ...booleanConfig(), description: 0 },
+    { ...booleanConfig(), category: true }]) {
+    assert.throws(() => decodeAcpSession({ sessionId: "fixture", configOptions: [option], models: legacyModels(), modes: legacyModes() }), /malformed/);
+  }
+  for (const key of ["currentValue", "category", "_meta"]) {
+    const option = Object.defineProperty(booleanConfig(), key, { enumerable: true, get() { assert.fail("must not execute boolean getters"); } });
+    assert.throws(() => decodeAcpSession({ sessionId: "fixture", configOptions: [option] }), /malformed/);
+  }
+});
+
+test("boolean payloads retain every existing size fence, including ignored extensions", () => {
+  const nested: Record<string, unknown> = {}; let cursor = nested;
+  for (let n = 0; n < limits.depth + 1; n++) { const next = {}; cursor.child = next; cursor = next; }
+  const extra = [nested, Object.fromEntries(Array.from({ length: limits.recordKeys + 1 }, (_, n) => [`k${n}`, false])),
+    Array(limits.arrayItems + 1).fill(false), Array.from({ length: limits.arrayItems }, () => Array(limits.arrayItems).fill(false)),
+    Array(20).fill("x".repeat(limits.string)), { text: "x".repeat(limits.string + 1) }, { text: "bad\ntext" }];
+  for (const vendor of extra) assert.throws(() => decodeAcpSession({ sessionId: "fixture", configOptions: [
+    { ...booleanConfig(), vendor }] }), /malformed/);
+  for (const option of [{ ...booleanConfig(), id: "x".repeat(limits.id + 1) },
+    { ...booleanConfig(), description: "é".repeat(limits.string) }, { ...booleanConfig(), category: "bad\tcategory" }]) {
+    assert.throws(() => decodeAcpSession({ sessionId: "fixture", configOptions: [option] }), /malformed/);
+  }
+  const options = Array.from({ length: limits.configOptions }, (_, n) => ({ ...booleanConfig(n % 2 === 0), id: `toggle-${n}` }));
+  assert.equal(decodeAcpSession({ sessionId: "fixture", configOptions: options }).configOptions.length, limits.configOptions);
+  assert.throws(() => decodeAcpSession({ sessionId: "fixture", configOptions: [...options, booleanConfig()] }), /malformed/);
+});
+
+test("duplicate IDs are rejected across boolean, select and unknown types in either order", () => {
+  const variants = [booleanConfig(), { ...config(), id: "toggle" }, { id: "toggle", name: "Future", type: "future" }];
+  for (const first of variants) for (const second of variants) {
+    assert.throws(() => decodeAcpSession({ sessionId: "fixture", configOptions: [first, second] }), /malformed/);
+  }
+});
+
+test("unknown types stay explicit, ordered and deduplicated while known boolean reports survive", () => {
+  const unknown = (id: string, type: string) => ({ id, name: "Future", type, currentValue: false });
+  const decoded = decodeAcpSession({ sessionId: "fixture", configOptions: [unknown("a", "future-b"), booleanConfig(false),
+    unknown("b", "future-a"), unknown("c", "future-b")], models: legacyModels() });
+  assert.deepEqual(decoded.unsupportedConfigTypes, ["future-b", "future-a"]);
+  assert.deepEqual(decoded.configOptions, [booleanConfig(false)]);
+  assert.equal(decoded.models, null);
+  assert.throws(() => decodeAcpSession({ sessionId: "fixture", configOptions: [
+    { ...unknown("a", "future"), description: false }] }), /malformed/);
 });
 
 test("malformed known config schema is rejected, rather than masked by legacy fallback", () => {
@@ -241,12 +330,117 @@ test("protocol error codes report auth-required or unsupported without authentic
 
 test("session missing, malformed and unsupported metadata have honest statuses", async () => {
   for (const [reply, expected] of [[{ sessionId: "fixture" }, "missing"], [{}, "missing"],
-    [{ sessionId: "fixture", configOptions: [{ id: "b", name: "B", type: "boolean", currentValue: false }] }, "unsupported"],
+    [{ sessionId: "fixture", configOptions: [{ id: "b", name: "B", type: "boolean", currentValue: false }] }, "reported"],
+    [{ sessionId: "fixture", configOptions: [{ id: "b", name: "B", type: "future", currentValue: false }] }, "unsupported"],
     [{ sessionId: "fixture", configOptions: [config(), config()] }, "malformed"]] as const) {
     const rpc = new FakeRpc(); rpc.answer = (method) => method === "initialize" ? initialization() : reply;
     const result = await discoverAcp(rpc, freshOptions);
     assert.equal(result.status, expected); assert.equal(result.sessionStatus, expected);
     assert.equal(result.runtimeClosed, true);
+  }
+});
+
+test("boolean discovery reports known values and mixed unknowns without enabling client actions", async () => {
+  for (const currentValue of [true, false]) for (const unknown of [false, true]) {
+    const rpc = new FakeRpc();
+    const options = [booleanConfig(currentValue), config(), config("mode")];
+    const configOptions = unknown ? [...options, { id: "future", name: "Future", type: "future" }] : options;
+    const reply = { sessionId: "fixture", configOptions, models: legacyModels() };
+    rpc.answer = (method) => method === "initialize" ? initialization() : reply;
+    const result = await discoverAcp(rpc, freshOptions);
+    assert.equal(result.status, unknown ? "unsupported" : "reported");
+    assert.equal(result.sessionStatus, result.status);
+    assert.equal(result.evidence, "agent-reported"); assert.equal(result.runtimeClosed, true);
+    assert.deepEqual(result.session?.configOptions, options);
+    assert.deepEqual(result.session?.unsupportedConfigTypes, unknown ? ["future"] : []);
+    assert.deepEqual(rpc.requests.map((r) => ({ method: r.method, params: r.params })), [
+      { method: "initialize", params: { protocolVersion: 1,
+        clientInfo: { name: "governcode-discovery", version: "0.1.0" },
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: false } } } },
+      { method: "session/new", params: { cwd: "/fixture/fresh", mcpServers: [] } },
+    ]);
+    assert.deepEqual(rpc.notifications, []);
+  }
+});
+
+test("malformed boolean discovery reports malformed with no legacy rescue or partial session", async () => {
+  for (const currentValue of [null, "false", 0, [], {}]) {
+    const rpc = new FakeRpc();
+    rpc.answer = (method) => method === "initialize" ? initialization() : {
+      sessionId: "fixture", configOptions: [config(), { ...booleanConfig(), currentValue }], models: legacyModels() };
+    const result = await discoverAcp(rpc, freshOptions);
+    assert.equal(result.status, "malformed"); assert.equal(result.sessionStatus, "malformed");
+    assert.equal(result.session, null); assert.ok(result.initialization);
+    assert.deepEqual(rpc.requests.map((r) => r.method), ["initialize", "session/new"]);
+    assert.deepEqual(rpc.notifications, []);
+  }
+});
+
+for (const stop of ["cancelled", "timeout"] as const) for (const malformed of [false, true]) {
+  for (const replyFirst of [false, true]) {
+    test(`deferred ${malformed ? "malformed" : "valid"} boolean reply ${replyFirst ? "queued before" : "after"} ${stop} cannot publish session metadata`, async (t) => {
+      if (stop === "timeout") t.mock.timers.enable({ apis: ["setTimeout"] });
+      const rpc = new FakeRpc(); rpc.autoClose = false;
+      const controller = new AbortController(), entered = deferred<void>(), reply = deferred<unknown>();
+      rpc.answer = (method) => {
+        if (method === "initialize") return initialization();
+        entered.resolve(); return reply.promise;
+      };
+      let returned = false;
+      const pending = discoverAcp(rpc, { ...freshOptions, signal: controller.signal, timeoutMs: 10_000 })
+        .then((result) => { returned = true; return result; });
+      await entered.promise;
+      const settle = () => reply.resolve({ sessionId: "fixture", configOptions: [
+        { ...booleanConfig(false), currentValue: malformed ? "false" : false }] });
+      if (replyFirst) settle();
+      if (stop === "cancelled") controller.abort();
+      else t.mock.timers.tick(10_000);
+      await rpc.closeEntered.promise;
+      if (!replyFirst) settle();
+      await budgetTurn();
+      assert.equal(returned, false);
+      rpc.finishClose(); const result = await pending;
+      assert.equal(result.status, stop); assert.equal(result.sessionStatus, stop);
+      assert.equal(result.session, null); assert.ok(result.initialization);
+      assert.equal(result.evidence, "agent-reported"); assert.equal(result.runtimeClosed, true);
+      assert.deepEqual(rpc.requests.map((r) => r.method), ["initialize", "session/new"]);
+      assert.deepEqual(rpc.notifications, []);
+      assert.equal(rpc.events.filter((v) => v === "close").length, 1);
+    });
+  }
+}
+
+test("a boolean session success waits for closure and cancellation there retains only reported evidence", async () => {
+  for (const cancel of [false, true]) {
+    const rpc = new FakeRpc(); rpc.autoClose = false;
+    const controller = new AbortController(), reply = { sessionId: "fixture", configOptions: [booleanConfig(false)] };
+    rpc.answer = (method) => method === "initialize" ? initialization() : reply;
+    let returned = false;
+    const pending = discoverAcp(rpc, { ...freshOptions, signal: controller.signal })
+      .then((result) => { returned = true; return result; });
+    await rpc.closeEntered.promise;
+    await budgetTurn(); assert.equal(returned, false);
+    if (cancel) controller.abort();
+    rpc.finishClose(); const result = await pending;
+    assert.equal(result.status, cancel ? "cancelled" : "reported"); assert.equal(result.sessionStatus, result.status);
+    assert.deepEqual(result.session, { source: "configOptions", configOptions: [booleanConfig(false)],
+      unsupportedConfigTypes: [], models: null, modes: null });
+    assert.equal(result.evidence, "agent-reported"); assert.equal(result.runtimeClosed, true);
+    assert.deepEqual(rpc.requests.map((r) => r.method), ["initialize", "session/new"]);
+    assert.deepEqual(rpc.notifications, []);
+  }
+});
+
+test("boolean reports still reject broken, rejected or throwing closure contracts", async () => {
+  for (const kind of ["unconfirmed", "rejected", "throwing"]) {
+    const rpc = new FakeRpc(); rpc.autoClose = false;
+    rpc.answer = (method) => method === "initialize" ? initialization() : { sessionId: "fixture", configOptions: [booleanConfig()] };
+    if (kind === "throwing") rpc.close = () => { rpc.closeEntered.resolve(); rpc.finishClose(); throw new Error("Invented close failure"); };
+    const pending = assert.rejects(discoverAcp(rpc, { ...freshOptions, cleanupTimeoutMs: 10 }), AcpDiscoveryCleanupError);
+    await rpc.closeEntered.promise;
+    if (kind === "rejected") rpc.closing.reject(new Error("Invented closure failure"));
+    await pending;
+    if (kind !== "throwing") rpc.finishClose();
   }
 });
 
@@ -437,6 +631,36 @@ test("breach after success during ordinary cleanup preserves partial evidence an
   f.finish(); const result = await pending;
   assert.equal(result.status, "output-budget-exceeded"); assert.ok(result.initialization);
   assert.equal(result.runtimeClosed, true);
+});
+
+test("actual transport budget failure before boolean interpretation prevents valid or malformed publication", async () => {
+  for (const malformed of [false, true]) {
+    const f = budgetFixture(2000), pending = discoverAcp(f.rpc, { ...freshOptions, cleanupTimeoutMs: 500 });
+    await budgetTurn(); f.out(budgetMessage({ id: 1, result: initialization() })); await budgetTurn();
+    f.out(budgetMessage({ id: 2, result: { sessionId: "fixture", configOptions: [
+      { ...booleanConfig(), currentValue: malformed ? "true" : true }] } }));
+    f.err(Buffer.alloc(2001)); f.finish(); const result = await pending;
+    assert.equal(result.status, "output-budget-exceeded"); assert.equal(result.sessionStatus, result.status);
+    assert.equal(result.session, null); assert.ok(result.initialization);
+    assert.equal(f.writes.length, 2); assert.equal(f.signals.length, 1);
+  }
+});
+
+test("actual transport budget breach during boolean report closure overrides success and preserves evidence", async () => {
+  const f = budgetFixture(2000), reply = { sessionId: "fixture", configOptions: [booleanConfig(false)] };
+  const pending = discoverAcp(f.rpc, { ...freshOptions, cleanupTimeoutMs: 500 });
+  await budgetTurn(); f.out(budgetMessage({ id: 1, result: initialization() })); await budgetTurn();
+  f.out(budgetMessage({ id: 2, result: reply })); await budgetTurn();
+  assert.equal(f.signals.length, 1);
+  let returned = false; void pending.then(() => { returned = true; });
+  f.err(Buffer.alloc(2001)); await budgetTurn(); assert.equal(returned, false);
+  f.finish(); const result = await pending;
+  assert.equal(result.status, "output-budget-exceeded"); assert.equal(result.sessionStatus, result.status);
+  assert.deepEqual(result.session, { source: "configOptions", configOptions: [booleanConfig(false)],
+    unsupportedConfigTypes: [], models: null, modes: null });
+  assert.equal(result.evidence, "agent-reported"); assert.equal(result.runtimeClosed, true);
+  assert.deepEqual(f.writes.map((line) => JSON.parse(line).method), ["initialize", "session/new"]);
+  assert.equal(f.signals.length, 1);
 });
 
 test("local failure during cleanup overrides timeout, protocol errors and forbidden-request status", async () => {
