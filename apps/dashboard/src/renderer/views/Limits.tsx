@@ -1,9 +1,11 @@
-// Limits: each Runner's measured usage windows against its reserve, and whether a Spec may
+// Allowance (the Limits screen): each Runner's measured usage windows against its reserve, and whether a Spec may
 // start on it now. Measuring starts the tool briefly, so it happens on open and on request,
 // never on a timer; the Trace still refreshes what is shown.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { call, clock, useWatch } from "../api.ts";
-import { Empty, Pill } from "../ui.tsx";
+import { Empty, Pill, Ring } from "../ui.tsx";
+import { ProviderMark, providerName } from "../brand.tsx";
+import { providerUsage } from "../../shared/status.ts";
 
 // counted: GovernCode's own count against a budget the user set (it cannot see use outside GovernCode).
 type Reading = { window: string; usedPercent: number; resetsAt: string | null; reservePercent?: number;
@@ -19,7 +21,9 @@ export function ago(ms: number, now = Date.now()): string {
   return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 }
 
-export function Limits() {
+export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
+  const measured = useRef(onMeasured);
+  measured.current = onMeasured;
   const [providers, setProviders] = useState<ProviderLimit[] | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +33,7 @@ export function Limits() {
     try {
       setProviders((await call<{ providers: ProviderLimit[] }>("limits.list", { measure })).providers);
       setError(null);
+      if (measure) measured.current?.();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { if (measure) setMeasuring(false); }
   }, []);
@@ -39,7 +44,7 @@ export function Limits() {
   return (
     <section className="view">
       <div className="view-head">
-        <h1>Limits</h1>
+        <h1>Allowance</h1>
         <span className="dim">a measured hold, not a billing ceiling: vendor reports lag, so a run can overshoot a little</span>
         <span className="spacer" />
         <button className="btn" disabled={measuring} onClick={() => load(true)}>{measuring ? "Measuring…" : "Measure now"}</button>
@@ -51,14 +56,17 @@ export function Limits() {
           {providers?.map((p) => (
             <div key={p.provider} className="checkpoint limit">
               <div className="row">
-                <b>{p.provider}</b>
+                {p.local || p.unmetered ? <ProviderMark id={p.provider} size={40} />
+                  : <Ring size={40} stroke={5} percent={providerUsage(p).percent} reserve={providerUsage(p).reserve} color={p.verdict.ok ? "var(--accent)" : "var(--violet)"} />}
+                <ProviderMark id={p.provider} size={18} />
+                <b>{providerName(p.provider)}</b>
                 {p.local ? <span className="dim small">Local model · your machine's Limit: at most {p.local.maxRunning} at once, {p.local.maxMinutes} min each</span>
                   : <span className="dim small">Runner · keeps {Object.values(p.reserves ?? {}).every((n) => n === p.reservePercent) ? `${p.reservePercent}% of every window` : Object.entries(p.reserves ?? {}).map(([w, n]) => `${n}% of ${w}`).join(", ")} back</span>}
                 <span className="spacer" />
                 {p.counted && <span className="dim small">budget {p.counted}</span>}
                 {p.unmetered ? <Pill tone="info" title="nothing counted, no Limit">unmetered (your opt-in)</Pill>
                   : p.verdict.ok ? <Pill tone="ok">available</Pill>
-                  : <Pill tone="warn" title={p.verdict.reason}>held{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt)}` : ""}</Pill>}
+                  : <Pill tone="violet" title={p.verdict.reason}>held{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt)}` : ""}</Pill>}
               </div>
               {p.readings.length > 0 && <div className="windows">{p.readings.map((r) => {
                 const keep = r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;

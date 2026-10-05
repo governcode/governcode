@@ -1,8 +1,9 @@
-// Terminal: chat with the Controller of the selected project (or Home). Events stream in as
+// Conversation (the Terminal): chat with the Controller of the selected project (or Home). Events stream in as
 // they happen; a Gate appears inline with the exact request and waits for an answer.
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { call, clock, controllerLabel, useWatch, type Gate, type Project, type RecoveryItem } from "../api.ts";
+import { call, clock, useWatch, type Controller, type Gate, type Project, type RecoveryItem } from "../api.ts";
 import { GateCard, Pill, UndoCheckpoint, type GateState } from "../ui.tsx";
+import { ProviderMark, providerName } from "../brand.tsx";
 
 export type Entry =
   | { t: "you"; text: string }
@@ -21,7 +22,7 @@ export type Entry =
 export type Thread = { entries: Entry[]; busy: boolean };
 
 export function Terminal(props: { project: Project | null; thread: Thread; openGates: Gate[]; gatesAt: number;
-  recoveryEnabled: boolean;
+  recoveryEnabled: boolean; controller?: Controller | null;
   onSend: (prompt: string, continuationOf?: string) => void; onGate: (id: string, a: "allow" | "deny") => void; onOpenProject?: (name: string) => void;
   onNewConversation?: () => void }) {
   const [draft, setDraft] = useState("");
@@ -56,6 +57,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
   };
+  const ctl = props.controller?.provider ?? null;
   const gateState = (e: Extract<Entry, { t: "gate" }>): GateState =>
     e.answered ?? (open.has(e.id) || props.gatesAt < e.arrived ? "waiting" : "settled");
   const setAtReset = async (atReset: boolean) => {
@@ -76,9 +78,7 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
   return (
     <section className="view terminal">
       <div className="view-head">
-        <h1>Terminal</h1>
-        <span className="dim head-note">{props.project ? `Controller for ${props.project.name}: ${controllerLabel(props.project.controller)}`
-          : "Home: the Controller can read and plan but cannot write anything."}</span>
+        <h1>Conversation</h1>
         <span className="spacer" />
         {props.thread.busy && <Pill tone="accent">working</Pill>}
         {props.onNewConversation && (
@@ -87,12 +87,21 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
         )}
       </div>
       <div className="log" ref={log}>
-        {!props.thread.entries.length && <div className="dim pad">Ask the Controller something, in plain words. It remembers this conversation until you start a new one.
+        {!props.thread.entries.length && <div className="intro">Ask the Controller something, in plain words. It remembers this conversation until you start a new one.
           Steps that need your say stop here as a Gate; how often depends on Settings › Gates.</div>}
         {props.thread.entries.map((e, i) => {
           switch (e.t) {
-            case "you": return <div key={i} className="msg you"><span className="who">you</span><div className="body">{e.text}</div></div>;
-            case "text": return <div key={i} className="msg ctl"><span className="who">Controller</span><div className="body">{e.text}</div></div>;
+            case "you": return <div key={i} className="msg you"><span className="vh">You: </span><div className="bubble">{e.text}</div></div>;
+            case "text": {
+              // Consecutive replies read as one message: the mark and name only on the first.
+              const first = i === 0 || props.thread.entries[i - 1].t !== "text";
+              return (
+                <div key={i} className="msg ctl">
+                  {first && ctl ? <ProviderMark id={ctl} size={26} /> : <span />}
+                  <div>{first && <div className="who">{ctl ? <><b>{providerName(ctl)}</b>Controller</> : <b>Controller</b>}</div>}<div className="body">{e.text}</div></div>
+                </div>
+              );
+            }
             case "tool": return <div key={i} className="tool dim mono">· {e.name}</div>;
             case "allowed": return <div key={i} className="tool dim mono">· {e.tool}: allowed without asking ({e.why}); the sandbox still applies</div>;
             case "gate": return <GateCard key={i} id={e.id} tool={e.tool} canonical={e.canonical} covers={e.covers} scopes={e.scopes} suggest={e.suggest} state={gateState(e)}

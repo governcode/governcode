@@ -1,4 +1,4 @@
-// Pipeline: the Specs, their status, and for one Spec its details, its diff, and the choice
+// Specs (the Pipeline): every Spec, its status, and for one Spec its details, its diff, and the choice
 // to accept it into the project or discard it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SpecCheckpoints, SpecDiff } from "@governcode/protocol";
@@ -39,7 +39,7 @@ export function Pipeline({ project, live, recoveryEnabled }: { project: string |
   return (
     <section className="view">
       <div className="view-head">
-        <h1>Pipeline</h1>
+        <h1>Specs</h1>
         <span className="dim">{project ? `Specs for ${project}` : "Specs in every project"}</span>
         <span className="spacer" />
         {queue.length > 0 && (

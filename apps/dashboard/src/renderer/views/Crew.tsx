@@ -16,7 +16,7 @@ const HANDOFF: Array<[Crew["handoff"], string, string]> = [
 const WAKE: Array<[NonNullable<Crew["wake"]>, string, string]> = [
   ["auto", "Report it right away (default)", "GovernCode starts a short Controller turn by itself to read the result and tell you, only while the Dashboard is open; it uses the Controller's allowance and changes nothing. Otherwise the Controller hears with your next message."],
   ["tell", "Tell it with my next message", "The Controller hears which Specs finished when you next write to it."],
-  ["off", "Don't tell the Controller", "It is not told. The Spec still waits for you in the Pipeline."],
+  ["off", "Don't tell the Controller", "It is not told. The Spec still waits for you in Specs."],
 ];
 
 /** Who is doing what right now, from the Trace: the Controller, its subagents, each Spec and its Runner. */
@@ -41,7 +41,7 @@ function CrewBoard({ project }: { project: string }) {
   return (
     <>
       <h2>Now</h2>
-      {!board.controller && !board.specs.length ? <p className="dim small">Nothing yet: ask the Controller something in the Terminal.</p> : (
+      {!board.controller && !board.specs.length ? <p className="dim small">Nothing yet: ask the Controller something in the Conversation.</p> : (
         <div className="crew-board">
           {board.controller && <div className="crew-node">
             <b>Controller</b> <span className="mono small">{board.controller.provider}</span>{" "}
@@ -80,8 +80,8 @@ export function CrewView({ project }: { project: string | null }) {
   useEffect(() => { void load(); }, [load]);
   useWatch((w) => { if (w.kind === "trace" && w.event.project === project && w.event.kind === "crew.set") void load(); });
 
-  if (!project) return <section className="view"><div className="view-head"><h1>Crew</h1></div><Empty title="No project selected"><p className="dim">The Crew card belongs to a project. Pick one above.</p></Empty></section>;
-  if (!draft || !saved) return <section className="view"><div className="view-head"><h1>Crew</h1></div></section>;
+  if (!project) return <section className="view"><div className="view-head"><h1>Crew card</h1></div><Empty title="No project selected"><p className="dim">The Crew card belongs to a project. Pick one in the sidebar.</p></Empty></section>;
+  if (!draft || !saved) return <section className="view"><div className="view-head"><h1>Crew card</h1></div></section>;
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   const allowed = (r: string) => draft.runners === null || draft.runners.includes(r);
   const toggleRunner = (r: string) => setDraft((d) => {
@@ -96,7 +96,7 @@ export function CrewView({ project }: { project: string | null }) {
 
   return (
     <section className="view">
-      <div className="view-head"><h1>Crew</h1><span className="dim">how {project}'s crew works · enforced by GovernCode, not asked of the AI</span></div>
+      <div className="view-head"><h1>Crew card</h1><span className="dim">how {project}'s crew works · enforced by GovernCode, not asked of the AI</span></div>
       <div className="scroll settings">
         <CrewBoard project={project} />
 

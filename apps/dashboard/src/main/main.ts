@@ -1,7 +1,7 @@
 // The Dashboard's main process: a thin Electron shell. It owns the only connection to govd
 // and answers the renderer through a handful of checked IPC channels. The renderer runs
 // sandboxed with context isolation and no Node; it cannot open sockets or files.
-import { app, BrowserWindow, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell, type IpcMainInvokeEvent } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Channel, type Outcome } from "../shared/contract.ts";
@@ -78,9 +78,10 @@ handle(Channel.ask, (askId: unknown, project: unknown, prompt: unknown, continua
 
 function createWindow(): void {
   win = new BrowserWindow({
-    width: 1280, height: 820, minWidth: 900, minHeight: 560,
-    title: "GovernCode Dashboard",
-    backgroundColor: "#0b0f14",
+    width: 1360, height: 860, minWidth: 960, minHeight: 600,
+    title: "GovernCode",
+    // The window's colour before the page paints, matching the theme the system asks for.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#0f1013" : "#f6f6f8",
     show: false,
     webPreferences: {
       preload: join(app.getAppPath(), "dist/main/preload.cjs"),

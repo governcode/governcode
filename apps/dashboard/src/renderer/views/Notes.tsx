@@ -36,7 +36,7 @@ export function Notes({ project }: { project: string | null }) {
   return (
     <section className="view">
       <div className="view-head"><h1>Notes</h1><span className="dim">{project ? `the brief a Controller of ${project} starts from (unless you chose to start it fresh)` : "notes belong to a project"}</span></div>
-      {!project ? <Empty title="No project selected"><p className="dim">Pick a project above.</p></Empty> : (
+      {!project ? <Empty title="No project selected"><p className="dim">Pick a project in the sidebar.</p></Empty> : (
         <div className="scroll settings">
           <p className="dim small">The Controller keeps these current (goal, decisions, open questions, next steps). If you switch to a Controller from another provider and choose to share, it starts here. You can edit them; every version is kept in the Trace, and the latest 50 are listed below. They stay in GovernCode, never in your repository. Don't put secrets in them.</p>
           <textarea className="notes mono" value={draft} rows={14} maxLength={MAX} aria-label="project notes"

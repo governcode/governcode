@@ -3,20 +3,52 @@ import { useMemo, useRef, useState, type ReactNode } from "react";
 import { call, clock } from "./api.ts";
 import { parseDiff, sideBySide, type DiffLine } from "../shared/diff.ts";
 
-export function Pill({ tone, children, title }: { tone: "ok" | "warn" | "danger" | "info" | "accent" | "dim"; children: ReactNode; title?: string }) {
+export type Tone = "ok" | "warn" | "danger" | "info" | "accent" | "violet" | "dim";
+export function Pill({ tone, children, title }: { tone: Tone; children: ReactNode; title?: string }) {
   return <span className={`pill pill-${tone}`} title={title}>{children}</span>;
 }
 
-const SPEC_TONE = { queued: "info", held: "warn", running: "accent", "needs-review": "warn", accepted: "ok", discarded: "dim", failed: "danger", cancelled: "dim" } as const;
+// Running is blue, needing you amber, held violet ("paused, not broken"), failed red, done green.
+const SPEC_TONE = { queued: "info", held: "violet", running: "info", "needs-review": "warn", accepted: "ok", discarded: "dim", failed: "danger", cancelled: "dim" } as const;
+const SPEC_WORD: Record<string, string> = { "needs-review": "needs review" };
 export function SpecPill({ status }: { status: keyof typeof SPEC_TONE }) {
-  return <Pill tone={SPEC_TONE[status] ?? "dim"}>{status}</Pill>;
+  return <Pill tone={SPEC_TONE[status] ?? "dim"}>{SPEC_WORD[status] ?? status}</Pill>;
+}
+
+/** A usage ring: the used share, the reserve kept back as a lighter arc, and a notch where holding starts. */
+export function Ring({ size, stroke, percent, reserve = 0, color = "var(--accent)" }: { size: number; stroke: number; percent: number; reserve?: number; color?: string }) {
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r, mid = size / 2;
+  const used = Math.max(0, Math.min(percent, 100)) / 100 * c, kept = reserve / 100 * c;
+  const a = (100 - reserve) / 100 * 2 * Math.PI - Math.PI / 2;
+  const at = (d: number) => [mid + d * Math.cos(a), mid + d * Math.sin(a)];
+  const [x1, y1] = at(r - stroke / 2 - 1.5), [x2, y2] = at(r + stroke / 2 + 1.5);
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" style={{ flex: "none" }}>
+      <circle cx={mid} cy={mid} r={r} fill="none" stroke="var(--fill-2)" strokeWidth={stroke} />
+      {reserve > 0 && <circle cx={mid} cy={mid} r={r} fill="none" stroke="var(--fill-3)" strokeWidth={stroke}
+        strokeDasharray={`${kept} ${c}`} transform={`rotate(${(100 - reserve) * 3.6 - 90} ${mid} ${mid})`} />}
+      {percent > 0 && <circle cx={mid} cy={mid} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round"
+        strokeDasharray={`${used} ${c}`} transform={`rotate(-90 ${mid} ${mid})`} />}
+      {reserve > 0 && <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="var(--label-2)" strokeWidth={1.6} strokeLinecap="round" />}
+    </svg>
+  );
+}
+
+// A project's glyph: its initial on a colour chosen from its name, so it stays the same everywhere.
+const GLYPH_COLORS = [["#5aa9ff", "#2f6fe0"], ["#c58bff", "#8a4fe0"], ["#ffb15c", "#e8742a"], ["#4fd1a5", "#169872"], ["#ff8a9a", "#e0475f"], ["#7cc4ff", "#3a8fd9"], ["#e6c35c", "#b8901f"], ["#9aa5ff", "#5b67e0"]];
+export function Glyph({ name, size = 20 }: { name: string; size?: number }) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const [a, b] = GLYPH_COLORS[h % GLYPH_COLORS.length];
+  return <span className="glyph" aria-hidden="true" style={{ width: size, height: size, borderRadius: Math.round(size * 0.3), fontSize: Math.round(size * 0.48),
+    background: `linear-gradient(140deg, ${a}, ${b})` }}>{(name.match(/[a-z0-9]/i)?.[0] ?? "?").toUpperCase()}</span>;
 }
 
 export type GateState = "waiting" | "allow" | "deny" | "settled";
 
 /**
  * A Gate: the exact canonical request that will run if allowed, and the two answers.
- * Shown inline in the Terminal and in the Gates list.
+ * Shown inline in the Conversation and in Needs you.
  */
 const SCOPE_LABEL: Record<string, string> = { turn: "this turn", spec: "this Spec", project: "this project" };
 

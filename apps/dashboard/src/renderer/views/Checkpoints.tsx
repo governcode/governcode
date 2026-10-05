@@ -32,7 +32,7 @@ export function Checkpoints({ project, live }: { project: string | null; live: b
         {project && <button className="btn" onClick={load}>Refresh</button>}
       </div>
       {error && <div className="error pad">{error}</div>}
-      {!project ? <Empty title="No project selected"><p className="dim">Home turns cannot write anything, so they have no Checkpoints. Pick a project above.</p></Empty>
+      {!project ? <Empty title="No project selected"><p className="dim">Home turns cannot write anything, so they have no Checkpoints. Pick a project in the sidebar.</p></Empty>
         : turns && !turns.length ? <Empty title="No Checkpoints yet"><p className="dim">When a Controller turn changes files in {project}, it is recorded here and can be undone.</p></Empty>
         : (
           <div className="scroll">

@@ -135,7 +135,7 @@ network tools, interpreters, handing work to a paid Runner), and everything is i
 so you can switch Controllers without losing the story. Each turn the Controller gets:
 - the project's **notes**: a short brief (goal, decisions, open questions, next steps) that the
   Controller keeps current with GovernCode's `project_notes` tool. You read and edit them with
-  `gov notes` (`edit`, `history`, `restore`) or the Dashboard's Notes view; every version is
+  `gov notes` (`edit`, `history`, `restore`) or a project's Notes in the Dashboard; every version is
   kept, and they stay in GovernCode, never in your repository;
 - the project's **record**, built from the Trace with no AI: recent Specs, Checkpoints and what
   you have allowed for the project;
@@ -402,7 +402,7 @@ process starts an HTTP listener, which conflicts with the Runner sandbox's no-bi
 
 ### Crew and delegation
 
-Each project has a **Crew card** (`gov crew`, or the Dashboard's Crew view). You set it; GovernCode
+Each project has a **Crew card** (`gov crew`, or a project's Crew card in the Dashboard). You set it; GovernCode
 enforces it, and the Controller is told it each turn:
 - **The Controller** works itself and hands off (default), or plans and hands off only (then the
   project is read-only for it in the sandbox).
@@ -437,11 +437,15 @@ governcode-dashboard                                           # from a release
 npm run build -w apps/dashboard && npm start -w apps/dashboard  # from a checkout
 ```
 
-It talks to the same `govd`: chat with the Controller and answer Gates inline, review
-Specs (diff side by side, accept, discard), undo Checkpoints, see and set each Runner's
-Limits, connect tools (Settings › Tools), set each project's Crew card and edit its Notes,
-change each project's Controller, Gates across projects and the Trace. The window's page has no direct access to your files or sockets: it can only ask
-the app's main process, which passes a fixed list of requests to `govd`.
+It talks to the same `govd`. The sidebar has the **Overview** (what needs you, every project at a
+glance, what each AI has left, the sandbox), **Needs you** (Gates, finished Specs and held work
+from every project), **Home** (a Controller without a project), **Allowance** (each Runner's usage
+windows against the reserve you keep), the **Trace**, your projects and your crew. Inside a
+project: the **Conversation** with its Controller (Gates answered inline), **Specs** (review the
+diff side by side, accept, discard), **Checkpoints** to undo, **Notes**, its Trace and its **Crew
+card**. Settings has Tools (connect each AI tool), Limits and Gates, and Appearance: light or dark,
+following your system unless you choose. The window's page has no direct access to your files or
+sockets: it can only ask the app's main process, which passes a fixed list of requests to `govd`.
 
 ### A govd on another machine (SSH)
 
@@ -505,6 +509,16 @@ GovernCode is developed with heavy AI assistance, and we say exactly how:
 Contributors: OneLegDave and Claude. Credit is recorded here rather than in commit
 messages. Some designs are adapted from [T3 Code](https://github.com/pingdotgg/t3code)
 (MIT); where code is adapted, its notice is kept.
+
+## Trademarks
+
+GovernCode is an independent open-source project, not affiliated with, endorsed by, or sponsored
+by Anthropic, OpenAI, xAI, Google, or Ollama. Claude and Claude Code are trademarks of Anthropic,
+PBC. OpenAI and Codex are trademarks of OpenAI. Grok is a trademark of xAI. Google Antigravity and
+Gemini are trademarks of Google LLC. Ollama is a trademark of Ollama. Their names and logos are
+used only to identify the tools GovernCode works with; the logo files are not covered by
+GovernCode's licence (see `apps/dashboard/src/renderer/public/licenses/PROVIDER-MARKS.md`). The
+Dashboard's fonts, Inter and JetBrains Mono, are under the SIL Open Font License 1.1.
 
 ## License
 

@@ -6,6 +6,7 @@ import { call, controllerLabel, type Project } from "../api.ts";
 import type { Hello } from "../../shared/contract.ts";
 import { Pill } from "../ui.tsx";
 import { Tools } from "./Tools.tsx";
+import { setThemeChoice, useTheme, type ThemeChoice } from "../theme.ts";
 import type { ProviderLimit } from "./Limits.tsx";
 
 type Reserves = Record<string, Record<string, number>>;
@@ -101,6 +102,7 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
     <section className="view">
       <div className="view-head"><h1>Settings</h1><span className="dim">kept by govd, where no AI tool can change them</span></div>
       <div className="scroll settings">
+        <Appearance />
         <Tools />
 
         <h2>Controller per project</h2>
@@ -277,5 +279,23 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
         <p className="dim small">Always on and fails closed: there is no off switch, per project or otherwise. On Linux every AI tool runs under Landlock (files and TCP ports) and seccomp, started only by govern-sup after its self-test passes on this machine.</p>
       </div>
     </section>
+  );
+}
+
+/** Light or dark for this Dashboard: following the system unless chosen here. */
+function Appearance() {
+  const choice = useTheme();
+  const options: Array<[ThemeChoice, string, string]> = [["system", "Match system", "system"], ["light", "Light", ""], ["dark", "Dark", "dark"]];
+  return (
+    <>
+      <h2>Appearance</h2>
+      <div className="appearance" role="radiogroup" aria-label="Appearance">
+        {options.map(([value, label, swatch]) => (
+          <button key={value} role="radio" aria-checked={choice === value} className={choice === value ? "on" : ""} onClick={() => setThemeChoice(value)}>
+            <span className={`swatch ${swatch}`}><i /><i /></span>{label}
+          </button>
+        ))}
+      </div>
+    </>
   );
 }

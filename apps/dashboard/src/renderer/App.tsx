@@ -1,36 +1,40 @@
-// The Dashboard shell: top bar (project switcher, govd and sandbox status), left nav, the
-// current screen, and the status bar. Holds what outlives a screen: connection status,
-// projects, open Gates and the Terminal's conversations.
+// The Dashboard shell: the sidebar (Overview, Needs you, projects, the Crew's allowance, the
+// sandbox), and the current place: a global screen, or a project with its tabs. Holds what outlives
+// a screen: connection status, projects, Specs, open Gates, Limits and the conversations.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AskEvent, Status, TraceEvent } from "../shared/contract.ts";
-import { api, call, controllerLabel, personalKey, START_GOVD, useFallbackPoll, useWatch, type Controller, type Gate, type Project } from "./api.ts";
-import { Empty, Pill } from "./ui.tsx";
+import { api, call, modelLabel, personalKey, START_GOVD, useFallbackPoll, useWatch, type Controller, type Gate, type Project, type RecoveryItem, type Spec } from "./api.ts";
+import { Empty, Glyph } from "./ui.tsx";
+import { Icon } from "./icons.tsx";
+import { ProviderMark, providerName } from "./brand.tsx";
+import { useTheme } from "./theme.ts";
 import { PersonalDialog } from "./views/PersonalDialog.tsx";
 import { Terminal, type Entry, type Thread } from "./views/Terminal.tsx";
 import { Pipeline } from "./views/Pipeline.tsx";
-import { Gates } from "./views/Gates.tsx";
 import { Trace } from "./views/Trace.tsx";
 import { Checkpoints } from "./views/Checkpoints.tsx";
 import { Notes } from "./views/Notes.tsx";
 import { CrewView } from "./views/Crew.tsx";
-import { Limits } from "./views/Limits.tsx";
-import { HomePanel } from "./views/HomePanel.tsx";
+import { Limits, type ProviderLimit } from "./views/Limits.tsx";
+import { Overview } from "./views/Overview.tsx";
+import { NeedsYou } from "./views/NeedsYou.tsx";
 import { Settings } from "./views/Settings.tsx";
+import { Sidebar, type Place, type Tab } from "./views/Sidebar.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import { hasActiveAsk } from "../shared/pending.ts";
-import mark from "../../../../docs/brand/governcode-mark.svg";
 
-type View = "terminal" | "crew" | "pipeline" | "checkpoints" | "notes" | "gates" | "limits" | "trace" | "settings";
-const VIEWS: Array<[View, string]> = [["terminal", "Terminal"], ["crew", "Crew"], ["pipeline", "Pipeline"], ["checkpoints", "Checkpoints"], ["notes", "Notes"], ["gates", "Gates"], ["limits", "Limits"], ["trace", "Trace"], ["settings", "Settings"]];
 const HOME = "";
-
+const TABS: Array<[Tab, string]> = [["conversation", "Conversation"], ["specs", "Specs"], ["checkpoints", "Checkpoints"], ["notes", "Notes"], ["trace", "Trace"], ["crew", "Crew card"]];
+const IN_FLIGHT = new Set(["queued", "held", "running", "needs-review"]);
 
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [homeController, setHomeController] = useState<Controller | null>(null);   // what a turn at Home runs now
-  const [project, setProject] = useState<string>(HOME);
-  const [view, setView] = useState<View>("terminal");
+  const [place, setPlace] = useState<Place>({ kind: "global", id: "overview" });
+  const [specs, setSpecs] = useState<Spec[]>([]);
+  const [limits, setLimits] = useState<ProviderLimit[]>([]);
+  const [held, setHeld] = useState<RecoveryItem[]>([]);   // limited Specs (not turns), as recovery.list has them
   const [gates, setGates] = useState<Gate[]>([]);
   const [gatesAt, setGatesAt] = useState(0);
   const [threads, setThreads] = useState<Record<string, Thread>>({});
@@ -38,6 +42,10 @@ export function App() {
   const askThread = useRef(new Map<string, string>());
   const waking = useRef(new Set<string>());   // projects whose Controller is in a wake turn now
 
+  useTheme();
+  // A project's key in the conversations; Home's is "". Global screens other than Home have none.
+  const project = place.kind === "project" ? place.name : HOME;
+  const setProject = useCallback((name: string) => setPlace(name === HOME ? { kind: "global", id: "home" } : { kind: "project", name, tab: "conversation" }), []);
   const up = status?.state === "up";
   const hello = status?.state === "up" ? status.hello : null;
   const live = !!hello?.features.includes("watch");
@@ -65,14 +73,34 @@ export function App() {
     } catch { /* status handles govd going away */ }
   }, []);
 
+  // Specs and Limits for the sidebar and the Overview: the readings govd already has (measuring
+  // starts a tool, so only the Allowance screen does that, on open or when asked).
+  const refreshSpecs = useCallback(async () => {
+    try { setSpecs((await call<{ specs: Spec[] }>("spec.list", {})).specs); } catch { /* status shows govd down */ }
+  }, []);
+  const refreshLimits = useCallback(async () => {
+    try { setLimits((await call<{ providers: ProviderLimit[] }>("limits.list", { measure: false })).providers); } catch { /* status shows govd down */ }
+  }, []);
+  const refreshHeld = useCallback(async () => {
+    if (!recovery) { setHeld([]); return; }
+    try { setHeld((await call<{ items: RecoveryItem[] }>("recovery.list", {})).items.filter((i) => i.kind !== "turn")); } catch { /* an older govd: nothing held to show */ }
+  }, [recovery]);
+
   // Reload whenever govd (re)connects; after that, govd's watch stream says when to.
   useEffect(() => {
     if (!up) return;
     void loadProjects();
     void refreshGates();
-  }, [up, status, loadProjects, refreshGates]);
+    void refreshSpecs();
+    void refreshLimits();
+    void refreshHeld();
+  }, [up, status, loadProjects, refreshGates, refreshSpecs, refreshLimits, refreshHeld]);
   useFallbackPoll(live || !up, refreshGates);
+  useFallbackPoll(live || !up, refreshSpecs);
   useWatch((w) => {
+    if (w.kind === "trace" && w.event.kind.startsWith("spec.") && w.event.kind !== "spec.step") { void refreshSpecs(); void refreshLimits(); void refreshHeld(); }
+    if (w.kind === "trace" && w.event.kind.startsWith("recovery.")) void refreshHeld();
+    if (w.kind === "trace" && w.event.kind === "settings.changed") void refreshLimits();
     if (w.kind === "gates") void refreshGates();
     else if (w.event.kind.startsWith("project.") || w.event.kind === "controller.set") void loadProjects();
     else if (w.event.project && (w.event.kind === "checkpoint.taken" || w.event.kind === "checkpoint.undone")) {
@@ -175,65 +203,74 @@ export function App() {
   }, [push, refreshGates]);
 
   const current = projects.find((p) => p.name === project);
-  const opened = (p: Project) => { setDialog(null); void loadProjects(); setProject(p.name); };
+  // The new project is listed at once, so the fallback below does not mistake it for a missing one.
+  const opened = (p: Project) => { setDialog(null); setProjects((ps) => ps.some((x) => x.name === p.name) ? ps : [...ps, p]); void loadProjects(); setProject(p.name); };
+  // A project that went away (or never loaded) falls back to the Overview.
+  useEffect(() => {
+    if (place.kind === "project" && projects.length && !projects.some((p) => p.name === place.name)) setPlace({ kind: "global", id: "overview" });
+  }, [place, projects]);
+  const needs = gates.length + specs.filter((s) => s.status === "needs-review").length + held.length;
+  const reviewCount = (name: string) => specs.filter((s) => s.project === name && s.status === "needs-review").length;
+  const conversation = (key: string) => (
+    <Terminal key={key} project={key === HOME ? null : current ?? null}
+      thread={threads[key] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
+      recoveryEnabled={recovery} controller={key === HOME ? homeController : current?.controller ?? null}
+      onSend={send} onGate={(id, a) => markGate(key, id, a)} onOpenProject={setProject} onNewConversation={newConversation} />
+  );
 
   return (
     <div className="app">
-      <header className="topbar">
-        <img src={mark} className="mark" alt="" />
-        <span className="brand">GovernCode</span>
-        <label className="switcher">
-          <span className="dim">Project</span>
-          <select value={project} onChange={(e) => setProject(e.target.value)} disabled={!up} title={project === HOME ? "No project (Home)" : project}>
-            <option value={HOME}>No project (Home)</option>
-            {projects.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-          </select>
-        </label>
-        <button className="btn btn-quiet" disabled={!up} onClick={() => setDialog("new")}>New project</button>
-        <button className="btn btn-quiet" disabled={!up} onClick={() => setDialog("open")}>Open folder</button>
-        <button className="btn btn-quiet" disabled={!up || !current} onClick={() => setDialog("controller")}
-          title={current ? controllerLabel(current.controller) : "Home uses the most recently chosen Controller"}>Controller</button>
-        <span className="spacer" />
-        {/* A narrow window may shorten a pill; its tooltip always has the whole text. */}
-        {status === null || status.state === "connecting" ? <Pill tone="dim" title="govd: connecting">govd: connecting</Pill>
-          : status.state === "down" ? <Pill tone="danger" title={`govd: not running (${status.error})`}>govd: not running</Pill>
-          : <Pill tone="ok" title={`govd ${status.hello.version} · protocol ${status.hello.protocol}`}>govd {status.hello.version}</Pill>}
-        {hello && (hello.sandbox.ok
-          ? <Pill tone="ok" title={`sandbox enforced: ${hello.sandbox.reason}`}>sandbox enforced</Pill>
-          : <Pill tone="danger" title={`sandbox NOT verified: ${hello.sandbox.reason}`}>sandbox NOT verified</Pill>)}
-      </header>
-
-      <nav className="nav">
-        {VIEWS.map(([id, label]) => (
-          <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>
-            <span>{label}</span>
-            {id === "gates" && gates.length > 0 && <span className="badge">{gates.length}</span>}
-          </button>
-        ))}
-      </nav>
+      <Sidebar place={place} onPlace={setPlace} projects={projects} specs={specs} gates={gates} limits={limits} needs={needs}
+        status={status} hello={hello} up={up} live={live} socketPath={status?.socketPath} onNewProject={() => setDialog("new")} onOpenFolder={() => setDialog("open")} />
 
       <main className="main">
-        {!up ? <Down status={status} /> : (
-          <>
-            {view === "terminal" && (
-              <div className={project === HOME ? "home" : "contents"}>
-                <Terminal key={project} project={current ?? null}
-                  thread={threads[project] ?? { entries: [], busy: false }} openGates={gates} gatesAt={gatesAt}
-                  recoveryEnabled={recovery}
-                  onSend={send} onGate={(id, a) => markGate(project, id, a)} onOpenProject={setProject} onNewConversation={newConversation} />
-                {project === HOME && <HomePanel projects={projects} gates={gates} onOpen={setProject} onGates={() => setView("gates")} />}
+        {!up ? <Down status={status} /> : place.kind === "project" && current ? (
+          <div className="view in-project">
+            <header className="toolbar">
+              <Glyph name={current.name} size={24} />
+              <div className="title">
+                <b>{current.name}</b>
+                <button className="sub" title={`${current.path} · change the Controller`} onClick={() => setDialog("controller")}>
+                  <ProviderMark id={current.controller.provider} size={14} />{providerName(current.controller.provider)}{current.controller.model.trim() ? ` · ${modelLabel(current.controller.model, current.controller.effort)}` : ""} · Controller<Icon name="chevronDown" size={11} />
+                </button>
               </div>
-            )}
-            {view === "pipeline" && <Pipeline key={current?.name ?? "all"} project={current?.name ?? null} live={live} recoveryEnabled={recovery} />}
-            {view === "checkpoints" && <Checkpoints project={current?.name ?? null} live={live} />}
-            {view === "crew" && <CrewView key={current?.name ?? "home"} project={current?.name ?? null} />}
-            {view === "notes" && <Notes key={current?.name ?? "home"} project={current?.name ?? null} />}
-            {view === "limits" && <Limits />}
-            {view === "settings" && <Settings projects={projects} hello={hello} onChangeController={(name) => { setProject(name); setDialog("controller"); }} />}
-            {view === "gates" && <Gates gates={gates} onAnswered={() => void refreshGates()} />}
-            {view === "trace" && <Trace project={current?.name ?? null} live={live} />}
-          </>
-        )}
+              <div className="tabs seg" role="tablist" aria-label={`${current.name} views`}>
+                {TABS.map(([id, label]) => {
+                  const n = id === "specs" ? reviewCount(current.name) : 0;
+                  return (
+                    <button key={id} role="tab" aria-selected={place.tab === id} className={place.tab === id ? "on" : ""}
+                      onClick={() => setPlace({ kind: "project", name: current.name, tab: id })}>
+                      {label}{n > 0 && <span className="n amber">{n}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="end" />
+            </header>
+            <div className="content">
+              {place.tab === "conversation" && conversation(current.name)}
+              {place.tab === "specs" && <Pipeline key={current.name} project={current.name} live={live} recoveryEnabled={recovery} />}
+              {place.tab === "checkpoints" && <Checkpoints project={current.name} live={live} />}
+              {place.tab === "notes" && <Notes key={current.name} project={current.name} />}
+              {place.tab === "trace" && <Trace key={current.name} project={current.name} live={live} />}
+              {place.tab === "crew" && <CrewView key={current.name} project={current.name} />}
+            </div>
+          </div>
+        ) : place.kind === "global" && place.id === "home" ? (
+          <div className="view in-project">
+            <header className="toolbar">
+              <span className="glyph" style={{ background: "var(--fill-3)", color: "var(--label-2)", width: 24, height: 24, borderRadius: 7 }}><Icon name="home" size={14} /></span>
+              <div className="title"><b>Home</b><span>No project: the Controller can read and plan, and propose a project, but cannot write anything</span></div>
+            </header>
+            <div className="content">{conversation(HOME)}</div>
+          </div>
+        ) : place.kind === "global" && place.id === "needs" ? (
+          <NeedsYou gates={gates} specs={specs} held={held} onAnswered={() => void refreshGates()} onPlace={setPlace} />
+        ) : place.kind === "global" && place.id === "allowance" ? <Limits onMeasured={() => void refreshLimits()} />
+          : place.kind === "global" && place.id === "trace" ? <Trace project={null} live={live} />
+          : place.kind === "global" && place.id === "settings" ? <Settings projects={projects} hello={hello} onChangeController={(name) => { setProject(name); setDialog("controller"); }} />
+          : <Overview projects={projects} specs={specs.filter((s) => IN_FLIGHT.has(s.status))} gates={gates} limits={limits} hello={hello} held={held}
+              onPlace={setPlace} onGatesChanged={() => void refreshGates()} onNewProject={() => setDialog("new")} onOpenFolder={() => setDialog("open")} />}
       </main>
 
       {up && dialog === "new" && <NewProject onClose={() => setDialog(null)} onDone={opened} />}
@@ -241,15 +278,6 @@ export function App() {
       {up && personalAsk && <PersonalDialog provider={personalAsk.provider} home={personalAsk.home} onChoose={(use) => void choosePersonal(use)} onClose={closePersonal} />}
       {up && dialog === "controller" && current && <ControllerPicker project={current} onClose={() => setDialog(null)}
         onDone={() => { setDialog(null); void loadProjects(); }} />}
-
-      <footer className="statusbar">
-        <span>{current ? `${current.name} · ${current.path}` : "Home (read-only)"}</span>
-        {current && <span className="dim">Controller: {controllerLabel(current.controller)}</span>}
-        <span className="spacer" />
-        {hello && <span className="dim">protocol {hello.protocol} · {live ? "live" : "polling"}</span>}
-        <span className={`gate-count ${gates.length ? "warn" : "dim"}`}>{gates.length} Gate{gates.length === 1 ? "" : "s"} waiting</span>
-        <span className="dim mono">{status?.socketPath}</span>
-      </footer>
     </div>
   );
 }
