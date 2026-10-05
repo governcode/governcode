@@ -372,7 +372,8 @@ export class Daemon {
         const method = req.method as Method;
         const parsed = Params[method].safeParse(req.params ?? {});
         // Each problem names its field (id: ..., reserves.codex.weekly: ...), for the CLI and the Dashboard alike.
-        if (!parsed.success) throw new RpcError(Errors.badParams, issues(parsed.error));
+        if (!parsed.success) throw new RpcError(Errors.badParams, method === "acp.installed.inspect"
+          ? "expected exactly one lowercase 64-character installation ID in id" : issues(parsed.error));
         const result = await this.call(method, parsed.data as never, (n) => write({ jsonrpc: "2.0", method: "event", params: n }), sock, req.params);
         write({ jsonrpc: "2.0", id, result });
       } catch (err) {
@@ -915,6 +916,34 @@ export class Daemon {
       }
       case "acp.installed":
         return { installations: await this.refusingAsync(() => this.artifactInstaller().installed(p.limit)) };
+      case "acp.installed.inspect": {
+        const available = () => {
+          if (this.stopping || this.closed) throw new RpcError(Errors.refused,
+            "stored runtime inspection unavailable: govd is stopping");
+          if (sock.destroyed) throw new RpcError(Errors.refused,
+            "stored runtime inspection unavailable: requester disconnected");
+        };
+        // Reject before lazy construction. The installer owns admitted reads through
+        // settlement and closure, even when this requester leaves in the meantime.
+        available();
+        let observation;
+        try { observation = await this.artifactInstaller().inspectVerifiedRuntime(p.id); }
+        catch (error) {
+          available();
+          let message: unknown;
+          try { if (error instanceof Error) message = error.message; } catch { /* Unknown failures stay static. */ }
+          throw new RpcError(Errors.refused,
+            message === "ACP install: runtime inspection already active"
+              ? "stored runtime inspection already active; no request was queued"
+              : message === "ACP install: runtime inspection deadline exceeded"
+                ? "stored runtime inspection deadline exceeded; no observation returned"
+                : message === "ACP install: installer is stopped"
+                  ? "stored runtime inspection unavailable: installer stopped"
+                  : "stored runtime inspection did not complete; no verified observation returned");
+        }
+        available(); // Shutdown or disconnect can overtake completion before publication.
+        return observation;
+      }
       case "acp.install.cancel": {
         const operation = this.installations.get(p.id);
         if (!operation) throw new RpcError(Errors.notFound, `no artifact installation ${p.id} is active`);

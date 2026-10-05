@@ -231,6 +231,7 @@ export const Params = {
   "acp.install": z.object({ id: z.string().max(96).regex(/^[a-z][a-z0-9-]*$/),
     kind: z.enum(["binary", "npx", "uvx"]), fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   "acp.installed": z.object({ limit: z.number().int().min(1).max(100).default(50) }).strict(),
+  "acp.installed.inspect": z.object({ id: z.string().length(64).regex(/^[a-f0-9]{64}$/u) }).strict(),
   "acp.install.cancel": z.object({ id: z.string().regex(/^I-\d{1,16}$/) }).strict(),
   "connect.start": z.object({ tool: z.enum(["agy", "claude", "codex", "grok"]) }),
   "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),

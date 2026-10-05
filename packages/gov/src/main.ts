@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, Params, ProjectName, RUNNERS, SpecCheckpoints, SpecDiff, setBudget, type CountedWindow } from "@governcode/protocol";
+import type { AcpStoredRuntimeObservation } from "../../govd/src/acp-install.ts";
 import { runDemo } from "./demo.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
@@ -19,7 +20,7 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp cancel I-N|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp inspect-installed INSTALLATION_ID [--json]|acp cancel I-N|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
@@ -642,8 +643,31 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "acp": {
-        const usage = "usage: gov acp search [QUERY] [--refresh] [--json] | inspect ID [--platform P] [--kind binary|npx|uvx] [--refresh] [--json] | install ID [--kind binary|npx|uvx] [--fingerprint F] | installed [--json] | cancel I-N";
+        const usage = "usage: gov acp search [QUERY] [--refresh] [--json] | inspect ID [--platform P] [--kind binary|npx|uvx] [--refresh] [--json] | install ID [--kind binary|npx|uvx] [--fingerprint F] | installed [--json] | inspect-installed INSTALLATION_ID [--json] | cancel I-N";
         const action = rest[0];
+        if (action === "inspect-installed") {
+          if (rest.length !== 2 && !(rest.length === 3 && rest[2] === "--json")) throw new Error(usage);
+          const params = Params["acp.installed.inspect"].safeParse({ id: rest[1] });
+          if (!params.success) throw new Error(usage);
+          const result: AcpStoredRuntimeObservation = await api.call("acp.installed.inspect", params.data);
+          if (rest[2] === "--json") { console.log(JSON.stringify(result, null, 2)); return 0; }
+          const { receipt, inspection } = result;
+          const agentId = /^[a-z][a-z0-9-]*$/u.test(receipt.plan.agentId) ? receipt.plan.agentId : JSON.stringify(receipt.plan.agentId);
+          console.log(`ACP stored runtime inspection · ${receipt.installationId}`);
+          console.log(`Agent: ${agentId} ${JSON.stringify(receipt.plan.version)} (registry-advertised) · ${receipt.plan.platform}`);
+          console.log(`Artifact: SHA-256 ${receipt.sha256} · ${receipt.bytes} bytes`);
+          console.log(`Catalog: ${JSON.stringify(receipt.catalog.source)} · fetched ${receipt.catalog.fetchedAt} · SHA-256 ${receipt.catalog.sha256}`);
+          console.log(`Installed: ${receipt.installedAt} · operation ${receipt.operation} · Gate ${receipt.gate}`);
+          if (inspection.status === "observed") {
+            console.log(`Observation: no PT_INTERP or PT_DYNAMIC in ${inspection.programHeaders} program headers of the supported bounded private ELF snapshot.`);
+            console.log(`Layout: ${inspection.format} · ${inspection.elfType} · ${inspection.loadSegments} load segments`);
+          } else {
+            console.log(`Parser refusal: ${inspection.reason}${inspection.programHeaderIndex === null ? "" : ` · program header ${inspection.programHeaderIndex}`}`);
+            console.log("The verified installation is retained; no supported-layout observation was produced.");
+          }
+          console.log("Read-only finite observation; runtime compatibility and Runner eligibility are not established.");
+          return 0;
+        }
         if (action === "installed") {
           if (rest.length > 2 || (rest.length === 2 && rest[1] !== "--json")) throw new Error(usage);
           const result = await api.call("acp.installed", {});

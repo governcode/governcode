@@ -337,6 +337,16 @@ Parser refusal does not invalidate an installation. Installer acceptance and Run
 remain unchanged; runtime access, receipt-to-execution binding and production lifetime proof
 transport remain separate prerequisites.
 
+The user-socket method `acp.installed.inspect`, exposed as
+`gov acp inspect-installed INSTALLATION_ID [--json]`, invokes that existing passive reader.
+Its strict parameters accept only one lowercase 64-character installation ID. It returns
+exactly `{receipt, inspection}`, without store paths, artifact contents or private capabilities.
+Parser refusal is a completed diagnostic; integrity, I/O, deadline and lifecycle failures return
+a bounded static error without an observation. The method is absent from Controller and Home
+turn sockets and from Runner tools. It fetches no catalog, downloads nothing and opens no Gate.
+Concurrent inspection refuses without queuing. A disconnected requester does not abandon an
+admitted read; graceful shutdown waits for reader settlement and closure attempts.
+
 A separate feature-only fixture selects one fixed embedded static image by comparing the complete
 contents of a native-owned, fully sealed memfd, then executes that same object by descriptor.
 It preserves the owned lifetime and Node proof join while keeping image selection, observed toy
@@ -396,7 +406,7 @@ the sandbox status; clients check features, not versions. Methods, by area:
 - Limits, settings and tools: `limits.list`, `settings.get`, `settings.set`, `tools.list`,
   `connect.start`, `connect.input`, `connect.cancel`, `tools.disconnect`;
 - official ACP catalog inspection and artifact storage: `acp.search`, `acp.inspect`, `acp.install`,
-  `acp.installed`, `acp.install.cancel`;
+  `acp.installed`, `acp.installed.inspect`, `acp.install.cancel`;
 - recovery: `recovery.list`, `recovery.set`, `recovery.resume`, `recovery.clear`; Controller
   turns continue through `ask` with `continuationOf`, not `recovery.resume`;
 - the record: `trace.list`, and `watch`: after it, the connection also receives every Trace

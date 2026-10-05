@@ -310,6 +310,13 @@ inventory. It returns only a frozen receipt and inspection result after all desc
 attempts and final lifecycle checks succeed. A valid stored artifact with unsupported program
 headers returns a parser refusal; it is not deleted or made invalid by that observation.
 
+The user can request this observation with `gov acp inspect-installed INSTALLATION_ID [--json]`
+through `acp.installed.inspect` on the user socket. The request accepts only an exact lowercase
+64-character installation ID and returns the existing receipt and inspection result. Store
+failures produce bounded static errors, without private paths or a partial observation.
+Controller and Home turn sockets do not offer this method, and no Runner tool or execution
+permission is added.
+
 This operation admits one inspection process-wide, with no queue, and retains one absolute
 two-second deadline across reads, parsing, revalidation and closure. It preserves the 128 MiB
 artifact bound; the private snapshot and parser copy can together use twice that space. Large

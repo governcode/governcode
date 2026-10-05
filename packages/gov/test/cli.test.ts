@@ -9,6 +9,7 @@ import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AcpStoredRuntimeObservation } from "../../govd/src/acp-install.ts";
 
 const gov = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "gc-cli-"));
@@ -33,7 +34,7 @@ async function fakeGovd(handle: (method: string, params: any, notify: Notify, dr
       const m = JSON.parse(l);
       calls.push({ method: m.method, params: m.params });
       try { send({ jsonrpc: "2.0", id: m.id, result: (await handle(m.method, m.params, (e) => send({ jsonrpc: "2.0", method: "event", params: e }), () => s.destroy())) ?? {} }); }
-      catch (e) { send({ jsonrpc: "2.0", id: m.id, error: { code: 1001, message: (e as Error).message } }); }
+      catch (e) { send({ jsonrpc: "2.0", id: m.id, error: { code: (e as { code?: number }).code ?? 1001, message: (e as Error).message } }); }
     });
   });
   await new Promise<void>((ok) => server.listen(join(dir, "govd.sock"), ok));
@@ -43,12 +44,13 @@ async function fakeGovd(handle: (method: string, params: any, notify: Notify, dr
 
 /** gov with stdin closed (or fed `input`, or left open for the test to type into: `live`), against
  *  the govd whose runtime folder is `dir`. The user's git config stays out of it (gov demo commits). */
-function run(dir: string, args: string[], o: { cwd?: string; input?: string; live?: boolean; pty?: boolean } = {}) {
+function run(dir: string, args: string[], o: { cwd?: string; input?: string; live?: boolean; pty?: boolean; stateDir?: string } = {}) {
   // Linux raw-artifact approval is exercised through a real pseudo-terminal, not mocked isTTY.
   const quote = (word: string) => "'" + word.replace(/'/g, "'\\''") + "'";
   const p = spawn(o.pty ? "script" : process.execPath, o.pty
     ? ["-qefc", [process.execPath, gov, ...args].map(quote).join(" "), "/dev/null"] : [gov, ...args], { cwd: o.cwd ?? root,
-    env: { ...process.env, GOVERNCODE_RUNTIME_DIR: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    env: { ...process.env, GOVERNCODE_RUNTIME_DIR: dir, ...(o.stateDir ? { GOVERNCODE_STATE_DIR: o.stateDir } : {}),
+      GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
     stdio: [o.input === undefined && !o.live ? "ignore" : "pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   // The PTY helper may close its input pipe as soon as gov exits successfully.
@@ -57,7 +59,8 @@ function run(dir: string, args: string[], o: { cwd?: string; input?: string; liv
   p.stderr!.on("data", (d) => (stderr += d));
   if (o.input !== undefined) p.stdin!.end(o.input);
   return { p, out: () => plain(stdout),
-    done: new Promise<{ code: number | null; stdout: string; stderr: string }>((ok) => p.on("close", (code) => ok({ code, stdout: plain(stdout), stderr: plain(stderr) }))) };
+    done: new Promise<{ code: number | null; stdout: string; stderr: string; rawStdout: string }>((ok) => p.on("close", (code) =>
+      ok({ code, stdout: plain(stdout), stderr: plain(stderr), rawStdout: stdout }))) };
 }
 
 async function until(f: () => boolean, ms = 10_000) {
@@ -185,6 +188,153 @@ test("ACP stored inventory and cancellation use only user RPCs", async () => {
   const cancelled = await run(g.dir, ["acp", "cancel", "I-7"]).done;
   assert.equal(cancelled.code, 0); assert.match(cancelled.stdout, /I-7: cancellation requested/);
   assert.deepEqual(g.calls, [{ method: "acp.installed", params: {} }, { method: "acp.install.cancel", params: { id: "I-7" } }]);
+});
+
+const storedRuntimeObservation = (): AcpStoredRuntimeObservation => ({
+  receipt: {
+    schema: 1, installationId: "a".repeat(64), operation: "I-7", gate: "G-8", installedAt: "2026-01-02T04:05:06Z",
+    catalog: { source: "https://catalog.example.org/registry.json", fetchedAt: "2026-01-02T03:04:05Z", sha256: "c".repeat(64) },
+    plan: { agentId: "fixture-agent", name: "Fixture Agent", version: "1.2.3", kind: "binary", platform: "linux-x86_64",
+      packageName: null, packageSpec: null, source: "https://artifacts.example.org/fixture-agent", integrity: "sha256",
+      checksum: { algorithm: "sha256", value: "b".repeat(64) }, archiveFormat: "raw", command: ["fixture-agent", "acp"] },
+    bytes: 512, sha256: "b".repeat(64), versionEvidence: "registry-advertised",
+  },
+  inspection: { status: "observed", evidence: "no-interpreter-or-dynamic-segments", format: "elf64-le-v1",
+    platform: "linux-x86_64", machine: 62, osabi: 0, elfType: "ET_EXEC", bytes: 512,
+    programHeaderOffset: 64, programHeaders: 3, loadSegments: 2 },
+});
+const storedRuntimeHeader = [
+  `ACP stored runtime inspection · ${"a".repeat(64)}`,
+  'Agent: fixture-agent "1.2.3" (registry-advertised) · linux-x86_64',
+  `Artifact: SHA-256 ${"b".repeat(64)} · 512 bytes`,
+  `Catalog: "https://catalog.example.org/registry.json" · fetched 2026-01-02T03:04:05Z · SHA-256 ${"c".repeat(64)}`,
+  "Installed: 2026-01-02T04:05:06Z · operation I-7 · Gate G-8",
+];
+const storedRuntimeLimit = "Read-only finite observation; runtime compatibility and Runner eligibility are not established.";
+
+test("ACP inspect-installed sends one passive request and prints the exact observed receipt and layout", async () => {
+  const result = storedRuntimeObservation();
+  const g = await fakeGovd(() => result);
+  const stateDir = join(g.dir, "state");
+  const r = await run(g.dir, ["acp", "inspect-installed", result.receipt.installationId], { stateDir }).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stderr, "");
+  assert.equal(r.rawStdout, [...storedRuntimeHeader,
+    "Observation: no PT_INTERP or PT_DYNAMIC in 3 program headers of the supported bounded private ELF snapshot.",
+    "Layout: elf64-le-v1 · ET_EXEC · 2 load segments", storedRuntimeLimit, ""].join("\n"));
+  assert.deepEqual(g.calls, [{ method: "acp.installed.inspect", params: { id: result.receipt.installationId } }]);
+  assert.equal(existsSync(stateDir), false, "passive CLI must not create a state or artifact store");
+});
+
+test("ACP inspect-installed prints exact refusal text, preserving zero and omitting a null program header", async () => {
+  for (const programHeaderIndex of [0, null]) {
+    const result: AcpStoredRuntimeObservation = { ...storedRuntimeObservation(),
+      inspection: { status: "refused", reason: "dynamic-segment", programHeaderIndex } };
+    const g = await fakeGovd(() => result);
+    const stateDir = join(g.dir, "state");
+    const r = await run(g.dir, ["acp", "inspect-installed", result.receipt.installationId], { stateDir }).done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stderr, "");
+    assert.equal(r.rawStdout, [...storedRuntimeHeader,
+      `Parser refusal: dynamic-segment${programHeaderIndex === null ? "" : " · program header 0"}`,
+      "The verified installation is retained; no supported-layout observation was produced.", storedRuntimeLimit, ""].join("\n"));
+    assert.deepEqual(g.calls, [{ method: "acp.installed.inspect", params: { id: result.receipt.installationId } }]);
+    assert.equal(existsSync(stateDir), false);
+  }
+});
+
+test("ACP inspect-installed JSON is only the unchanged daemon result for observations and refusals", async () => {
+  for (const inspection of [storedRuntimeObservation().inspection,
+    { status: "refused", reason: "dynamic-segment", programHeaderIndex: 0 } as const,
+    { status: "refused", reason: "elf-header", programHeaderIndex: null } as const]) {
+    const result: AcpStoredRuntimeObservation = { ...storedRuntimeObservation(), inspection };
+    const g = await fakeGovd(() => result);
+    const stateDir = join(g.dir, "state");
+    const r = await run(g.dir, ["acp", "inspect-installed", result.receipt.installationId, "--json"], { stateDir }).done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stderr, "");
+    assert.equal(r.rawStdout, JSON.stringify(result, null, 2) + "\n");
+    assert.deepEqual(JSON.parse(r.rawStdout), result);
+    assert.deepEqual(g.calls, [{ method: "acp.installed.inspect", params: { id: result.receipt.installationId } }]);
+    assert.equal(existsSync(stateDir), false);
+  }
+});
+
+test("ACP inspect-installed quotes registry text without terminal control characters", async () => {
+  const original = storedRuntimeObservation();
+  const agentId = "fixture\u001b[31m\r\nagent", version = '1.2.3\u001b[0m\r\n"version"', source = 'https://catalog.example.org/\u001b[2J\r\n"source"';
+  const result: AcpStoredRuntimeObservation = { ...original, receipt: { ...original.receipt,
+    plan: { ...original.receipt.plan, agentId, version }, catalog: { ...original.receipt.catalog, source } } };
+  const g = await fakeGovd(() => result);
+  const stateDir = join(g.dir, "state");
+  const r = await run(g.dir, ["acp", "inspect-installed", result.receipt.installationId], { stateDir }).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stderr, "");
+  const header = [...storedRuntimeHeader];
+  header[1] = `Agent: ${JSON.stringify(agentId)} ${JSON.stringify(version)} (registry-advertised) · linux-x86_64`;
+  header[3] = `Catalog: ${JSON.stringify(source)} · fetched 2026-01-02T03:04:05Z · SHA-256 ${"c".repeat(64)}`;
+  assert.equal(r.rawStdout, [...header,
+    "Observation: no PT_INTERP or PT_DYNAMIC in 3 program headers of the supported bounded private ELF snapshot.",
+    "Layout: elf64-le-v1 · ET_EXEC · 2 load segments", storedRuntimeLimit, ""].join("\n"));
+  assert.doesNotMatch(r.rawStdout, /[\u0000-\u0009\u000b-\u001f\u007f]/u);
+  assert.deepEqual(g.calls, [{ method: "acp.installed.inspect", params: { id: result.receipt.installationId } }]);
+  assert.equal(existsSync(stateDir), false);
+});
+
+test("ACP inspect-installed rejects invalid grammar with usage and zero RPCs or store creation", async () => {
+  const id = "a".repeat(64);
+  const g = await fakeGovd();
+  const stateDir = join(g.dir, "state");
+  const usage = "gov: usage: gov acp search [QUERY] [--refresh] [--json] | inspect ID [--platform P] [--kind binary|npx|uvx] [--refresh] [--json] | install ID [--kind binary|npx|uvx] [--fingerprint F] | installed [--json] | inspect-installed INSTALLATION_ID [--json] | cancel I-N\n";
+  for (const args of [[], ["--json"], [""], ["bad"], ["a".repeat(63)], ["a".repeat(65)], ["A".repeat(64)],
+    ["g".repeat(64)], [id + "\n"], ["../" + id], [id, "extra"], [id, id], ["--json", id],
+    [id, "--json", "--json"], [id, "--json", "extra"], [id, "--refresh"], [id, "--platform", "linux-x86_64"],
+    [id, "--kind", "binary"], [id, "--fingerprint", id], [id, "--json=true"], [id, "-j"], [id, "--"],
+    [id, "--json", "--refresh"]]) {
+    const r = await run(g.dir, ["acp", "inspect-installed", ...args], { stateDir }).done;
+    assert.equal(r.code, 1, JSON.stringify(args));
+    assert.equal(r.rawStdout, "", JSON.stringify(args));
+    assert.equal(r.stderr, usage, JSON.stringify(args));
+    assert.deepEqual(g.calls, [], JSON.stringify(args));
+    assert.equal(existsSync(stateDir), false, JSON.stringify(args));
+  }
+});
+
+test("ACP inspect-installed unknown method on an older daemon exits once without fallback or retry", async () => {
+  const id = "a".repeat(64);
+  const g = await fakeGovd(() => { throw Object.assign(new Error("unknown method acp.installed.inspect"), { code: -32601 }); });
+  const stateDir = join(g.dir, "state");
+  const r = await run(g.dir, ["acp", "inspect-installed", id, "--json"], { stateDir }).done;
+  assert.equal(r.code, 1);
+  assert.equal(r.rawStdout, "");
+  assert.equal(r.stderr, "gov: unknown method acp.installed.inspect\n");
+  assert.deepEqual(g.calls, [{ method: "acp.installed.inspect", params: { id } }]);
+  assert.equal(existsSync(stateDir), false);
+});
+
+test("ACP inspect-installed store errors exit one with no observation, retry, or fallback", async () => {
+  const id = "0".repeat(64);
+  const message = "stored runtime inspection did not complete; no verified observation returned";
+  const g = await fakeGovd(() => { throw Object.assign(new Error(message), { code: 1001 }); });
+  const stateDir = join(g.dir, "state");
+  for (const args of [[id], [id, "--json"]]) {
+    const before = g.calls.length;
+    const r = await run(g.dir, ["acp", "inspect-installed", ...args], { stateDir }).done;
+    assert.equal(r.code, 1); assert.equal(r.rawStdout, "");
+    assert.equal(r.stderr, `gov: ${message}\n`);
+    assert.deepEqual(g.calls.slice(before), [{ method: "acp.installed.inspect", params: { id } }]);
+    assert.equal(existsSync(stateDir), false);
+  }
+});
+
+test("ACP inspect-installed is advertised in the top-level help without connecting", async () => {
+  const none = mkdtempSync(join(root, "none-"));
+  const stateDir = join(none, "state");
+  const r = await run(none, ["help"], { stateDir }).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stderr, "");
+  assert.ok(r.rawStdout.includes("acp inspect-installed INSTALLATION_ID [--json]"));
+  assert.equal(existsSync(stateDir), false);
 });
 
 test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets it on stderr, without govd too", async () => {

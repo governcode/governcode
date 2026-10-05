@@ -379,6 +379,21 @@ The version is registry-advertised; no version command runs. Interrupted state i
 inspection rather than adopted or resumed. Archives, npm and uv installation are not implemented,
 so an archive distribution such as OpenCode's cannot be stored by this slice.
 
+Inspect a stored artifact using its lowercase 64-character installation ID from
+`gov acp installed`, rather than its registry agent ID:
+
+```sh
+gov acp inspect-installed INSTALLATION_ID
+gov acp inspect-installed INSTALLATION_ID --json
+```
+
+This read-only command checks the stored receipt and artifact, then inspects a private ELF
+snapshot. It reports receipt provenance and either a supported-layout observation with no
+interpreter or dynamic segments, or a parser refusal. A parser refusal leaves the verified
+installation intact; a store-validation failure returns an error with no observation. JSON
+output contains only the receipt and inspection result. This does not establish runtime
+compatibility or Runner eligibility, and it executes no artifact.
+
 Artifact storage grants no permission to probe, sign in, execute or spend. Registry membership
 never makes an agent a Runner:
 that requires an audited profile for its exact version and platform, a verified subscription
