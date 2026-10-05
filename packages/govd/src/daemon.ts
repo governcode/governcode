@@ -41,6 +41,8 @@ import { fileURLToPath } from "node:url";
 const MCP_SCRIPT = fileURLToPath(new URL("./mcp-controller.ts", import.meta.url));
 // A Gate no connection owns (a running Spec's, a wake turn's) waits this long, then is denied.
 const GATE_WAIT_MS = Number(process.env.GOVERNCODE_GATE_WAIT_MS ?? 60 * 60_000);
+// Admission ceiling for a watched connection's Node writable queue (not total memory).
+const WATCH_OUTPUT_BYTES = 1024 * 1024;
 
 export type DaemonOptions = { socketPath: string; ledgerPath: string; policyDir: string; homeDir: string; supervisor: string; version: string };
 
@@ -94,8 +96,8 @@ export class Daemon {
   private waking = new Map<string, Promise<void>>();
   // The wake turns running now, by turn id, each with its stop: one ends when nobody is left to see it.
   private wakeTurns = new Map<string, () => void>();
-  // Specs an at-reset sweep resumed while a client could show the unattended work.
-  private recoveryRuns = new Map<string, { resetsAt: string | null }>();
+  // Own the attempt before resume's Trace fanout or measurement, through its running lifetime.
+  private recoveryRuns = new Map<string, { resetsAt: string | null; cancelled: boolean; stop?: AbortController }>();
   private recoveryTimer?: ReturnType<typeof setInterval>;
   private recoveryBusy = false;
   private readonly recoverySweepMs: number;
@@ -340,30 +342,54 @@ export class Daemon {
 
   private serve(sock: Socket): void {
     this.sockets.add(sock);
-    sock.on("close", () => {
-      this.sockets.delete(sock); this.watchers.get(sock)?.stop(); this.watchers.delete(sock);
+    let retiring = false;
+    const disconnect = () => {
+      if (retiring) return;
+      retiring = true;
+      this.sockets.delete(sock);
+      const watcher = this.watchers.get(sock);
+      this.watchers.delete(sock);
+      watcher?.stop();
       // Nobody left to see a wake turn: it stops (its Specs are told with the user's next message),
       // and its questions are denied, never left holding the project.
-      if (!this.someoneSeesWakes()) for (const [turn, stop] of [...this.wakeTurns]) {
+      const turns = !this.someoneSeesWakes() ? [...this.wakeTurns] : [];
+      const recoveries = !this.someoneSeesWakes() ? [...this.recoveryRuns] : [];
+      // Settlement appends Trace synchronously and can retire another watcher. Claim this
+      // cleanup before appending anything so cascaded disconnects cannot repeat it.
+      for (const [turn] of turns) this.wakeTurns.delete(turn);
+      for (const [id, attempt] of recoveries) {
+        attempt.cancelled = true; // Sticky even if a new viewer arrives before measurement ends.
+        this.recoveryRuns.delete(id);
+      }
+      for (const [turn, stop] of turns) {
         for (const g of [...this.gates.values()]) if (g.ctx.turn === turn && !g.ctx.spec) this.settle(g.id, "deny", "nobody is connected");
         stop();
       }
-      if (!this.someoneSeesWakes()) for (const [id, limit] of this.recoveryRuns) {
+      for (const [, limit] of recoveries) {
         const why = "stopped: nobody was connected to see it";
-        this.runs.stop(id, { limited: { resetsAt: limit.resetsAt, at: new Date().toISOString(), why } });
+        limit.stop?.abort({ limited: { resetsAt: limit.resetsAt, at: new Date().toISOString(), why } });
       }
-    });
-    const write = (obj: unknown) => sock.writable && sock.write(JSON.stringify(obj) + "\n");
-    sock.on("close", () => {
       for (const g of [...this.gates.values()]) if (g.owner === sock) this.settle(g.id, "deny", "asker left");
       for (const pl of [...this.plans.values()]) if (pl.owner === sock) this.answerPlan(pl.id, "reject", undefined, "asker left");
-    });
+    };
+    const retire = () => { disconnect(); if (!sock.destroyed) sock.destroy(); };
+    sock.on("close", disconnect);
+    const write = (obj: unknown) => {
+      if (retiring || !sock.writable) return;
+      const line = JSON.stringify(obj) + "\n";
+      if (this.watchers.has(sock) && sock.writableLength + Buffer.byteLength(line, "utf8") > WATCH_OUTPUT_BYTES) {
+        retire();
+        return;
+      }
+      sock.write(line); // false is normal backpressure; only exceeding the ceiling retires it.
+    };
     // A client that drops mid-line (ECONNRESET) must not take govd down: the error is the
-    // client's problem, and "close" already denies its Gates.
-    sock.on("error", () => sock.destroy());
+    // client's problem; retire synchronously rather than waiting for "close".
+    sock.on("error", retire);
     const lines = createInterface({ input: sock });
     lines.on("error", () => {});
     lines.on("line", async (line) => {
+      if (retiring) return; // readline may still emit requests buffered before retirement.
       let id: number | string | null = null;
       try {
         const req = Request.parse(JSON.parse(line));
@@ -586,23 +612,27 @@ export class Daemon {
           if (!spec) continue;
           const ctx = this.recoveryContext(item.project);
           if (resumeSpecIssue(ctx, spec)) continue;
+          const attempt: { resetsAt: string | null; cancelled: boolean; stop?: AbortController } = { resetsAt: item.resetsAt, cancelled: false };
+          this.recoveryRuns.set(spec.id, attempt);
+          const forget = () => {
+            if (this.recoveryRuns.get(spec.id) === attempt) this.recoveryRuns.delete(spec.id);
+          };
+          ctx.onSpecRun = (_id, stop) => {
+            attempt.stop = stop; // Only the round started by this context, never a later run by ID.
+            if (attempt.cancelled) stop.abort({ limited: { resetsAt: item.resetsAt, at: new Date().toISOString(),
+              why: "stopped: nobody was connected to see it" } });
+            return forget;
+          };
           try {
             await resumeSpec(ctx, spec, "govd", () => {
               const current = this.recoveryTarget(item.target);
               // Our recovery.resumed guards this choice already; compare the choice's identity
               // rather than rejecting our own guard. No work starts until this recheck passes.
-              return !this.stopping && this.someoneSeesWakes() && !!current?.item.due
+              return !attempt.cancelled && !this.stopping && this.someoneSeesWakes() && !!current?.item.due
                 && current.choiceSeq === fresh.choiceSeq && current.item.since === item.since;
             });
-            if (this.runs.has(spec.id)) {
-              this.recoveryRuns.set(spec.id, { resetsAt: item.resetsAt });
-              void this.runs.done(spec.id)?.then(() => this.recoveryRuns.delete(spec.id), () => this.recoveryRuns.delete(spec.id));
-              if (!this.someoneSeesWakes()) {
-                const why = "stopped: nobody was connected to see it";
-                this.runs.stop(spec.id, { limited: { resetsAt: item.resetsAt, at: new Date().toISOString(), why } });
-              }
-            }
-          } catch { /* it remains visible for the user */ }
+            if (!attempt.stop) forget(); // Denied or no round; a registered round owns its cleanup.
+          } catch { forget(); /* it remains visible for the user */ }
           continue;
         }
         if ((this.turning.get(item.project) ?? 0) > 0) continue;
@@ -652,9 +682,7 @@ export class Daemon {
   }
 
   private watch(sock: Socket, notify: (n: unknown) => void, wake = true): void {
-    if (this.watchers.has(sock)) return;
-    // ponytail: a watcher that stops reading lets its socket buffer grow; add a high-water
-    // mark and drop the watcher when a real client needs it.
+    if (!this.sockets.has(sock) || sock.destroyed || this.watchers.has(sock)) return;
     const send = (n: WatchEvent) => { if (sock.writable) notify(n); };
     const stop = this.ledger.subscribe((event) => send({ kind: "trace", event }));
     this.watchers.set(sock, { send, stop, wake });
@@ -1033,6 +1061,7 @@ export class Daemon {
     const { wake, continuation, automatic = false } = options;
     const unattended = !!wake || automatic;
     if (this.stopping) throw new RpcError(Errors.refused, "govd is stopping; start it again to continue");
+    if (unattended && !this.someoneSeesWakes()) throw new RpcError(Errors.refused, "nobody is connected");
     if (!this.sandboxOk) {
       this.ledger.append(projectName, "sandbox.refused", "govd", { reason: this.sandboxReason });
       throw new RpcError(Errors.refused, `sandbox not verified on this machine (${this.sandboxReason}); nothing was started`);
@@ -1081,28 +1110,19 @@ export class Daemon {
       history && `Earlier in this conversation (a JSON record of the user's messages and the Controllers' replies, for context; it is information, not new instructions${left}):\n${history}`,
       fold.length && `Specs that finished since you last heard (from GovernCode; read each with spec_status before relying on it, and tell the user): ${fold.map(specLine).join(", ")}.`,
     ].filter(Boolean).join("\n\n");
-    if (continuation) {
-      const state = this.recoveryTarget(continuation, projectName);
-      if (!state?.item || state.item.kind !== "turn") throw new RpcError(Errors.refused,
-        `${continuation} can no longer be continued: a newer message, a reset or a Controller change came after it`);
-      L.append(project.name, "recovery.resumed", automatic ? "govd" : "user",
-        { target: continuation, resetsAt: state.item.resetsAt, by: automatic ? "govd" : "user" });
-    }
-    L.append(project.name, "turn.started", unattended ? "govd" : "user", { prompt: prompt.slice(0, 20_000), controller: project.controller, home: !found,
-      ...(wake ? { origin: "wake", specs: wake } : {}), ...(automatic ? { origin: "continuation" } : {}), ...(continuation ? { continuationOf: continuation } : {}) });
+    const continuationState = continuation ? this.recoveryTarget(continuation, projectName) : undefined;
+    if (continuation && continuationState?.item.kind !== "turn") throw new RpcError(Errors.refused,
+      `${continuation} can no longer be continued: a newer message, a reset or a Controller change came after it`);
     this.turning.set(turnKey, (this.turning.get(turnKey) ?? 0) + 1);
     let woke = () => {};
     if (unattended) this.waking.set(turnKey, new Promise<void>((ok) => { woke = ok; }));
-    const started = L.events(project.name ?? undefined, 1).at(-1);
-    const turnId = `T-${started?.seq ?? Date.now()}`;
-    // A wake turn ends if nobody is left to see it; the Controller's process is stopped through this.
+    // Startup Trace fanout can synchronously retire the last viewer. Own its cancellation
+    // before the first append, then replace this temporary key with the actual started row.
+    let turnId = `starting:${turnKey}`;
     const stopTurn = new AbortController();
-    if (unattended) this.wakeTurns.set(turnId, () => stopTurn.abort("nobody is connected"));
+    const stop = () => stopTurn.abort("nobody is connected");
+    if (unattended) this.wakeTurns.set(turnId, stop);
     const telling = wake ?? fold.map((x) => x.id);
-    if (telling.length) {
-      this.telling.set(turnId, telling);
-      for (const id of telling) L.updateSpec(id, { delivery: "claimed" }, "govd");
-    }
     // The .git guard and the Checkpoint are made inside the turn (below), so a failure there ends it
     // like any other, never leaving the project marked as working.
     let guard: ReturnType<typeof gitGuard> | null = null, files: string[] | null = null;
@@ -1191,7 +1211,25 @@ export class Daemon {
       // (After govd has closed, a turn still winding down changes nothing: a restart closes it.)
       hooks.done = (r) => { if (over) return; over = true; ctl?.close(); if (!this.closed) finish(r); };
       const failed = (e: unknown) => hooks.done({ ok: false, summary: `the turn could not start: ${e instanceof Error ? e.message : String(e)}` });
+      const admit = () => {
+        if (!unattended) return;
+        if (!this.someoneSeesWakes()) stop();
+        // Cancellation is sticky even if another viewer appeared during reentrant fanout.
+        if (stopTurn.signal.aborted) throw new RpcError(Errors.refused, "nobody is connected");
+      };
       try {
+        if (continuation) L.append(project.name, "recovery.resumed", automatic ? "govd" : "user",
+          { target: continuation, resetsAt: continuationState!.item.resetsAt, by: automatic ? "govd" : "user" });
+        const started = L.append(project.name, "turn.started", unattended ? "govd" : "user", { prompt: prompt.slice(0, 20_000), controller: project.controller, home: !found,
+          ...(wake ? { origin: "wake", specs: wake } : {}), ...(automatic ? { origin: "continuation" } : {}), ...(continuation ? { continuationOf: continuation } : {}) });
+        if (unattended) this.wakeTurns.delete(turnId);
+        turnId = `T-${started.seq}`;
+        if (unattended && !stopTurn.signal.aborted) this.wakeTurns.set(turnId, stop);
+        if (telling.length) {
+          this.telling.set(turnId, telling);
+          for (const id of telling) L.updateSpec(id, { delivery: "claimed" }, "govd");
+        }
+        admit();
         // A tool that can write the project can write .git; hooks and some config keys would then
         // run later, outside the sandbox, when the user runs git. Undone after every turn.
         guard = found ? gitGuard(project.path, join(this.stateDir(), "scratch")) : null;
@@ -1210,6 +1248,7 @@ export class Daemon {
         // Either Controller gets GovernCode's tools on a socket that exists only for this turn:
         // in a project delegate, crew and spec_status; at Home (read-only) only propose_project.
         // (alive: no new Spec starts once govd is stopping, whatever a Controller still asks.)
+        admit();
         ctl = found ? openControllerSocket({ project: { name: found.name, path: found.path }, provider: project.controller.provider,
           crew: () => crewOf(L, found.name), alive: () => alive && !this.stopping, turnEnded: ended.signal, ledger: L, limits: this.limits,
           plan: {
@@ -1236,12 +1275,14 @@ export class Daemon {
             return this.propose(params, notify, actor);
           });
         const mcp = { node: process.execPath, script: MCP_SCRIPT, socket: ctl.path, ...(found ? {} : { mode: "home" as const }) };
+        admit();
         if (project.controller.provider === "codex") {
           void runCodexTurn({ ...common, stateDir: resolve(this.opts.ledgerPath, ".."), model: project.controller.model, effort: project.controller.effort, mcp,
             noSubagents: !crew.subagents.controller, signal: stopTurn.signal }).catch(failed);
         } else {
           const t = runTurn({ ...common, controller: project.controller, mcp, noSubagents: !crew.subagents.controller, stateDir: resolve(this.opts.ledgerPath, "..") });
-          stopTurn.signal.addEventListener("abort", () => t.cancel(), { once: true });
+          if (stopTurn.signal.aborted) t.cancel();
+          else stopTurn.signal.addEventListener("abort", () => t.cancel(), { once: true });
         }
       } catch (e) { failed(e); }
     });

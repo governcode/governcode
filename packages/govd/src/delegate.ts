@@ -72,6 +72,9 @@ export type DelegationContext = {
   specGate?: (spec: Spec) => { gate(req: GateRequest): Promise<"allow" | "deny">; end(): void };
   onSpecDone?: (id: string) => void;                 // a finished Spec the Controller has not heard of
   onSpecStarted?: (id: string) => void;              // a new round supersedes old completion suppression
+  /** After registration, before the round's Trace fanout: own this exact stop and, optionally,
+   *  release that ownership when this round settles. */
+  onSpecRun?: (id: string, stop: AbortController) => (() => void) | void;
   onLimited?: (id: string) => void;                  // a Spec stopped by a usage Limit
   wake?: boolean;                                    // a wake turn: it reads and reports, it changes nothing
 };
@@ -507,7 +510,12 @@ function startRound(ctx: DelegationContext, spec: Spec, input: SpecInput, prompt
   const runs = ctx.runs ?? new SpecRuns();
   ctx.onSpecStarted?.(spec.id);
   let cancelled = () => false;
-  const done = runs.start(spec.id, ctx.project.name, input.to, (stop, c) => { cancelled = c; return runRound(ctx, spec, input, prompt, w, stop, c, inline); });
+  const done = runs.start(spec.id, ctx.project.name, input.to, (stop, c) => {
+    cancelled = c;
+    const release = ctx.onSpecRun?.(spec.id, stop);
+    const round = runRound(ctx, spec, input, prompt, w, stop, c, inline);
+    return release ? round.finally(release) : round;
+  });
   // After SpecRuns has let go of it, so whoever is told sees it finished.
   const tell = () => { try { if (!inline.waiting && !cancelled()) ctx.onSpecDone?.(spec.id); } catch { /* govd is stopping */ } };
   done.then(tell, tell);
