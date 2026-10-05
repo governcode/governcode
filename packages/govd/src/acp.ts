@@ -290,7 +290,10 @@ export function acpTokenTally() {
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(v, MAX_RUN_TOKENS) : null);
   const read = (u: any) => {
     const inp = n(u?.inputTokens), out = n(u?.outputTokens);
-    const total = n(u?.totalTokens) ?? (inp !== null && out !== null ? inp + out : null);
+    const suppliedTotal = u?.totalTokens, declaredTotal = n(suppliedTotal);
+    // Omission permits component fallback; an unreadable supplied total leaves only a floor.
+    if (suppliedTotal !== undefined && declaredTotal === null) malformed = true;
+    const total = declaredTotal ?? (inp !== null && out !== null ? inp + out : null);
     return total === null || inp === null || out === null ? null : { totalTokens: total, inputTokens: inp, outputTokens: out };
   };
   return {
