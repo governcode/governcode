@@ -113,6 +113,8 @@ export function decodeAcpInitialize(value: unknown): AcpReportedInitialization {
   if (!Object.hasOwn(o, "protocolVersion")) return missing();
   if (typeof o.protocolVersion !== "number" || !Number.isSafeInteger(o.protocolVersion) || o.protocolVersion < 1) return bad();
   if (o.protocolVersion !== 1) throw new DecodeError("unsupported");
+  // Own info marks a response shape outside this v1 decoder, regardless of its contents.
+  if (Object.hasOwn(o, "info")) throw new DecodeError("unsupported");
   if (!Object.hasOwn(o, "agentCapabilities")) return missing();
   const caps = record(o.agentCapabilities);
   const capabilities: AcpReportedInitialization["capabilities"] = bools(caps, ["loadSession"]);

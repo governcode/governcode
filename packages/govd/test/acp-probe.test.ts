@@ -21,6 +21,29 @@ const booleanConfig = (currentValue = true) => ({ id: "toggle", name: "Fixture T
 const legacyModes = () => ({ currentModeId: "fixture-mode", availableModes: [{ id: "fixture-mode", name: "Fixture Mode" }] });
 const legacyModels = () => ({ currentModelId: "fixture-model", availableModels: [{ modelId: "fixture-model", name: "Fixture Model" }] });
 const freshOptions = { cwd: "/fixture/fresh", createSession: true, freshCwd: true } as const;
+const infoReply = () => ({ protocolVersion: 1, agentCapabilities: {},
+  info: { name: "fixture-agent", version: "0" }, capabilities: { session: {} } });
+const ordinaryInitializeReplies = () => [initialization(),
+  { ...initialization(), _meta: { info: { name: "fixture-extension" } }, vendor: [false, "ignored"] },
+  { ...initialization(), capabilities: { session: {} } }];
+function refusedInitializeReplies(): { reply: unknown; expected: "unsupported" | "missing" | "malformed" }[] {
+  const info = infoReply().info;
+  return [
+    ...[infoReply(), { protocolVersion: 1, agentCapabilities: {}, info },
+      { protocolVersion: 1, info, capabilities: { session: {} } }, { protocolVersion: 1, info },
+      { protocolVersion: 1, agentCapabilities: [], info },
+      ...[null, {}, [], false, 0, "fixture", { name: false }].map((info) => ({ ...infoReply(), info })),
+      Object.defineProperty(initialization(), "info", { value: undefined }),
+      Object.defineProperty(initialization(), "info", { get() { assert.fail("must not read info"); } }),
+    ].map((reply) => ({ reply, expected: "unsupported" as const })),
+    { reply: { info }, expected: "missing" },
+    ...[{ ...infoReply(), protocolVersion: "1" }, { ...infoReply(), protocolVersion: 1.1 },
+      { ...infoReply(), info: undefined }, { ...infoReply(), info: { text: "x".repeat(limits.string + 1) } },
+      { ...infoReply(), _meta: { text: "x".repeat(limits.string + 1) } },
+      Object.defineProperty(infoReply(), "info", { enumerable: true, get() { assert.fail("must not read info"); } }),
+    ].map((reply) => ({ reply, expected: "malformed" as const })),
+  ];
+}
 
 class FakeRpc implements AcpRpc {
   requests: { method: string; params: unknown; timeoutMs?: number }[] = [];
@@ -92,6 +115,15 @@ test("initialization keeps only known bounded metadata, with no auth or eligibil
   assert.deepEqual(decodeAcpInitialize({ protocolVersion: 1, agentCapabilities: {} }), {
     protocolVersion: 1, agentInfo: null, authMethods: null, capabilities: {},
   });
+});
+
+test("own top-level info refuses v1 interpretation after bounded and numeric validation", () => {
+  for (const { reply, expected } of refusedInitializeReplies()) {
+    assert.throws(() => decodeAcpInitialize(reply), new RegExp(`^Error: ACP discovery: ${expected}$`));
+  }
+  for (const reply of ordinaryInitializeReplies()) {
+    assert.deepEqual(decodeAcpInitialize(reply), decodeAcpInitialize(initialization()));
+  }
 });
 
 test("strict protocol negotiation, required shapes, capabilities, and auth descriptors", () => {
@@ -267,27 +299,40 @@ test("legacy model and mode schema is decoded only without configOptions; missin
 });
 
 test("default discovery only initializes, advertises disabled clients, and closes runtime", async () => {
-  const rpc = new FakeRpc();
-  const result = await discoverAcp(rpc, { cwd: "/fixture/fresh" });
-  assert.equal(result.status, "reported"); assert.equal(result.sessionStatus, "not-requested");
-  assert.equal(result.evidence, "agent-reported"); assert.equal(result.runtimeClosed, true);
-  assert.deepEqual(rpc.requests.map((v) => v.method), ["initialize"]);
-  assert.deepEqual(rpc.requests[0].params, { protocolVersion: 1,
-    clientInfo: { name: "governcode-discovery", version: "0.1.0" },
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: false } } });
-  assert.deepEqual(rpc.events, ["initialize", "close", "closed"]);
-  assert.deepEqual(rpc.notifications, []);
-  assert.equal("eligible" in result, false); assert.equal("signedIn" in result, false);
+  for (const reply of ordinaryInitializeReplies()) {
+    const rpc = new FakeRpc();
+    rpc.answer = () => reply;
+    const result = await discoverAcp(rpc, { cwd: "/fixture/fresh" });
+    assert.equal(result.status, "reported"); assert.equal(result.sessionStatus, "not-requested");
+    assert.equal(result.evidence, "agent-reported"); assert.equal(result.runtimeClosed, true);
+    assert.deepEqual(rpc.requests.map((v) => v.method), ["initialize"]);
+    assert.deepEqual(rpc.requests[0].params, { protocolVersion: 1,
+      clientInfo: { name: "governcode-discovery", version: "0.1.0" },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: false } } });
+    assert.deepEqual(rpc.events, ["initialize", "close", "closed"]);
+    assert.deepEqual(rpc.notifications, []);
+    assert.equal("eligible" in result, false); assert.equal("signedIn" in result, false);
+    assert.deepEqual(result.initialization, decodeAcpInitialize(initialization()));
+  }
 });
 
 test("optional discovery creates only a fresh session with no MCP servers or prompt", async () => {
-  const rpc = new FakeRpc();
-  const result = await discoverAcp(rpc, freshOptions);
-  assert.equal(result.sessionStatus, "reported");
-  assert.deepEqual(rpc.requests.map((v) => v.method), ["initialize", "session/new"]);
-  assert.deepEqual(rpc.requests[1].params, { cwd: "/fixture/fresh", mcpServers: [] });
-  assert.equal(result.session?.models?.current, "fixture-a");
-  assert.deepEqual(rpc.notifications, []);
+  for (const reply of ordinaryInitializeReplies()) {
+    const rpc = new FakeRpc();
+    const answer = rpc.answer;
+    rpc.answer = (method) => method === "initialize" ? reply : answer(method);
+    const result = await discoverAcp(rpc, freshOptions);
+    assert.equal(result.sessionStatus, "reported");
+    assert.deepEqual(rpc.requests.map((v) => v.method), ["initialize", "session/new"]);
+    assert.deepEqual(rpc.requests[1].params, { cwd: "/fixture/fresh", mcpServers: [] });
+    assert.equal(result.session?.models?.current, "fixture-a");
+    assert.deepEqual(rpc.notifications, []);
+    assert.equal(result.status, "reported"); assert.equal(result.runtimeClosed, true);
+    assert.deepEqual(result.initialization, decodeAcpInitialize(initialization()));
+    assert.deepEqual(rpc.requests[0].params, { protocolVersion: 1,
+      clientInfo: { name: "governcode-discovery", version: "0.1.0" },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: false } } });
+  }
 });
 
 test("invalid options refuse all outbound work and still close", async () => {
@@ -302,15 +347,51 @@ test("invalid options refuse all outbound work and still close", async () => {
 });
 
 test("unsupported versions and missing or malformed initialize results never start a session", async () => {
-  for (const [reply, expected] of [[{ protocolVersion: 2, agentCapabilities: {} }, "unsupported"],
-    [{}, "missing"], [{ protocolVersion: "1" }, "malformed"]] as const) {
+  for (const { reply, expected } of [
+    { reply: { protocolVersion: 2, agentCapabilities: {} }, expected: "unsupported" },
+    { reply: {}, expected: "missing" }, { reply: { protocolVersion: "1" }, expected: "malformed" },
+    ...refusedInitializeReplies()]) {
     const rpc = new FakeRpc(); rpc.answer = () => reply;
     const result = await discoverAcp(rpc, freshOptions);
     assert.equal(result.status, expected); assert.equal(result.initialization, null);
     assert.deepEqual(rpc.requests.map((v) => v.method), ["initialize"]);
     assert.equal(rpc.events.at(-1), "closed");
+    assert.deepEqual(result, { evidence: "agent-reported", status: expected, initialization: null,
+      session: null, sessionStatus: "not-requested", runtimeClosed: true });
+    assert.deepEqual(rpc.notifications, []);
+    assert.equal(rpc.events.filter((v) => v === "close").length, 1);
   }
 });
+
+for (const stop of ["cancelled", "timeout"] as const) for (const shape of ["v1", "info", "malformed"] as const) {
+  for (const replyFirst of [false, true]) {
+    test(`deferred ${shape} initialize queued ${replyFirst ? "before" : "after"} ${stop} publishes no metadata`, async (t) => {
+      let now = 100;
+      if (stop === "timeout") t.mock.method(performance, "now", () => now);
+      const rpc = new FakeRpc(); rpc.autoClose = false;
+      const controller = new AbortController(), entered = deferred<void>(), reply = deferred<unknown>();
+      rpc.answer = () => { entered.resolve(); return reply.promise; };
+      let returned = false;
+      const pending = discoverAcp(rpc, { ...freshOptions, signal: controller.signal, timeoutMs: 10_000 })
+        .then((result) => { returned = true; return result; });
+      await entered.promise;
+      const settle = () => reply.resolve(shape === "v1" ? initialization() : shape === "info" ? infoReply() :
+        { ...infoReply(), protocolVersion: "1" });
+      if (replyFirst) settle();
+      if (stop === "cancelled") controller.abort();
+      else now += 10_000; // Expire the monotonic deadline without running the timer callback.
+      if (!replyFirst) settle();
+      await rpc.closeEntered.promise;
+      await budgetTurn(); assert.equal(returned, false);
+      rpc.finishClose(); const result = await pending;
+      assert.deepEqual(result, { evidence: "agent-reported", status: stop, initialization: null,
+        session: null, sessionStatus: "not-requested", runtimeClosed: true });
+      assert.deepEqual(rpc.requests.map((r) => r.method), ["initialize"]);
+      assert.deepEqual(rpc.notifications, []);
+      assert.equal(rpc.events.filter((v) => v === "close").length, 1);
+    });
+  }
+}
 
 test("protocol error codes report auth-required or unsupported without authentication", async () => {
   for (const [code, expected] of [[-32000, "auth-required"], [-32601, "unsupported"], [-32603, "error"]] as const) {
@@ -509,20 +590,39 @@ test("pre-cancellation sends nothing; cancellation during initialize and session
   }
 });
 
-test("success, malformed reply, timeout and cancel cannot return before runtime closure or caller cleanup", async () => {
-  for (const kind of ["success", "malformed", "timeout", "cancel"]) {
+test("success, refused info, malformed reply, timeout and cancel cannot return before runtime closure or caller cleanup", async () => {
+  for (const kind of ["success", "info", "malformed", "timeout", "cancel"]) {
     const rpc = new FakeRpc(); rpc.autoClose = false;
     const controller = new AbortController();
     if (kind === "malformed") rpc.answer = () => [];
+    if (kind === "info") rpc.answer = () => infoReply();
     if (kind === "timeout" || kind === "cancel") rpc.answer = () => new Promise<never>(() => {});
     let returned = false;
     const pending = discoverAcp(rpc, { cwd: "/fixture", signal: controller.signal, timeoutMs: 10, cleanupTimeoutMs: 500 })
       .then((result) => { returned = true; rpc.events.push("caller-cleanup"); return result; });
     if (kind === "cancel") controller.abort();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await rpc.closeEntered.promise;
+    await budgetTurn();
     assert.equal(returned, false, kind); assert.ok(rpc.events.includes("close"));
-    rpc.finishClose(); await pending;
+    rpc.finishClose(); const result = await pending;
     assert.deepEqual(rpc.events.slice(-2), ["closed", "caller-cleanup"]);
+    assert.equal(result.status, kind === "success" ? "reported" : kind === "info" ? "unsupported" :
+      kind === "cancel" ? "cancelled" : kind === "timeout" ? "timeout" : "malformed");
+    assert.equal(result.runtimeClosed, true);
+    if (kind === "info") assert.deepEqual(result, { evidence: "agent-reported", status: "unsupported",
+      initialization: null, session: null, sessionStatus: "not-requested", runtimeClosed: true });
+  }
+});
+
+test("ordinary and refused initialize results still reject unconfirmed, rejected or throwing closure", async () => {
+  for (const reply of [initialization(), infoReply()]) for (const kind of ["unconfirmed", "rejected", "throwing"]) {
+    const rpc = new FakeRpc(); rpc.autoClose = false; rpc.answer = () => reply;
+    if (kind === "throwing") rpc.close = () => { rpc.closeEntered.resolve(); rpc.finishClose(); throw new Error("Invented close failure"); };
+    const pending = assert.rejects(discoverAcp(rpc, { ...freshOptions, createSession: false, cleanupTimeoutMs: 10 }), AcpDiscoveryCleanupError);
+    await rpc.closeEntered.promise;
+    if (kind === "rejected") rpc.closing.reject(new Error("Invented closure failure"));
+    await pending;
+    if (kind !== "throwing") rpc.finishClose();
   }
 });
 
@@ -547,16 +647,22 @@ test("early runtime closure interrupts hanging requests and closure rejection is
 });
 
 test("forbidden requests, floods or cancellation during closure cannot leave a successful report", async () => {
-  for (const kind of ["request", "flood", "cancel"]) {
+  for (const reply of [initialization(), infoReply()]) for (const kind of ["request", "flood", "cancel"]) {
     const rpc = new FakeRpc(); rpc.autoClose = false;
+    rpc.answer = () => reply;
     const controller = new AbortController();
     const pending = discoverAcp(rpc, { cwd: "/fixture", cleanupTimeoutMs: 500, signal: controller.signal });
-    await new Promise((resolve) => setImmediate(resolve));
+    await rpc.closeEntered.promise;
     if (kind === "request") await assert.rejects(rpc.reqHandler("fs/read_text_file", {}));
     else if (kind === "cancel") controller.abort();
     else for (let n = 0; n <= limits.notifications; n++) rpc.noteHandler("unknown", {});
     rpc.finishClose(); const result = await pending;
     assert.equal(result.status, kind === "request" ? "forbidden-request" : kind === "cancel" ? "cancelled" : "notification-flood");
+    assert.equal(result.initialization === null, Object.hasOwn(reply, "info"));
+    assert.equal(result.session, null); assert.equal(result.sessionStatus, "not-requested");
+    assert.equal(result.runtimeClosed, true);
+    assert.deepEqual(rpc.requests.map((r) => r.method), ["initialize"]);
+    assert.deepEqual(rpc.notifications, []);
   }
 });
 
@@ -602,7 +708,8 @@ test("local breach interrupts initialize or session even when a supplied request
 });
 
 test("actual transport latch wins between fulfilled reply and discovery continuation", async () => {
-  for (const stage of ["initialize", "session/new"]) {
+  for (const { stage, reply } of [{ stage: "initialize", reply: initialization() },
+    { stage: "initialize", reply: infoReply() }, { stage: "session/new", reply: { sessionId: "fixture", configOptions: [config()] } }]) {
     const f = budgetFixture(2000);
     const pending = discoverAcp(f.rpc, { ...freshOptions, cleanupTimeoutMs: 500 });
     await budgetTurn();
@@ -610,7 +717,7 @@ test("actual transport latch wins between fulfilled reply and discovery continua
       f.out(budgetMessage({ id: 1, result: initialization() })); await budgetTurn();
     }
     f.out(budgetMessage({ id: stage === "initialize" ? 1 : 2,
-      result: stage === "initialize" ? initialization() : { sessionId: "fixture", configOptions: [config()] } }));
+      result: reply }));
     // Fulfillment was admitted, but the awaiting metadata decoder has not run yet.
     f.err(Buffer.alloc(2001)); f.finish();
     const result = await pending;
@@ -618,19 +725,28 @@ test("actual transport latch wins between fulfilled reply and discovery continua
     assert.equal(result.initialization === null, stage === "initialize"); assert.equal(result.session, null);
     assert.equal(f.writes.length, stage === "initialize" ? 1 : 2);
     assert.equal(f.signals.length, 1);
+    assert.equal(result.sessionStatus, stage === "initialize" ? "not-requested" : "output-budget-exceeded");
+    assert.equal(result.runtimeClosed, true);
+    assert.deepEqual(f.writes.map((line) => JSON.parse(line).method), stage === "initialize" ? ["initialize"] : ["initialize", "session/new"]);
   }
 });
 
-test("breach after success during ordinary cleanup preserves partial evidence and overrides success", async () => {
-  const f = budgetFixture(2000), pending = discoverAcp(f.rpc, { cwd: "/fixture", cleanupTimeoutMs: 500 });
-  await budgetTurn(); f.out(budgetMessage({ id: 1, result: initialization() })); await budgetTurn();
-  assert.equal(f.signals.length, 1); // discovery's ordinary close(100) has already started
-  f.err(Buffer.alloc(2001)); assert.equal(f.signals.length, 1);
-  let returned = false; void pending.then(() => { returned = true; });
-  await budgetTurn(); assert.equal(returned, false);
-  f.finish(); const result = await pending;
-  assert.equal(result.status, "output-budget-exceeded"); assert.ok(result.initialization);
-  assert.equal(result.runtimeClosed, true);
+test("breach after success or info refusal during ordinary cleanup preserves partial evidence and overrides status", async () => {
+  for (const reply of [initialization(), infoReply()]) {
+    const f = budgetFixture(2000), pending = discoverAcp(f.rpc, { cwd: "/fixture", cleanupTimeoutMs: 500 });
+    await budgetTurn(); f.out(budgetMessage({ id: 1, result: reply })); await budgetTurn();
+    assert.equal(f.signals.length, 1); // discovery's ordinary close(100) has already started
+    f.err(Buffer.alloc(2001)); assert.equal(f.signals.length, 1);
+    let returned = false; void pending.then(() => { returned = true; });
+    await budgetTurn(); assert.equal(returned, false);
+    f.finish(); const result = await pending;
+    assert.equal(result.status, "output-budget-exceeded");
+    if (!Object.hasOwn(reply, "info")) assert.ok(result.initialization);
+    else assert.equal(result.initialization, null);
+    assert.equal(result.runtimeClosed, true);
+    assert.equal(result.session, null); assert.equal(result.sessionStatus, "not-requested");
+    assert.deepEqual(f.writes.map((line) => JSON.parse(line).method), ["initialize"]);
+  }
 });
 
 test("actual transport budget failure before boolean interpretation prevents valid or malformed publication", async () => {
