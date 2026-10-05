@@ -166,14 +166,21 @@ export function openControllerSocket(ctx: DelegationContext): { path: string; cl
     if (method === "controller.spec_discard") {
       // The Controller may throw away its own proposal (a bad draft it wants to redo). Accepting
       // stays the user's alone.
-      const s = ctx.ledger.spec(String((params as any)?.id));
-      if (!s || s.project !== ctx.project.name || !mine(ctx, s.id)) throw new Error("no such Spec in this project");
-      if (ctx.runs?.has(s.id)) throw new Error(`${s.id} is running: cancel it first with spec_cancel`);
-      if (!["needs-review", "failed", "held", "cancelled"].includes(s.status)) throw new Error(`${s.id} is ${s.status}; only a Spec waiting for review, failed, cancelled or held can be discarded`);
-      const shown = { id: s.id, runner: s.to, brief: s.brief };
+      const id = String((params as any)?.id);
+      const eligible = (): Spec => {
+        const s = ctx.ledger.spec(id);
+        if (!s || s.project !== ctx.project.name || !mine(ctx, s.id)) throw new Error("no such Spec in this project");
+        if (ctx.runs?.has(s.id)) throw new Error(`${s.id} is running: cancel it first with spec_cancel`);
+        if (!["needs-review", "failed", "held", "cancelled"].includes(s.status)) throw new Error(`${s.id} is ${s.status}; only a Spec waiting for review, failed, cancelled or held can be discarded`);
+        return s;
+      };
+      const proposed = eligible();
+      const shown = { id: proposed.id, runner: proposed.to, brief: proposed.brief };
       if ((await ctx.gate({ id: `discard-${Date.now()}`, tool: "governcode spec_discard", input: shown, canonical: canonical({ tool: "governcode spec_discard", input: shown }) })) !== "allow") {
         throw new Error("the user declined discarding it");
       }
+      // Another round or a permission/delivery change may have happened while the Gate waited.
+      const s = eligible();
       discard(ctx.stateDir, s.id);
       ctx.ledger.updateSpec(s.id, { status: "discarded", note: "discarded by the Controller", ...(untold(s) ? { delivery: "disposed" as const } : {}) }, "controller");
       return { id: s.id, discarded: true };
