@@ -12,6 +12,7 @@ export const Channel = {
   pickFolder: "governcode:pick-folder", // invoke: the native folder picker; returns a path or null
   connect: "governcode:connect", // invoke: a tool's sign-in on its own connection; streams on `event`
   openSignIn: "governcode:open-sign-in", // invoke: open a sign-in link govd sent (only that exact link)
+  openWatch: "governcode:open-watch", // invoke: open (or bring forward) the Watch window
   event: "governcode:event",   // main -> renderer: one streamed ask event, tagged with its askId
   watch: "governcode:watch",   // main -> renderer: one govd watch event (Trace append, Gate change)
   statusChanged: "governcode:status-changed", // main -> renderer
@@ -79,5 +80,7 @@ export type DashboardApi = {
   connect(streamId: string, tool: string): Promise<Outcome<ConnectResult>>;
   /** Opens a sign-in link in the browser, only if govd sent exactly that link in a sign-in. */
   openSignIn(url: string): Promise<boolean>;
+  /** Opens the Watch window (the same page, read-only view of what is happening), or brings it forward. */
+  openWatch(): Promise<boolean>;
 };
 export type ConnectResult = { id: string; connected: boolean; note: string };

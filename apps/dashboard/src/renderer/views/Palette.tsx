@@ -51,7 +51,7 @@ export function Palette(props: { projects: Project[]; gates: Gate[]; specs: Spec
       out.push({ id: `review:${s.id}`, group: "Waiting for you", label: `Review ${s.id}`, detail: `${s.project} · ${providerName(s.to)} · ${s.brief.split("\n")[0]}`, icon: "branch", tone: "amber",
         run: go({ kind: "project", name: s.project, tab: "specs" }) });
     }
-    const places: Array<[Place, string, IconName]> = [[{ kind: "global", id: "overview" }, "Overview", "overview"], [{ kind: "global", id: "needs" }, "Needs you", "inbox"],
+    const places: Array<[Place, string, IconName]> = [[{ kind: "global", id: "overview" }, "Overview", "overview"], [{ kind: "global", id: "needs" }, "Needs you", "inbox"], [{ kind: "global", id: "watch" }, "Watch", "eye"],
       [{ kind: "global", id: "home" }, "Home (no project)", "home"], [{ kind: "global", id: "allowance" }, "Allowance", "gauge"],
       [{ kind: "global", id: "trace" }, "Trace", "clock"], [{ kind: "global", id: "settings" }, "Settings", "gear"]];
     for (const [place, label, icon] of places) out.push({ id: `go:${label}`, group: "Go to", label, icon, run: go(place) });

@@ -11,7 +11,7 @@ import type { ProviderLimit } from "./Limits.tsx";
 import mark from "../../../../../docs/brand/governcode-mark.svg";
 import markLight from "../../../../../docs/brand/governcode-mark-mono.svg";
 
-export type Global = "overview" | "needs" | "home" | "allowance" | "trace" | "settings";
+export type Global = "overview" | "needs" | "watch" | "home" | "allowance" | "trace" | "settings";
 export type Tab = "conversation" | "specs" | "checkpoints" | "notes" | "trace" | "crew";
 export type Place = { kind: "global"; id: Global } | { kind: "project"; name: string; tab: Tab };
 
@@ -38,6 +38,7 @@ export function Sidebar(props: { place: Place; onPlace: (p: Place) => void; proj
       <nav className="side-scroll" aria-label="GovernCode">
         {item("overview", "overview", "Overview")}
         {item("needs", "inbox", "Needs you", props.needs > 0 && <span className="badge">{props.needs}</span>)}
+        {item("watch", "eye", "Watch")}
         {item("home", "home", "Home", <span className="meta" title="Ask without a project: the Controller can read and plan, not write">no project</span>)}
         {item("allowance", "gauge", "Allowance")}
         {item("trace", "clock", "Trace")}

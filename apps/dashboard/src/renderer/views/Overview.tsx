@@ -89,6 +89,7 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
         <div className="end">
           <button className="btn btn-quiet" onClick={props.onOpenFolder}><Icon name="folder" size={14} />Open folder</button>
           <button className="btn btn-quiet" onClick={props.onNewProject}><Icon name="plus" size={14} />New project</button>
+          <button className="btn btn-quiet" onClick={() => props.onPlace({ kind: "global", id: "watch" })}><Icon name="eye" size={14} />Watch</button>
           <button className="btn" onClick={() => props.onPlace({ kind: "global", id: "home" })}><Icon name="chat" size={14} />Ask Home</button>
         </div>
       </header>

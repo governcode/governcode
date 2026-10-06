@@ -21,6 +21,7 @@ import { NeedsYou } from "./views/NeedsYou.tsx";
 import { Settings } from "./views/Settings.tsx";
 import { Sidebar, type Place, type Tab } from "./views/Sidebar.tsx";
 import { Palette } from "./views/Palette.tsx";
+import { Watch } from "./views/Watch.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import { hasActiveAsk } from "../shared/pending.ts";
 
@@ -295,7 +296,8 @@ export function App() {
           </div>
         ) : place.kind === "global" && place.id === "needs" ? (
           <NeedsYou gates={gates} specs={specs} held={held} onAnswered={() => void refreshGates()} onPlace={setPlace} />
-        ) : place.kind === "global" && place.id === "allowance" ? <Limits onMeasured={() => void refreshLimits()} />
+        ) : place.kind === "global" && place.id === "watch" ? <Watch onNeeds={() => setPlace({ kind: "global", id: "needs" })} />
+          : place.kind === "global" && place.id === "allowance" ? <Limits onMeasured={() => void refreshLimits()} />
           : place.kind === "global" && place.id === "trace" ? <Trace project={null} live={live} />
           : place.kind === "global" && place.id === "settings" ? <Settings projects={projects} hello={hello} onChangeController={(name) => { setProject(name); setDialog("controller"); }} />
           : <Overview projects={projects} specs={specs.filter((s) => IN_FLIGHT.has(s.status))} gates={gates} limits={limits} hello={hello} held={held}

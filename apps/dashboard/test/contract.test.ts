@@ -354,7 +354,7 @@ test("the built preload needs only electron and exposes exactly the Dashboard AP
   });
   assert.deepEqual(required, ["electron"]);
   assert.deepEqual(Object.keys(exposed), ["governcode"]);
-  assert.deepEqual(Object.keys(exposed.governcode).sort(), ["ask", "call", "connect", "onEvent", "onStatus", "onWatch", "openSignIn", "pickFolder", "retry", "status"]);
+  assert.deepEqual(Object.keys(exposed.governcode).sort(), ["ask", "call", "connect", "onEvent", "onStatus", "onWatch", "openSignIn", "openWatch", "pickFolder", "retry", "status"]);
   await exposed.governcode.call("gate.list");
   await exposed.governcode.ask("a1", null, "hi", "T-123");
   await exposed.governcode.pickFolder();

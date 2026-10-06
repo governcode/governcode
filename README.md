@@ -442,7 +442,7 @@ npm run build -w apps/dashboard && npm start -w apps/dashboard  # from a checkou
 
 It talks to the same `govd`. The sidebar has the **Overview** (what needs you, every project at a
 glance, what each AI has left, the sandbox), **Needs you** (Gates, finished Specs and held work
-from every project), **Home** (a Controller without a project), **Allowance** (each Runner's usage
+from every project), **Watch** (what your crew is doing right now, live, also in its own window), **Home** (a Controller without a project), **Allowance** (each Runner's usage
 windows against the reserve you keep, when each resets, and at the recent pace whether it would
 reach the reserve first), the **Trace**, your projects and your crew. Inside a
 project: the **Conversation** with its Controller (Gates answered inline), **Specs** (review the

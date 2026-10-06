@@ -101,6 +101,9 @@ export function describe(e: TraceEvent): Described {
     case "controller.set": return { text: `Controller set to ${str(d.provider)}${d.model ? ` · ${str(d.model)}` : ""}`, tone: "accent", icon: "people" };
     case "project.created": return { text: "Project created", tone: "accent", icon: "plus" };
     case "conversation.reset": return { text: "New conversation", tone: "", icon: "chat" };
+    case "turn.text": return { text: `${e.actor}: ${quote(d.text, 140)}`, tone: "", icon: "chat" };
+    case "turn.tool": return { text: d.subagent ? `${e.actor} started a subagent: ${quote(d.subagent, 100)}` : `${e.actor} · ${str(d.name)}`, tone: "", icon: d.subagent ? "people" : "terminal" };
+    case "spec.step": return { text: `${spec} · ${str(d.name)}`, tone: "info", icon: "terminal" };
     default: return { text: `${eventLabel(e)}${summary(e) ? ` · ${summary(e)}` : ""}`, tone: "", icon: "clock" };
   }
 }

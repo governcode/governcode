@@ -22,6 +22,9 @@ const appUrl = devUrl ? new URL(devUrl).origin : pathToFileURL(indexFile).href;
 
 const link = new GovdLink(socketPath());
 let win: BrowserWindow | null = null;
+let watchWin: BrowserWindow | null = null;   // the Watch window: the same page, its #watch view
+/** Every window of the app: live updates go to each. */
+const windows = () => [win, watchWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed());
 
 /** Only our own page may use the bridge (not a navigated-away or embedded frame). */
 function fromApp(e: IpcMainInvokeEvent): boolean {
@@ -71,15 +74,21 @@ handle(Channel.openSignIn, async (url: unknown) => {
   await shell.openExternal(url);
   return true;
 });
+handle(Channel.openWatch, async () => {
+  if (watchWin && !watchWin.isDestroyed()) { watchWin.show(); watchWin.focus(); return true; }
+  watchWin = pageWindow({ width: 1180, height: 820, minWidth: 720, minHeight: 520, title: "GovernCode · Watch" }, "watch");
+  watchWin.on("closed", () => { watchWin = null; });
+  return true;
+});
 handle(Channel.ask, (askId: unknown, project: unknown, prompt: unknown, continuationOf?: unknown) => outcome(() => {
   const req = checkAsk(askId, project, prompt, continuationOf);
   return link.ask(req.params, (event) => win?.webContents.send(Channel.event, req.askId, event));
 }));
 
-function createWindow(): void {
-  win = new BrowserWindow({
-    width: 1360, height: 860, minWidth: 960, minHeight: 600,
-    title: "GovernCode",
+/** A window showing the Dashboard page (with `hash`, one view of it), sandboxed like the main one. */
+function pageWindow(size: { width: number; height: number; minWidth: number; minHeight: number; title: string }, hash?: string): BrowserWindow {
+  const w = new BrowserWindow({
+    ...size,
     // The window's colour before the page paints, matching the theme the system asks for.
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#0f1013" : "#f6f6f8",
     show: false,
@@ -92,10 +101,15 @@ function createWindow(): void {
       spellcheck: false,
     },
   });
-  win.once("ready-to-show", () => win?.show());
+  w.once("ready-to-show", () => w.show());
+  if (devUrl) void w.loadURL(hash ? `${devUrl}#${hash}` : devUrl);
+  else void w.loadFile(indexFile, hash ? { hash } : undefined);
+  return w;
+}
+
+function createWindow(): void {
+  win = pageWindow({ width: 1360, height: 860, minWidth: 960, minHeight: 600, title: "GovernCode" });
   win.on("closed", () => { win = null; });
-  if (devUrl) void win.loadURL(devUrl);
-  else void win.loadFile(indexFile);
 }
 
 app.enableSandbox();
@@ -114,8 +128,8 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.on("will-download", (e) => e.preventDefault());
-  link.onStatus((s) => win?.webContents.send(Channel.statusChanged, s));
-  link.onWatch((w) => win?.webContents.send(Channel.watch, w));
+  link.onStatus((s) => { for (const w of windows()) w.webContents.send(Channel.statusChanged, s); });
+  link.onWatch((ev) => { for (const w of windows()) w.webContents.send(Channel.watch, ev); });
   void link.start();
   createWindow();
   app.on("activate", () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
