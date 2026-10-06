@@ -1086,3 +1086,15 @@ test("U+2028 from a govd that leaves it raw neither breaks gov nor reaches the t
   assert.equal(d.code, 0, d.stderr);
   assert.match(d.stdout, /This diff holds 3 hidden or control characters/);
 });
+
+test("gov limits says used, gives a far reset its day, and shows what each window keeps back", async () => {
+  const resetsAt = new Date(Date.now() + 3 * 86_400_000).toISOString();
+  const g = await fakeGovd((m) => m === "limits.list" ? { providers: [
+    { provider: "codex", verdict: { ok: true }, reservePercent: 10, readings: [{ window: "weekly", usedPercent: 85, resetsAt, reservePercent: 5 }] },
+    { provider: "grok", verdict: { ok: true }, reservePercent: 10, readings: [{ window: "5-hour", usedPercent: 20, resetsAt: null, reservePercent: 10 },
+      { window: "weekly", usedPercent: 40, resetsAt: null, reservePercent: 15 }] }] } : undefined);
+  const out = (await run(g.dir, ["limits"]).done).stdout.split("\n");
+  const day = new Date(resetsAt).toLocaleDateString("en-US", { weekday: "short" });
+  assert.match(out[0], new RegExp(`weekly 85% used, resets ${day} \\d\\d:\\d\\d \\(in \\d+ h( \\d+ min)?\\)  · keeps 5% back`));
+  assert.match(out[1], /5-hour 20% used; weekly 40% used  · keeps 5-hour 10%, weekly 15% back/);
+});

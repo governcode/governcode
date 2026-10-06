@@ -890,7 +890,10 @@ async function main(argv: string[]): Promise<number> {
           const windows = x.readings.map((r: any) => `${oneLine(r.window)} ${r.counted ? `${r.counted.used}/${r.counted.cap} ${oneLine(r.counted.unit)}` : `${r.usedPercent}% used`}${r.resetsAt ? `, ${resetWhen(r.resetsAt)}` : ""}`).join("; ") || "not measured";
           const held = [x.reservedPercent ? `${x.reservedPercent}% reserved by running Specs` : "",
             x.owedPercent ? `${x.owedPercent}% held for finished Specs until the usage report catches up` : ""].filter(Boolean).join(", ");
-          const rule = x.local ? `local: at most ${x.local.maxRunning} at once, ${x.local.maxMinutes} min each` : `${windows}  · keeps ${x.reservePercent}% back`;
+          // What each window keeps back (a window can have its own: gov reserve codex weekly 5).
+          const keeps = [...new Set(x.readings.map((r: any) => r.reservePercent ?? x.reservePercent))];
+          const kept = keeps.length > 1 ? x.readings.map((r: any) => `${oneLine(r.window)} ${r.reservePercent ?? x.reservePercent}%`).join(", ") : `${keeps[0] ?? x.reservePercent}%`;
+          const rule = x.local ? `local: at most ${x.local.maxRunning} at once, ${x.local.maxMinutes} min each` : `${windows}  · keeps ${kept} back`;
           console.log(`${oneLine(x.provider).padEnd(8)} ${x.verdict.ok ? "available" : "held     "}  ${rule}${held ? ` · ${held}` : ""}${x.counted ? ` · ${oneLine(x.counted)}` : ""}${x.unmetered ? " · unmetered (your opt-in)" : ""}${x.verdict.ok ? "" : `  ${dim(oneLine(x.verdict.reason))}`}`);
         }
         return 0;
