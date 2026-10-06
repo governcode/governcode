@@ -126,6 +126,8 @@ function reviewComponent() {
       if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
       if (name === "@governcode/protocol") return protocol;
       if (name === "../ui.tsx") return { ConfirmButton: "ConfirmButton", DiffView: "DiffView", SpecPill: "SpecPill" };
+      if (name === "../brand.tsx") return { ProviderMark: "ProviderMark", providerName: (id: string) => id };
+      if (name === "../icons.tsx") return { Icon: "Icon" };
       if (name === "../api.ts") return {
         call: (method: string, params: unknown) => new Promise((resolve, reject) => calls.push({ method, params, resolve, reject })),
         clock: () => "now", dotted: (...v: unknown[]) => v.filter(Boolean).join(" · "),
@@ -146,8 +148,9 @@ function reviewComponent() {
       const tree = module.exports.SpecDetail({ spec, onChanged() {} });
       while (effects.length) effects.shift()!();
       return {
-        accept: find(tree, (e) => e.type === "ConfirmButton" && e.props.label === "Accept")!,
-        reload: find(tree, (e) => e.type === "button" && ["Show diff", "Reload diff"].includes(e.props.children))!,
+        // Accept is the primary "Apply N files to …" button; Show diff / Reload refetches.
+        accept: find(tree, (e) => e.type === "ConfirmButton" && e.props.primary === true && /^Apply \d+ files? to /.test(e.props.label))!,
+        reload: find(tree, (e) => e.type === "button" && [e.props.children].flat().some((c: unknown) => c === "Show diff" || c === "Reload"))!,
         diff: find(tree, (e) => e.type === "DiffView"),
       };
     },
