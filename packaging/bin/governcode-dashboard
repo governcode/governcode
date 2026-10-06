@@ -4,4 +4,14 @@ here=$(dirname "$(readlink -f "$0")")
 # Started from a terminal inside another Electron app (an editor, T3 Code), this can be inherited
 # and would run Electron as plain Node, which cannot open a window.
 unset ELECTRON_RUN_AS_NODE
-exec "$here/../node_modules/electron/dist/electron" "$here/../apps/dashboard" "$@"
+app="$here/../node_modules/electron/dist/electron"
+# Started from a terminal, the window leaves it: closing the terminal no longer closes the
+# Dashboard. Its output goes to a log in the Dashboard's settings folder (rewritten each start).
+# GOVERNCODE_DASHBOARD_FOREGROUND=1 keeps it attached, with output in the terminal.
+if { [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; } && [ -z "${GOVERNCODE_DASHBOARD_FOREGROUND:-}" ] && command -v setsid >/dev/null 2>&1; then
+  logdir="${XDG_CONFIG_HOME:-$HOME/.config}/GovernCode Dashboard"
+  mkdir -p "$logdir"
+  setsid -f "$app" "$here/../apps/dashboard" "$@" </dev/null >"$logdir/launch.log" 2>&1
+  exit 0
+fi
+exec "$app" "$here/../apps/dashboard" "$@"
