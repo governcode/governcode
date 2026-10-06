@@ -678,3 +678,18 @@ test("limits: a readable but untrusted owed file holds a metered provider", () =
   const held = gate.check("fakecloud", 20);
   assert.ok(!held.ok && held.reason === `its owed amounts could not be read/written; see ${broken}`);
 });
+
+test("at this pace: the Limits view forecasts from the readings govd took, and none from a single one", () => {
+  const c = clock();
+  const gate = new LimitGate({}, c.now);
+  const resets = c.now() + 48 * H;
+  gate.record(report(c, ["weekly", 40, resets]));
+  assert.deepEqual(gate.view("fakecloud").forecasts, [], "one reading is no pace");
+  c.advance(2 * H);
+  gate.record(report(c, ["weekly", 50, resets]));
+  const [f] = gate.view("fakecloud").forecasts;
+  assert.equal(f.window, "weekly");
+  assert.equal(f.perHour, 5);
+  const keep = gate.view("fakecloud").reserves.weekly;
+  assert.equal(f.reachesReserveAt, new Date(c.now() + ((100 - keep - 50) / 5) * H).toISOString(), "what is left above the reserve, at 5 points an hour");
+});

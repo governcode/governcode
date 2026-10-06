@@ -6,6 +6,9 @@
 import fs, { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, type BudgetValue, type CountedWindow } from "@governcode/protocol";
+import { forecast, type Forecast, type Point } from "./forecast.ts";
+
+const HISTORY_MS = 24 * 3_600_000, HISTORY_POINTS = 200;
 
 // counted: this reading is govd's own count against a budget the user set (not the vendor's).
 export type Reading = { window: string; usedPercent: number; resetsAt: string | null;
@@ -57,6 +60,8 @@ const shownHeld = (n: number) => Math.max(0, Math.ceil(n * 10 - 1e-9) / 10);
 export class LimitGate {
   private config: LimitsConfig;
   private latest = new Map<string, Measurement>();
+  // Each window's recent readings, for "at this pace" (forecast.ts). Memory only: since govd started.
+  private history = new Map<string, Map<string, Point[]>>();
   private whyNot = new Map<string, string>();      // a failed reading's reason, shown when it holds
   private inflight = new Map<string, Omit<Claim, "spec">>();
   // Finished Specs keep counting until the provider's own report catches up: usage reports lag,
@@ -105,6 +110,13 @@ export class LimitGate {
     if (cur && m.measuredAt < cur.measuredAt) return;   // overlapping reads: an older answer never replaces a newer one
     this.latest.set(m.provider, m);
     this.whyNot.delete(m.provider);
+    const windows = this.history.get(m.provider) ?? new Map<string, Point[]>();
+    for (const r of m.readings.filter((x) => !x.counted)) {
+      const pts = (windows.get(r.window) ?? []).filter((p) => p.at < m.measuredAt && p.at >= m.measuredAt - HISTORY_MS);
+      pts.push({ at: m.measuredAt, used: r.usedPercent, resetsAt: r.resetsAt });
+      windows.set(r.window, pts.slice(-HISTORY_POINTS));
+    }
+    this.history.set(m.provider, windows);
     // A finished Spec's claim on a window ends once the report has caught up with it. Claims still
     // open there then count only the rise from here on: the rise so far may be the ended ones' use.
     const mine = this.debits.filter((d) => d.provider === m.provider);
@@ -260,7 +272,9 @@ export class LimitGate {
       reserves: Object.fromEntries(readings.filter((r) => !r.counted).map((r) => [r.window, r.reservePercent])),
       counted: readings.some((r) => r.counted) ? COUNTED_LABEL : null,
       measuredAt: m?.measuredAt ?? null, readings, reservedPercent: this.reserved(provider),
-      owedPercent: shownHeld(this.owedMax(provider)), verdict: this.check(provider) };
+      owedPercent: shownHeld(this.owedMax(provider)), verdict: this.check(provider),
+      forecasts: readings.filter((r) => !r.counted).map((r) => forecast(r.window, this.history.get(provider)?.get(r.window) ?? [], r.reservePercent, this.now()))
+        .filter((f): f is Forecast => f !== null) };
   }
 
   /** While a Spec runs: has its provider crossed the line? Unknown now also means stop. */

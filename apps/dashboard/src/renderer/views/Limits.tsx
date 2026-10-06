@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { call, clock, useWatch } from "../api.ts";
 import { Empty, Pill, Ring } from "../ui.tsx";
 import { ProviderMark, providerName } from "../brand.tsx";
+import { Icon } from "../icons.tsx";
 
 // counted: GovernCode's own count against a budget the user set (it cannot see use outside GovernCode).
 type Reading = { window: string; usedPercent: number; resetsAt: string | null; reservePercent?: number;
@@ -13,6 +14,8 @@ export type ProviderLimit = {
   provider: string; unmetered: boolean; counted?: string | null; local?: { maxRunning: number; maxMinutes: number } | null; reservePercent: number; reserves?: Record<string, number>; measuredAt: number | null; readings: Reading[];
   reservedPercent: number; owedPercent: number;
   verdict: { ok: true; note?: string } | { ok: false; reason: string; resetsAt: string | null };
+  // At this pace (an older govd sends none): from readings govd took since it started.
+  forecasts?: Array<{ window: string; perHour: number; reachesReserveAt: string | null; resetsFirst: boolean; since: string }>;
 };
 
 export function ago(ms: number, now = Date.now()): string {
@@ -64,6 +67,14 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
   );
 }
 
+/** A time to come, in words: "14:20", "tomorrow 09:10" or "Thu 14:00". */
+function when(iso: string): string {
+  const d = new Date(iso), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86_400_000);
+  return days <= 0 ? hm : days === 1 ? `tomorrow ${hm}` : `${d.toLocaleDateString([], { weekday: "short" })} ${hm}`;
+}
+
 const keepOf = (p: ProviderLimit, r: Reading) => r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;
 const until = (iso: string) => {
   const m = Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60_000));
@@ -102,7 +113,7 @@ function ProviderCard({ p }: { p: ProviderLimit }) {
             <div key={`${r.window}${r.counted ? "-counted" : ""}`} className="win">
               <div className="top"><b>{r.window}{r.counted ? " · budget" : ""}</b>
                 <span className="dim tnum">{r.counted ? `${r.counted.used} of ${r.counted.cap} ${r.counted.unit}` : `${Math.round(r.usedPercent)}% used`} · keeps {keep}% back</span>
-                <span className="reset tnum">{r.resetsAt ? `resets ${clock(r.resetsAt).replace(/:\d{2}$/, "")} · ${until(r.resetsAt)}` : "reset time unknown"}</span></div>
+                <span className="reset tnum">{r.resetsAt ? `resets ${when(r.resetsAt)} · ${until(r.resetsAt)}` : "reset time unknown"}</span></div>
               {r.counted && r.counted.unit === "turns" && r.counted.cap <= 60
                 ? <div className="turns" role="meter" aria-label={`${p.provider} ${r.window}`} aria-valuemin={0} aria-valuemax={r.counted.cap} aria-valuenow={r.counted.used}>
                     {Array.from({ length: r.counted.cap }, (_, i) => <i key={i} className={i < r.counted!.used ? "u" : i >= r.counted!.cap - Math.round(r.counted!.cap * keep / 100) ? "r" : ""} />)}</div>
@@ -113,6 +124,13 @@ function ProviderCard({ p }: { p: ProviderLimit }) {
             </div>
           );
         })}
+        {(p.forecasts ?? []).filter((f) => f.perHour > 0).slice(0, 2).map((f) => (
+          <div key={f.window} className="forecast" title={`From readings since ${clock(f.since)}: about ${f.perHour}% an hour`}>
+            <Icon name="sparkle" size={12} />
+            {f.reachesReserveAt ? <>At this pace the {f.window} window reaches its reserve around {when(f.reachesReserveAt)}.</>
+              : f.resetsFirst ? <>At this pace the {f.window} window lasts until it resets.</> : null}
+          </div>
+        ))}
         <div className="prov-foot">
           {p.measuredAt ? `${p.local ? "Answered" : "Measured"} ${ago(p.measuredAt)}` : p.local ? "Not checked yet" : "Never measured"}
           {p.reservedPercent ? ` · ${p.reservedPercent}% set aside by running Specs` : ""}
