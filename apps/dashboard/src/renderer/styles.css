@@ -192,7 +192,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .field input:focus, select:focus, input:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-tint); }
 .field input[aria-invalid="true"] { box-shadow: inset 0 0 0 1px var(--red); }
 .field.inline { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
-.field.inline input { width: 64px; }
+.field.inline input { width: 80px; }
 .model-input, .field.inline input.model-input { width: 180px; }
 .hint { font-size: 11.5px; color: var(--label-3); }
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -204,6 +204,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .in-project .view-head h1 { display: none; }
 .in-project .view-head { min-height: 44px; padding-top: 8px; padding-bottom: 8px; }
 .scroll { flex: 1; overflow: auto; padding: 18px 24px 40px; display: flex; flex-direction: column; gap: 10px; }
+.scroll > * { flex-shrink: 0; }   /* a scrolling column never squeezes its cards */
 .page { flex: 1; overflow: auto; padding: 32px 40px 64px; -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px); }
 .page-inner { max-width: 1180px; margin: 0 auto; }
 .page-head { margin-bottom: 24px; }
@@ -516,3 +517,26 @@ kbd { font: 500 10.5px/1 var(--sans); color: var(--label-3); padding: 3px 5px; b
 .palette .none { padding: 18px; color: var(--label-3); text-align: center; }
 .palette .perr { padding: 8px 18px; }
 .palette .foot { display: flex; gap: 16px; align-items: center; padding: 10px 18px; border-top: 1px solid var(--sep); font-size: 11.5px; color: var(--label-3); }
+
+/* ---------- Settings and the Crew card: grouped lists, as in System Settings ---------- */
+.scroll.settings { padding-left: max(24px, calc((100% - 820px) / 2)); padding-right: max(24px, calc((100% - 820px) / 2)); gap: 8px; }
+.settings > h2 { font-size: 12.5px; font-weight: 650; color: var(--label-2); margin: 22px 4px 2px; text-transform: none; letter-spacing: 0; }
+.settings > p.small, .settings > p.dim { margin: 0 4px 4px; line-height: 1.5; }
+/* Neighbouring options join into one rounded group with hairlines between them. */
+.settings > .policy-option { border: 1px solid var(--card-edge); box-shadow: var(--shadow-card); border-radius: var(--r-md); padding: 12px 14px; gap: 14px; }
+.settings > .policy-option + .policy-option { margin-top: -9px; border-top-left-radius: 0; border-top-right-radius: 0; border-top: 1px solid var(--sep); box-shadow: none; }
+.settings > .policy-option:has(+ .policy-option) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.policy-option > span { line-height: 1.45; }
+.policy-option > span > b { font-weight: 600; }
+.policy-option > span > .dim.small { display: block; margin-top: 2px; }
+/* A checkbox option reads as a switch on the right. */
+.policy-option:has(> input[type="checkbox"]) { flex-direction: row-reverse; justify-content: space-between; }
+.policy-option > input[type="checkbox"], .tr input[type="checkbox"] { appearance: none; -webkit-appearance: none; flex: none; width: 38px; height: 22px; border-radius: 11px; cursor: pointer; margin: 0;
+  background: radial-gradient(circle at 11px 50%, #fff 8px, transparent 8.6px), var(--fill-3); transition: background .2s var(--ease); box-shadow: inset 0 0 0 1px var(--sep); }
+.policy-option > input[type="checkbox"]:checked, .tr input[type="checkbox"]:checked { background: radial-gradient(circle at 27px 50%, #fff 8px, transparent 8.6px), var(--accent); box-shadow: none; }
+.policy-option > input[type="checkbox"]:focus-visible, .tr input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.policy-option > input[type="radio"] { width: 18px; height: 18px; flex: none; }
+/* Number fields sit in a card row. */
+.settings > .reserve-row { background: var(--surface); border: 1px solid var(--card-edge); box-shadow: var(--shadow-card); border-radius: var(--r-md); padding: 12px 14px; }
+.settings > .checkpoint { padding: 14px 16px; }
+.settings > .row:has(> .btn-accent) { position: sticky; bottom: -40px; padding: 12px 0; background: linear-gradient(to top, var(--content) 70%, transparent); z-index: 2; }

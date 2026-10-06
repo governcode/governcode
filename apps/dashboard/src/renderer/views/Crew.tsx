@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { call, clock, useWatch, type Gate, type Spec, type TraceEvent } from "../api.ts";
 import { Empty, Pill, SpecPill } from "../ui.tsx";
+import { ProviderMark, providerName } from "../brand.tsx";
 import { buildBoard, type Board } from "../../shared/board.ts";
 
 type Crew = { controllerWorks: boolean; handoff: "ask" | "plan" | "off"; runners: string[] | null;
@@ -102,14 +103,14 @@ export function CrewView({ project }: { project: string | null }) {
 
         <h2>The Controller</h2>
         <label className="policy-option"><input type="radio" checked={draft.controllerWorks} onChange={() => setDraft({ ...draft, controllerWorks: true })} />
-          <span><b>Works itself and hands off</b><span className="dim small"> · it changes the project under the usual Gates, and gives jobs to Runners.</span></span></label>
+          <span><b>Works itself and hands off</b><span className="dim small">It changes the project under the usual Gates, and gives jobs to Runners.</span></span></label>
         <label className="policy-option"><input type="radio" checked={!draft.controllerWorks} onChange={() => setDraft({ ...draft, controllerWorks: false })} />
-          <span><b>Plans and hands off only</b><span className="dim small"> · it reads the project, plans and gives jobs to Runners; the project is read-only for it.</span></span></label>
+          <span><b>Plans and hands off only</b><span className="dim small">It reads the project, plans and gives jobs to Runners; the project is read-only for it.</span></span></label>
 
         <h2>Handing off</h2>
         {HANDOFF.map(([v, title, text]) => (
           <label key={v} className="policy-option"><input type="radio" checked={draft.handoff === v} onChange={() => setDraft({ ...draft, handoff: v })} />
-            <span><b>{title}</b><span className="dim small"> · {text}</span></span></label>
+            <span><b>{title}</b><span className="dim small">{text}</span></span></label>
         ))}
 
         {draft.wake !== undefined && <>
@@ -117,7 +118,7 @@ export function CrewView({ project }: { project: string | null }) {
           <p className="dim small">When a Runner finishes a Spec and the Controller did not wait for it.</p>
           {WAKE.map(([v, title, text]) => (
             <label key={v} className="policy-option"><input type="radio" checked={draft.wake === v} onChange={() => setDraft({ ...draft, wake: v })} />
-              <span><b>{title}</b><span className="dim small"> · {text}</span></span></label>
+              <span><b>{title}</b><span className="dim small">{text}</span></span></label>
           ))}
         </>}
 
@@ -127,7 +128,7 @@ export function CrewView({ project }: { project: string | null }) {
           <div className="table">
             {known.map((r) => (
               <div key={r} className="tr">
-                <label className="row"><input type="checkbox" checked={allowed(r)} onChange={() => toggleRunner(r)} /><b>{r}</b></label>
+                <label className="row"><input type="checkbox" checked={allowed(r)} onChange={() => toggleRunner(r)} aria-label={`Allow ${providerName(r)}`} /><ProviderMark id={r} size={20} /><b>{providerName(r)}</b></label>
                 <label className="field inline"><span className="dim small">most per job</span>
                   <input type="number" min={1} max={25} value={draft.maxPercent[r] ?? ""} placeholder="25" disabled={!allowed(r)} aria-label={`${r} most per job`}
                     onChange={(e) => { const n = Math.round(Number(e.target.value)); const m = { ...draft.maxPercent }; if (!e.target.value) delete m[r]; else m[r] = Math.min(25, Math.max(1, n)); setDraft({ ...draft, maxPercent: m }); }} />
@@ -141,9 +142,9 @@ export function CrewView({ project }: { project: string | null }) {
         <h2>Subagents</h2>
         <p className="dim small">An AI tool's own helpers: they work inside that tool's sandbox and Gates and spend its allowance, so they multiply spend.</p>
         <label className="policy-option"><input type="checkbox" checked={draft.subagents.controller} onChange={(e) => setDraft({ ...draft, subagents: { ...draft.subagents, controller: e.target.checked } })} />
-          <span><b>The Controller may start subagents</b><span className="dim small"> · off: Claude Code's subagent tool is removed, and Codex's multi-agent features are switched off. Starting another AI program from a command always asks, either way.</span></span></label>
+          <span><b>The Controller may start subagents</b><span className="dim small">Off: Claude Code's subagent tool is removed, and Codex's multi-agent features are switched off. Starting another AI program from a command always asks, either way.</span></span></label>
         <label className="policy-option"><input type="checkbox" checked={draft.subagents.runners} onChange={(e) => setDraft({ ...draft, subagents: { ...draft.subagents, runners: e.target.checked } })} />
-          <span><b>Runners may start subagents</b><span className="dim small"> · off: Antigravity's subagent tools are refused, Codex's multi-agent features and Grok's subagents are switched off. Local models have none.</span></span></label>
+          <span><b>Runners may start subagents</b><span className="dim small">Off: Antigravity's subagent tools are refused, Codex's multi-agent features and Grok's subagents are switched off. Local models have none.</span></span></label>
 
         <div className="row">
           <button className="btn btn-accent" disabled={!dirty} onClick={save}>Save the Crew card</button>

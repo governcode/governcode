@@ -190,7 +190,7 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
           <label className="policy-option">
             <input type="checkbox" checked={draft.recovery.autoResume}
               onChange={(e) => setDraft((d) => ({ ...d, recovery: { autoResume: e.target.checked } }))} />
-            <span><b>Resume at the reset time by default</b><span className="dim small"> · Resume now is always available. A resume measures usage again first. Unattended resumes run only while the Dashboard is open, and a reset time is never guessed.</span></span>
+            <span><b>Resume at the reset time by default</b><span className="dim small">Resume now is always available. A resume measures usage again first. Unattended resumes run only while the Dashboard is open, and a reset time is never guessed.</span></span>
           </label>
         </>}
 
@@ -228,7 +228,7 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
         {([["claude", "Claude Code", "CLAUDE.md, skills, agents, commands, plugins and hooks"], ["codex", "Codex", "AGENTS.md"]] as const).map(([k, tool, files]) => (
           <label key={k} className="policy-option">
             <input type="checkbox" checked={draft.personal[k] === true} onChange={(e) => setDraft((d) => ({ ...d, personal: { ...d.personal, [k]: e.target.checked } }))} />
-            <span><b>{tool}: use my instructions</b><span className="dim small"> · {files}{draft.personal[k] === null ? " (not chosen yet: off, and asked the first time)" : ""}</span></span>
+            <span><b>{tool}: use my instructions</b><span className="dim small">{files}{draft.personal[k] === null ? " (not chosen yet: off, and asked the first time)" : ""}</span></span>
           </label>
         ))}
 
@@ -237,12 +237,12 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
         {LEVELS.map(([v, title, text]) => (
           <label key={v} className="policy-option">
             <input type="radio" name="gate-level" checked={draft.gates.level === v} onChange={() => setDraft((d) => ({ ...d, gates: { ...d.gates, level: v } }))} />
-            <span><b>{title}</b><span className="dim small"> · {text}</span></span>
+            <span><b>{title}</b><span className="dim small">{text}</span></span>
           </label>
         ))}
         <label className="policy-option">
           <input type="checkbox" checked={draft.gates.quietReads} onChange={(e) => setDraft((d) => ({ ...d, gates: { ...d.gates, quietReads: e.target.checked } }))} />
-          <span><b>Quiet reads</b><span className="dim small"> · plain read-only commands (ls, cat, grep, rg…) run without asking. Everything else still asks.</span></span>
+          <span><b>Quiet reads</b><span className="dim small">Plain read-only commands (ls, cat, grep, rg…) run without asking. Everything else still asks.</span></span>
         </label>
         <div className="small"><b>Remembered for projects</b> <span className="dim">· made with “Allow for this project” on a Gate</span></div>
         {!rules.length && <p className="dim small">None. Turn and Spec allows end on their own and aren't listed.</p>}
@@ -260,7 +260,7 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
           {POLICIES.map(([id, label, help]) => (
             <label key={id} className={`policy-option ${draft.specModels === id ? "on" : ""}`}>
               <input type="radio" name="specModels" checked={draft.specModels === id} onChange={() => setDraft((d) => ({ ...d, specModels: id }))} />
-              <span><b>{label}</b><span className="dim small"> · {help}</span></span>
+              <span><b>{label}</b><span className="dim small">{help}</span></span>
             </label>
           ))}
         </div>
