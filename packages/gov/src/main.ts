@@ -1088,11 +1088,12 @@ function printFriction(r: FrictionReport, days: number): void {
     }
   }
   if (r.kinds.length) {
-    const k = Math.min(40, Math.max(12, ...r.kinds.map((x) => kindName(oneLine(x.kind)).length)));
+    const k = Math.min(48, Math.max(12, ...r.kinds.map((x) => kindName(oneLine(x.kind)).length)));
     const blockedCol = r.kinds.some((x) => x.blocked);   // shown only once a step probably ran into the sandbox
     console.log(`\n${"Kind of step".padEnd(k)}  asked  allowed  denied  by govd  let through${blockedCol ? "  blocked*" : ""}`);
     for (const x of r.kinds) {
-      console.log(`${kindName(oneLine(x.kind)).padEnd(k)}  ${String(x.asked).padStart(5)}  ${String(x.allowed).padStart(7)}  ${String(x.denied).padStart(6)}  ${String(x.autoDenied).padStart(7)}  ${String(x.passed).padStart(11)}${blockedCol ? `  ${String(x.blocked).padStart(8)}` : ""}${x.allowedEveryTime ? "  allowed every time" : ""}`);
+      const name = kindName(oneLine(x.kind));   // a name past the column's cap is shortened, so the columns stay in line
+      console.log(`${(name.length > k ? `${name.slice(0, k - 1)}…` : name).padEnd(k)}  ${String(x.asked).padStart(5)}  ${String(x.allowed).padStart(7)}  ${String(x.denied).padStart(6)}  ${String(x.autoDenied).padStart(7)}  ${String(x.passed).padStart(11)}${blockedCol ? `  ${String(x.blocked).padStart(8)}` : ""}${x.allowedEveryTime ? "  allowed every time" : ""}`);
     }
     if (blockedCol) console.log(dim("*blocked: steps that failed saying what the sandbox says when it refuses something; probably the sandbox, an estimate."));
   }
