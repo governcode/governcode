@@ -5,7 +5,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { call, clock, useWatch } from "../api.ts";
 import { Empty, Pill, Ring } from "../ui.tsx";
 import { ProviderMark, providerName } from "../brand.tsx";
-import { providerUsage } from "../../shared/status.ts";
 
 // counted: GovernCode's own count against a budget the user set (it cannot see use outside GovernCode).
 type Reading = { window: string; usedPercent: number; resetsAt: string | null; reservePercent?: number;
@@ -45,54 +44,110 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
     <section className="view">
       <div className="view-head">
         <h1>Allowance</h1>
-        <span className="dim">a measured hold, not a billing ceiling: vendor reports lag, so a run can overshoot a little</span>
+        <span className="dim">A measured hold, not a billing ceiling: usage reports lag, so a run can overshoot a little.</span>
         <span className="spacer" />
         <button className="btn" disabled={measuring} onClick={() => load(true)}>{measuring ? "Measuring…" : "Measure now"}</button>
       </div>
-      <div className="pad dim small">Unknown or stale (over 5 min) usage holds. Checked right before a Spec starts and while it runs. Paid API billing is never switched on.</div>
       {error && <div className="error pad">{error}</div>}
       {providers && !providers.length ? <Empty title="No measured Runners"><p className="dim">GovernCode can delegate only to Runners that report their usage or have a budget.</p></Empty> : (
-        <div className="scroll">
-          {providers?.map((p) => (
-            <div key={p.provider} className="checkpoint limit">
-              <div className="row">
-                {p.local || p.unmetered ? <ProviderMark id={p.provider} size={40} />
-                  : <Ring size={40} stroke={5} percent={providerUsage(p).percent} reserve={providerUsage(p).reserve} color={p.verdict.ok ? "var(--accent)" : "var(--violet)"} />}
-                <ProviderMark id={p.provider} size={18} />
-                <b>{providerName(p.provider)}</b>
-                {p.local ? <span className="dim small">Local model · your machine's Limit: at most {p.local.maxRunning} at once, {p.local.maxMinutes} min each</span>
-                  : <span className="dim small">Runner · keeps {Object.values(p.reserves ?? {}).every((n) => n === p.reservePercent) ? `${p.reservePercent}% of every window` : Object.entries(p.reserves ?? {}).map(([w, n]) => `${n}% of ${w}`).join(", ")} back</span>}
-                <span className="spacer" />
-                {p.counted && <span className="dim small">budget {p.counted}</span>}
-                {p.unmetered ? <Pill tone="info" title="nothing counted, no Limit">unmetered (your opt-in)</Pill>
-                  : p.verdict.ok ? <Pill tone="ok">available</Pill>
-                  : <Pill tone="violet" title={p.verdict.reason}>held{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt)}` : ""}</Pill>}
-              </div>
-              {p.readings.length > 0 && <div className="windows">{p.readings.map((r) => {
-                const keep = r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;
-                const inside = r.usedPercent > 100 - keep;
-                return (
-                  <div key={`${r.window}${r.counted ? "-counted" : ""}`} className="window">
-                    <span className="mono small label" title={r.counted ? p.counted ?? undefined : undefined}>{r.window}{r.counted ? " · budget" : ""}</span>
-                    <div className="bar" role="meter" aria-label={`${p.provider} ${r.window}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={r.usedPercent}>
-                      <div className={`fill ${inside ? "inside" : ""}`} style={{ width: `${Math.min(100, r.usedPercent)}%` }} />
-                      <div className="reserve" style={{ left: `${100 - keep}%` }} />
-                    </div>
-                    <span className={`mono small ${inside ? "warn" : ""}`}>{r.counted ? `${r.counted.used} / ${r.counted.cap} ${r.counted.unit}` : `${r.usedPercent}%`}</span>
-                    <span className="dim small">{r.resetsAt ? `resets ${clock(r.resetsAt)}` : ""}</span>
-                  </div>
-                );
-              })}</div>}
-              <div className="dim small">
-                {p.measuredAt ? `${p.local ? "answered" : "measured"} ${ago(p.measuredAt)}` : p.local ? "not checked yet" : "never measured"}
-                {p.reservedPercent ? ` · ${p.reservedPercent}% reserved by running Specs` : ""}
-                {p.owedPercent ? ` · ${p.owedPercent}% held for finished Specs until the usage report catches up` : ""}
-                {!p.verdict.ok && ` · ${p.verdict.reason}`}
-              </div>
+        <div className="page"><div className="page-inner">
+          <div className="page-head"><h1>Allowance</h1>
+            <p>What each AI has left in its usage windows, and the share you keep back. A Spec that would reach into the reserve is held, never started.
+              Unknown or stale usage (over 5 minutes) holds too. Paid API billing is never switched on.</p></div>
+          <div className="prov-grid">
+            {providers?.map((p) => <ProviderCard key={p.provider} p={p} />)}
+          </div>
+          <ResetTimeline providers={providers ?? []} />
+        </div></div>
+      )}
+    </section>
+  );
+}
+
+const keepOf = (p: ProviderLimit, r: Reading) => r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;
+const until = (iso: string) => {
+  const m = Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60_000));
+  return m < 60 ? `in ${m} min` : m < 48 * 60 ? `in ${Math.floor(m / 60)} h ${m % 60} min` : `in ${Math.round(m / 1440)} days`;
+};
+
+/** One AI: its rings (the window closest to the reserve outside, the next inside), each window's bar
+ *  with the reserve hatched, and when each resets. */
+function ProviderCard({ p }: { p: ProviderLimit }) {
+  const held = !p.verdict.ok;
+  const color = held ? "var(--violet)" : "var(--accent)";
+  const readings = [...p.readings].sort((a, b) => (100 - keepOf(p, a) - a.usedPercent) - (100 - keepOf(p, b) - b.usedPercent));
+  const [outer, inner] = readings;
+  return (
+    <div className="card prov">
+      <div className="prov-ring">
+        {p.local || p.unmetered || !outer ? <ProviderMark id={p.provider} size={64} /> : <>
+          <Ring size={112} stroke={10} percent={outer.usedPercent} reserve={keepOf(p, outer)} color={color} />
+          {inner && <span className="inner"><Ring size={84} stroke={8} percent={inner.usedPercent} reserve={keepOf(p, inner)} color="var(--accent)" /></span>}
+          <span className="center"><b>{outer.counted ? outer.counted.used : `${Math.round(outer.usedPercent)}%`}</b>
+            <small>{outer.counted ? `of ${outer.counted.cap} ${outer.counted.unit}` : outer.window}</small></span>
+        </>}
+      </div>
+      <div className="prov-body">
+        <div className="prov-title"><ProviderMark id={p.provider} size={20} /><b>{providerName(p.provider)}</b>
+          {p.unmetered ? <Pill tone="info" title="nothing counted, no Limit">unmetered (your opt-in)</Pill>
+            : p.verdict.ok ? <Pill tone="ok">available</Pill>
+            : <Pill tone="violet" title={p.verdict.reason}>holding new Specs{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt).replace(/:\d{2}$/, "")}` : ""}</Pill>}</div>
+        <div className="prov-sub">
+          {p.local ? `A local model: your machine's Limit is at most ${p.local.maxRunning} at once, ${p.local.maxMinutes} min each.`
+            : inner ? `Outer ring: ${outer.window} · inner ring: ${inner.window}.` : p.counted ? `GovernCode counts against the budget you set (${p.counted}).` : ""}
+          {!p.verdict.ok ? ` ${p.verdict.reason}.` : ""}</div>
+        {readings.map((r) => {
+          const keep = keepOf(p, r), inside = r.usedPercent > 100 - keep;
+          return (
+            <div key={`${r.window}${r.counted ? "-counted" : ""}`} className="win">
+              <div className="top"><b>{r.window}{r.counted ? " · budget" : ""}</b>
+                <span className="dim tnum">{r.counted ? `${r.counted.used} of ${r.counted.cap} ${r.counted.unit}` : `${Math.round(r.usedPercent)}% used`} · keeps {keep}% back</span>
+                <span className="reset tnum">{r.resetsAt ? `resets ${clock(r.resetsAt).replace(/:\d{2}$/, "")} · ${until(r.resetsAt)}` : "reset time unknown"}</span></div>
+              {r.counted && r.counted.unit === "turns" && r.counted.cap <= 60
+                ? <div className="turns" role="meter" aria-label={`${p.provider} ${r.window}`} aria-valuemin={0} aria-valuemax={r.counted.cap} aria-valuenow={r.counted.used}>
+                    {Array.from({ length: r.counted.cap }, (_, i) => <i key={i} className={i < r.counted!.used ? "u" : i >= r.counted!.cap - Math.round(r.counted!.cap * keep / 100) ? "r" : ""} />)}</div>
+                : <div className="meter" role="meter" aria-label={`${p.provider} ${r.window}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={r.usedPercent}>
+                    <span className="kept" style={{ width: `${keep}%` }} />
+                    <i className={inside ? "held" : ""} style={{ width: `${Math.min(100, r.usedPercent)}%` }} />
+                    <span className="notch" style={{ left: `${100 - keep}%` }} /></div>}
+            </div>
+          );
+        })}
+        <div className="prov-foot">
+          {p.measuredAt ? `${p.local ? "Answered" : "Measured"} ${ago(p.measuredAt)}` : p.local ? "Not checked yet" : "Never measured"}
+          {p.reservedPercent ? ` · ${p.reservedPercent}% set aside by running Specs` : ""}
+          {p.owedPercent ? ` · ${p.owedPercent}% held for finished Specs until the usage report catches up` : ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The next 12 hours: when each window resets. */
+function ResetTimeline({ providers }: { providers: ProviderLimit[] }) {
+  const now = Date.now(), span = 12 * 3_600_000;
+  const pins = providers.flatMap((p) => p.readings.filter((r) => r.resetsAt).map((r) => ({ p, r, at: Date.parse(r.resetsAt!) })))
+    .filter((x) => x.at > now && x.at <= now + span).sort((a, b) => a.at - b.at);
+  if (!providers.some((p) => p.readings.length)) return null;
+  const start = new Date(now); start.setMinutes(0, 0, 0);
+  const ticks = Array.from({ length: 7 }, (_, i) => start.getTime() + i * 2 * 3_600_000).filter((t) => t >= now - 3_600_000);
+  const x = (t: number) => `${Math.max(0, Math.min(100, ((t - now) / span) * 100))}%`;
+  return (
+    <div className="card timeline">
+      <div className="section-bar" style={{ margin: 0 }}><h2 className="section-title">Next 12 hours</h2><span className="dim small">when each window resets</span></div>
+      {!pins.length ? <p className="dim small" style={{ margin: "10px 0 0" }}>No window resets in the next 12 hours.</p> : (
+        <div className="tl">
+          <div className="axis" />
+          <div className="now" style={{ left: 0 }} />
+          {ticks.map((t) => <span key={t} className="tick" style={{ left: x(t) }}>{new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}</span>)}
+          {pins.map(({ p, r, at }, i) => (
+            <div key={`${p.provider}-${r.window}`} className="ev" style={{ left: x(at) }} title={`${providerName(p.provider)} ${r.window} resets ${clock(r.resetsAt!)}`}>
+              <span className={`lab ${i % 2 ? "low" : ""}`}><ProviderMark id={p.provider} size={14} />{providerName(p.provider)} · {r.window}</span>
+              <span className="pin" style={{ background: p.verdict.ok ? "var(--accent)" : "var(--violet)" }} />
             </div>
           ))}
         </div>
       )}
-    </section>
+    </div>
   );
 }
