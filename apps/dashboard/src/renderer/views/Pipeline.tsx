@@ -2,8 +2,10 @@
 // to accept it into the project or discard it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SpecCheckpoints, SpecDiff } from "@governcode/protocol";
-import { call, clock, dotted, modelLabel, useFallbackPoll, useWatch, type RecoveryItem, type Spec } from "../api.ts";
+import { call, clock, dotted, useFallbackPoll, useWatch, type RecoveryItem, type Spec } from "../api.ts";
 import { ConfirmButton, DiffView, Empty, SpecPill } from "../ui.tsx";
+import { ProviderMark, providerName } from "../brand.tsx";
+import { Icon } from "../icons.tsx";
 
 export function Pipeline({ project, live, recoveryEnabled }: { project: string | null; live: boolean; recoveryEnabled: boolean }) {
   const [specs, setSpecs] = useState<Spec[] | null>(null);
@@ -31,6 +33,11 @@ export function Pipeline({ project, live, recoveryEnabled }: { project: string |
         && (!project || w.event.project === project)) void load();
   });
 
+  // Nothing chosen yet: open the oldest Spec waiting for review, else the newest one.
+  useEffect(() => {
+    if (selected || !specs?.length) return;
+    setSelected([...specs].reverse().find((s) => s.status === "needs-review")?.id ?? specs[0].id);
+  }, [specs, selected]);
   const spec = specs?.find((s) => s.id === selected) ?? null;
   // The review queue: Specs waiting for a decision, oldest first, to step through.
   const queue = (specs ?? []).filter((s) => s.status === "needs-review").reverse();
@@ -57,13 +64,23 @@ export function Pipeline({ project, live, recoveryEnabled }: { project: string |
       ) : (
         <div className="split">
           <div className="list">
-            {specs?.map((s) => (
-              <button key={s.id} className={`list-row ${s.id === selected ? "active" : ""}`} onClick={() => setSelected(s.id)}>
-                <div className="row"><b className="mono">{s.id}</b><span className="dim">{s.to}</span><span className="spacer" /><SpecPill status={s.status} /></div>
-                <div className="dim ellipsis">{s.brief}</div>
-                <div className="dim small">{dotted(s.project, modelLabel(s.model, s.effort), `${s.files.length} file${s.files.length === 1 ? "" : "s"}`, clock(s.created))}</div>
-              </button>
-            ))}
+            {GROUPS.map(([title, statuses]) => {
+              const rows = (specs ?? []).filter((s) => statuses.includes(s.status));
+              return rows.length > 0 && (
+                <div key={title} className="list-group">
+                  <div className="list-head">{title} <span>{rows.length}</span></div>
+                  {rows.map((s) => (
+                    <button key={s.id} className={`list-row ${s.id === selected ? "active" : ""}`} onClick={() => setSelected(s.id)}>
+                      <span className={`dot ${DOT[s.status] ?? ""}`} />
+                      <span className="grow">
+                        <span className="title">{s.brief.split("\n")[0]}</span>
+                        <span className="meta"><ProviderMark id={s.to} size={14} />{dotted(providerName(s.to), `${s.files.length} file${s.files.length === 1 ? "" : "s"}`, clock(s.created).replace(/:\d{2}$/, ""), s.id)}{!project && ` · ${s.project}`}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
           </div>
           <div className="detail">
             {/* A new round keeps its Spec id. Reset the diff and any pending confirmation when
@@ -171,40 +188,70 @@ function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: Reco
     ["Why this Runner", spec.reason],
     ["Done means", spec.result],
   ];
+  const title = spec.brief.split("\n")[0];
+  const files = review !== null && matches(spec, review) ? review.diff.match(/^diff --git /gm)?.length ?? spec.files.length : spec.files.length;
+  const discardable = reviewable || ["failed", "cancelled", "held"].includes(spec.status);
   return (
     <div className="spec-detail">
-      <div className="row wrap"><h2 className="mono">{spec.id}</h2><SpecPill status={spec.status} /><span className="spacer" />
-        {spec.status === "running" && <ConfirmButton label="Cancel Spec" tone="danger" confirm={`Stop ${spec.id}'s Runner? Work it already did stays for review.`} onConfirm={() => act("spec.cancel")} />}
-        <ConfirmButton key={JSON.stringify([spec.id, spec.status, request.current, review?.request])} label="Accept" tone="ok" disabled={!canAccept} confirm={`Apply ${spec.id}'s displayed changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />
-        <ConfirmButton label="Discard" tone="danger" disabled={!(reviewable || ["failed", "cancelled", "held"].includes(spec.status))} confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />
+      <div className="spec-scroll">
+        <div className="row"><SpecPill status={spec.status} /><span className="mono dim small">{spec.id}</span></div>
+        <h2 className="spec-title">{title}</h2>
+        <div className="spec-meta">
+          <span className="pill"><ProviderMark id={spec.to} size={14} />{dotted(providerName(spec.to), spec.model.trim() || "default model", spec.effort)}</span>
+          <span className="pill"><Icon name="gauge" size={12} />Budget {spec.budgetPercent}%</span>
+          <span className="pill" title={`read ${spec.scope.read.join(", ") || "the project"} · write ${spec.scope.write.join(", ") || "anything in its copy"}`}><Icon name="lock" size={12} />May change {spec.scope.write.length ? spec.scope.write.join(", ") : "anything in its copy"}</span>
+          <span className="pill"><Icon name="clock" size={12} />{clock(spec.created)}</span>
+          <span className="pill">{spec.project}</span>
+        </div>
+        <div className="done-means"><b>Done means</b><span>{spec.result}</span></div>
+        {spec.note && <div className="spec-note">{spec.note}</div>}
+        {spec.limited && (
+          <div className="limited-box">
+            <div><b>{spec.status === "held" ? `Held by its Limit: ${spec.limited.why}` : "Its Runner hit its usage limit"}</b>
+              <span className="dim"> · {resetLabel(recovery?.resetsAt ?? spec.limited.resetsAt)}</span></div>
+            {recovery && <div className="row wrap">
+              <button className="btn btn-accent" onClick={resume}>Resume now</button>
+              <label className="check" title={recovery.resetsAt === null ? "The reset time is unknown" : undefined}>
+                <input type="checkbox" checked={recovery.atReset} disabled={recovery.resetsAt === null}
+                  onChange={(e) => void setAtReset(e.target.checked)} />
+                <span>Resume at reset</span>
+              </label>
+              <button className="btn" title="The Spec itself stays" onClick={clear}>Forget it</button>
+              {recovery.note && <span className="dim small">{recovery.note}</span>}
+            </div>}
+          </div>
+        )}
+        {msg && <div className={`spec-msg ${msg.ok ? "ok" : "error"}`}>{msg.text}</div>}
+        <div className="row diff-head"><h3>Changes</h3><span className="spacer" />
+          <button className="btn btn-quiet" onClick={showDiff}><Icon name="refresh" size={13} />{review === null ? "Show diff" : "Reload"}</button></div>
+        {review !== null && matches(spec, review) ? <DiffView diff={review.diff} />
+          : spec.checkpoints.after ? <div className="dim small">Loading the diff…</div> : <div className="dim small">No changes yet{spec.status === "running" ? ": the Runner is still working." : "."}</div>}
+        <details className="spec-more">
+          <summary>Details and the full brief</summary>
+          <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
+          <h3>Brief</h3>
+          <pre className="code wrap">{spec.brief}</pre>
+        </details>
       </div>
-      {spec.limited && (
-        <div className="checkpoint">
-          <div><b>{spec.status === "held" ? `Held by its Limit: ${spec.limited.why}` : "Its Runner hit its usage limit"}</b>
-            <span className="dim"> · {resetLabel(recovery?.resetsAt ?? spec.limited.resetsAt)}</span></div>
-          {recovery && <div className="row wrap">
-            <button className="btn btn-accent" onClick={resume}>Resume now</button>
-            <label className="check" title={recovery.resetsAt === null ? "The reset time is unknown" : undefined}>
-              <input type="checkbox" checked={recovery.atReset} disabled={recovery.resetsAt === null}
-                onChange={(e) => void setAtReset(e.target.checked)} />
-              <span>Resume at reset</span>
-            </label>
-            <button className="btn" title="The Spec itself stays" onClick={clear}>Forget it</button>
-            {recovery.note && <span className="dim small">{recovery.note}</span>}
-          </div>}
+      {(reviewable || spec.status === "running" || discardable) && (
+        <div className="apply-bar" role="group" aria-label={`${spec.id} actions`}>
+          {reviewable && <span className="seal" title={`Before ${spec.checkpoints.before ?? "-"} · after ${spec.checkpoints.after ?? "-"}`}>
+            <Icon name={canAccept ? "shield" : "clock"} size={14} />
+            {canAccept ? <>Snapshot <span className="mono">{spec.checkpoints.after?.slice(0, 7)}</span> · exactly what you see</> : "Load the diff to review it"}</span>}
+          {spec.status === "running" && <ConfirmButton label="Cancel Spec" tone="danger" confirm={`Stop ${spec.id}'s Runner? Work it already did stays for review.`} onConfirm={() => act("spec.cancel")} />}
+          {discardable && <ConfirmButton label="Discard" tone="danger" confirm={`Throw away ${spec.id}'s work?`} onConfirm={() => act("spec.discard")} />}
+          {reviewable && <ConfirmButton key={JSON.stringify([spec.id, spec.status, request.current, review?.request])} primary
+            label={`Apply ${files} file${files === 1 ? "" : "s"} to ${spec.project}`} tone="ok" disabled={!canAccept}
+            confirm={`Apply ${spec.id}'s displayed changes to ${spec.project}?`} onConfirm={() => act("spec.accept")} />}
         </div>
       )}
-      {msg && <div className={msg.ok ? "ok pad" : "error pad"}>{msg.text}</div>}
-      <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
-      <h3>Brief</h3>
-      <pre className="code wrap">{spec.brief}</pre>
-      <h3>Files ({spec.files.length})</h3>
-      <div className="mono small">{spec.files.length ? spec.files.join("  ") : <span className="dim">none</span>}</div>
-      <div className="row"><h3>Diff</h3><span className="spacer" /><button className="btn" onClick={showDiff}>{review === null ? "Show diff" : "Reload diff"}</button></div>
-      {review !== null && matches(spec, review) && <DiffView diff={review.diff} />}
     </div>
   );
 }
+
+const GROUPS: Array<[string, string[]]> = [["Needs review", ["needs-review"]], ["Running", ["running", "queued"]], ["Held", ["held"]],
+  ["Done", ["accepted", "discarded", "failed", "cancelled"]]];
+const DOT: Record<string, string> = { "needs-review": "needs", running: "running", queued: "running", held: "held", failed: "failed", accepted: "done" };
 
 function resetLabel(at: string | null): string {
   if (at === null) return "reset time unknown";

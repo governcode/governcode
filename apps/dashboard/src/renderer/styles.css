@@ -330,18 +330,43 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 
 /* ---------- Specs (Pipeline) ---------- */
 .split { flex: 1; display: grid; grid-template-columns: minmax(260px, 30%) 1fr; min-height: 0; }
-.list { overflow: auto; border-right: 1px solid var(--sep); background: var(--window); padding: 10px; display: flex; flex-direction: column; gap: 2px; }
-.list-row { display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left; background: none; border: 0; border-radius: 10px; padding: 10px 12px; cursor: pointer; color: inherit; }
+.list { overflow: auto; border-right: 1px solid var(--sep); background: var(--window); padding: 8px 10px 20px; }
+.list-head { font-size: 11px; font-weight: 650; letter-spacing: .03em; text-transform: uppercase; color: var(--label-3); padding: 12px 10px 6px; display: flex; gap: 6px; }
+.list-head span { font-weight: 500; }
+.list-row { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; background: none; border: 0; border-radius: 10px; padding: 10px 12px; cursor: pointer; color: inherit; }
+.list-row .dot { margin-top: 6px; }
+.list-row .title { display: block; font-size: 13px; font-weight: 550; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.list-row .meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11.5px; color: var(--label-3); white-space: nowrap; overflow: hidden; }
 .list-row:hover { background: var(--fill); }
 .list-row.active { background: var(--surface); box-shadow: var(--shadow-card); }
 [data-theme="dark"] .list-row.active { background: var(--surface-3); }
-.list-row b.mono { font-size: 11.5px; color: var(--label-3); font-weight: 500; }
-.detail { overflow: auto; min-width: 0; }
-.spec-detail { padding: 22px 28px 40px; }
-.spec-detail h2.mono { font-size: 13px; color: var(--label-3); font-weight: 500; }
-.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 16px 0 0; font-size: 12.5px; }
+.detail { position: relative; min-width: 0; min-height: 0; display: flex; overflow: hidden; }
+.spec-detail { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.spec-scroll { flex: 1; overflow: auto; padding: 24px 32px 110px; -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px); }
+.spec-title { font-size: 22px; line-height: 1.22; font-weight: 700; letter-spacing: -.022em; margin: 10px 0 12px; }
+.spec-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.done-means { margin-top: 16px; padding: 12px 14px; border-radius: 10px; background: var(--fill); font-size: 12.5px; display: flex; gap: 12px; }
+.done-means b { white-space: nowrap; }
+.done-means span { color: var(--label-2); }
+.spec-note { margin-top: 10px; font-size: 12.5px; color: var(--label-2); }
+.limited-box { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--violet-tint); display: flex; flex-direction: column; gap: 10px; }
+.spec-msg { margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: 12.5px; }
+.spec-msg.ok { background: var(--green-tint); } .spec-msg.error { background: var(--red-tint); }
+.diff-head { margin-top: 18px; }
+.diff-head h3 { margin: 0; }
+.spec-more { margin-top: 22px; border-top: 1px solid var(--sep); padding-top: 12px; }
+.spec-more summary { cursor: pointer; color: var(--label-2); font-size: 12.5px; font-weight: 550; }
+.spec-more summary:hover { color: var(--label); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 14px 0 0; font-size: 12.5px; }
 .kv > div { display: contents; }
 .kv dt { color: var(--label-3); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+/* The decision bar floats over the diff and names exactly what it applies. */
+.apply-bar { position: absolute; left: 16px; right: 16px; bottom: 18px; margin: 0 auto; width: fit-content; display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px;
+  border-radius: 14px; background: color-mix(in srgb, var(--raised) 86%, transparent); backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--shadow-pop); border: 1px solid var(--card-edge); max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: flex-end; z-index: 3; }
+.apply-bar .seal { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--label-2); margin-right: 6px; white-space: nowrap; }
+.apply-bar .seal svg { color: var(--green); }
+.apply-bar .confirm { font-size: 12.5px; }
 .review { display: flex; flex-direction: column; gap: 12px; }
 .review-bar { flex-wrap: wrap; align-items: flex-start; }
 .file-chips { display: flex; flex-wrap: wrap; gap: 6px; }

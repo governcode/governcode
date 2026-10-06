@@ -113,13 +113,14 @@ export function GateCard(props: { id: string; tool: string; canonical: string; p
 }
 
 /** A button that asks once more before it acts. */
-export function ConfirmButton(props: { label: string; confirm: ReactNode; tone: "ok" | "danger"; disabled?: boolean; onConfirm: () => void }) {
+export function ConfirmButton(props: { label: string; confirm: ReactNode; tone: "ok" | "danger"; disabled?: boolean; primary?: boolean; onConfirm: () => void }) {
   const [asking, setAsking] = useState(false);
-  if (!asking) return <button className={`btn btn-${props.tone}`} disabled={props.disabled} onClick={() => setAsking(true)}>{props.label}</button>;
+  const look = props.primary ? "btn btn-accent" : `btn btn-${props.tone}`;
+  if (!asking) return <button className={look} disabled={props.disabled} onClick={() => setAsking(true)}>{props.label}</button>;
   return (
     <span className="confirm">
       <span>{props.confirm}</span>
-      <button className={`btn btn-${props.tone} btn-solid`} onClick={() => { setAsking(false); props.onConfirm(); }}>Yes, {props.label.toLowerCase()}</button>
+      <button className={props.primary ? "btn btn-accent" : `btn btn-${props.tone} btn-solid`} onClick={() => { setAsking(false); props.onConfirm(); }}>Yes, {props.label.charAt(0).toLowerCase() + props.label.slice(1)}</button>
       <button className="btn" onClick={() => setAsking(false)}>Cancel</button>
     </span>
   );
