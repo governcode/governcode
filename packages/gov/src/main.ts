@@ -153,7 +153,9 @@ const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
 const resetWhen = (iso: string) => {
   const at = new Date(iso), minutes = Math.ceil((at.getTime() - Date.now()) / 60_000);
-  const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  // A reset more than a day away names its day too.
+  const day = minutes > 24 * 60 ? `${at.toLocaleDateString("en-US", { weekday: "short" })} ` : "";
+  const clock = `${day}${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
   if (minutes <= 0) return `resets ${clock} (passed)`;
   const hours = Math.floor(minutes / 60), rest = minutes % 60;
   return `resets ${clock} (in ${[hours ? `${hours} h` : "", rest ? `${rest} min` : ""].filter(Boolean).join(" ")})`;
@@ -859,7 +861,7 @@ async function main(argv: string[]): Promise<number> {
         const { providers } = await api.call("limits.list", { measure: true });
         if (!providers.length) console.log(dim("no measured Runners"));
         for (const x of providers) {
-          const windows = x.readings.map((r: any) => `${oneLine(r.window)} ${r.counted ? `${r.counted.used}/${r.counted.cap} ${oneLine(r.counted.unit)}` : `${r.usedPercent}%`}${r.resetsAt ? ` (resets ${oneLine(r.resetsAt)})` : ""}`).join(", ") || "not measured";
+          const windows = x.readings.map((r: any) => `${oneLine(r.window)} ${r.counted ? `${r.counted.used}/${r.counted.cap} ${oneLine(r.counted.unit)}` : `${r.usedPercent}% used`}${r.resetsAt ? `, ${resetWhen(r.resetsAt)}` : ""}`).join("; ") || "not measured";
           const held = [x.reservedPercent ? `${x.reservedPercent}% reserved by running Specs` : "",
             x.owedPercent ? `${x.owedPercent}% held for finished Specs until the usage report catches up` : ""].filter(Boolean).join(", ");
           const rule = x.local ? `local: at most ${x.local.maxRunning} at once, ${x.local.maxMinutes} min each` : `${windows}  · keeps ${x.reservePercent}% back`;
