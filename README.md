@@ -558,9 +558,9 @@ messages. Some designs are adapted from [T3 Code](https://github.com/pingdotgg/t
 ## Trademarks
 
 GovernCode is an independent open-source project, not affiliated with, endorsed by, or sponsored
-by Anthropic, OpenAI, xAI, Google, or Ollama. Claude and Claude Code are trademarks of Anthropic,
+by Anthropic, OpenAI, xAI, Google, Ollama, or the makers of OpenCode. Claude and Claude Code are trademarks of Anthropic,
 PBC. OpenAI and Codex are trademarks of OpenAI. Grok is a trademark of xAI. Google Antigravity and
-Gemini are trademarks of Google LLC. Ollama is a trademark of Ollama. Their names and logos are
+Gemini are trademarks of Google LLC. Ollama is a trademark of Ollama. OpenCode belongs to its owner. Their names and logos are
 used only to identify the tools GovernCode works with; the logo files are not covered by
 GovernCode's licence (see `apps/dashboard/src/renderer/public/licenses/PROVIDER-MARKS.md`). The
 Dashboard's fonts, Inter and JetBrains Mono, are under the SIL Open Font License 1.1.
