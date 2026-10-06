@@ -88,6 +88,8 @@ rl.createInterface({ input: process.stdin }).on("line", async (l) => {
     const r = await rpc("controller.delegate", { to: "codex", brief: "b", result: "r", scope: { read: [], write: ["x"] }, reason: "r" });
     return result("spec:" + (r.result ? r.result.id + ":" + r.result.status : r.error.message));
   }
+  const kd = /^Since your last turn the user (.*) \\(from GovernCode's Trace\\)\\.$/m.exec(text);   // GovernCode's own line, not the history's copy
+  if (kd) return result("decided:Since your last turn the user " + kd[1]);
   const k = text.indexOf("Specs that finished since you last heard");
   result("fold:" + (k < 0 ? "" : text.slice(k, text.indexOf(".", k + 60) + 1)));
 });
@@ -313,4 +315,21 @@ test("a project whose folder is gone says so, instead of the sandbox's spawn err
   const r = await c.call("ask", { project: "p", prompt: "hello" });
   assert.match(JSON.stringify(r), /the project folder .*proj no longer exists/);
   assert.match(String(d.ledger.eventsOfKind("p", ["turn.failed"])[0].data.summary), /no longer exists/);
+});
+
+test("the Controller hears with the next message that the user accepted or discarded a Spec, once", async () => {
+  const { d, c } = await setup();
+  await c.call("ask", { project: "p", prompt: "HANDOFF" });
+  await until(() => d.ledger.spec("S-0001")?.status === "needs-review");
+  const { checkpoints } = (await c.call("spec.diff", { id: "S-0001" })).result;
+  assert.ok((await c.call("spec.accept", { id: "S-0001", checkpoints })).result, "accepted");
+  const told = await c.call("ask", { project: "p", prompt: "next?" });
+  assert.equal(told.result.summary, "decided:Since your last turn the user accepted S-0001 (its changes are in the project now, not committed)");
+  const again = await c.call("ask", { project: "p", prompt: "and now?" });
+  assert.equal(again.result.summary, "fold:", "told once");
+  // A discard is told the same way.
+  await c.call("ask", { project: "p", prompt: "HANDOFF" });
+  await until(() => d.ledger.spec("S-0002")?.status === "needs-review");
+  assert.equal((await c.call("spec.discard", { id: "S-0002" })).result.discarded, true);
+  assert.equal((await c.call("ask", { project: "p", prompt: "next?" })).result.summary, "decided:Since your last turn the user discarded S-0002");
 });
