@@ -388,12 +388,28 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .d-empty { background: var(--fill); }
 
 /* ---------- Trace ---------- */
-.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 24px; border-bottom: 1px solid var(--sep); }
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 24px; border-bottom: 1px solid var(--sep); }
 .trace-filter { background: var(--fill); border: 0; box-shadow: inset 0 0 0 1px var(--sep); border-radius: var(--r-sm); padding: 0 10px; height: 28px; font-size: 12.5px; flex: 1 1 200px; min-width: 0; max-width: 320px; margin-left: auto; }
-.trace { width: 100%; border-collapse: collapse; table-layout: auto; font-size: 12.5px; }
-.trace td { padding: 7px 14px 7px 0; border-bottom: 1px solid var(--sep); vertical-align: top; }
-.trace td:first-child { padding-left: 2px; }
-.ellipsis-cell { max-width: 0; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trace-scroll { padding-top: 6px; }
+.tday { max-width: 980px; width: 100%; margin: 0 auto; }
+.tday h3 { margin: 18px 0 6px 2px; }
+.tlist { list-style: none; margin: 0; padding: 0; position: relative; }
+.tlist::before { content: ""; position: absolute; left: 66px; top: 8px; bottom: 8px; width: 1px; background: var(--sep-strong); }
+.tev-row { display: grid; grid-template-columns: 46px 26px minmax(0, 1fr) auto; gap: 0 14px; align-items: center; width: 100%; padding: 6px 8px 6px 2px;
+  background: none; border: 0; border-radius: 10px; text-align: left; color: inherit; cursor: pointer; }
+.tev-row:hover { background: var(--fill); }
+.tev-row time { font-size: 11.5px; color: var(--label-3); text-align: right; }
+.tev .node { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-3); color: var(--label-2); position: relative; z-index: 1; box-shadow: 0 0 0 4px var(--content); }
+.tev .node.ok { background: var(--green-tint); color: var(--green); } .tev .node.warn { background: var(--amber-tint); color: var(--amber); }
+.tev .node.danger { background: var(--red-tint); color: var(--red); } .tev .node.info { background: var(--blue-tint); color: var(--blue); }
+.tev .node.held { background: var(--violet-tint); color: var(--violet); } .tev .node.accent { background: var(--accent-tint); color: var(--accent); }
+[data-theme="light"] .tev .node { background: var(--surface-3); }
+.tev .what { font-size: 13px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tev.open .what { white-space: normal; }
+.tev .pill { gap: 6px; }
+.tev-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 2px 0 10px 88px; padding: 12px 14px; border-radius: 10px;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--sep); font-size: 12px; }
+.tev-detail dt { color: var(--blue); } .tev-detail dd { margin: 0; color: var(--label-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ---------- Dialogs ---------- */
 .overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .38); backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 10; }

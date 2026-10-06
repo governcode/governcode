@@ -1,9 +1,10 @@
-// Trace: the append-only history, newest first, in local 24-hour time, filterable by kind. Each
-// kind shows as a short plain label, with the raw kind as its tooltip.
+// Trace: the append-only history as a timeline, newest first, grouped by day and written as
+// sentences. A row opens to the exact record (kind, sequence, actor, data); filters by kind and text.
 import { useCallback, useEffect, useState } from "react";
 import { call, clock, useFallbackPoll, useWatch, type TraceEvent } from "../api.ts";
-import { Empty } from "../ui.tsx";
-import { eventLabel, summary } from "../../shared/trace.ts";
+import { Empty, Glyph } from "../ui.tsx";
+import { Icon, type IconName } from "../icons.tsx";
+import { describe, eventLabel } from "../../shared/trace.ts";
 
 const FILTERS: Array<[string, (k: string) => boolean]> = [
   ["All", () => true],
@@ -15,9 +16,12 @@ const FILTERS: Array<[string, (k: string) => boolean]> = [
   ["Projects", (k) => k.startsWith("project.") || k === "controller.set"],
   ["Sandbox", (k) => k === "sandbox.refused" || k === "git.scrubbed"],
 ];
-const TONE: Record<string, string> = { "gate.opened": "warn", "gate.allowed": "ok", "gate.denied": "danger", "turn.failed": "danger",
-  "sandbox.refused": "danger", "spec.failed": "danger", "spec.held": "warn", "spec.accepted": "ok", "turn.completed": "ok", "git.scrubbed": "warn",
-  "git.guard_failed": "danger", "checkpoint.failed": "warn" };
+const QUIET = new Set(["turn.text", "turn.tool", "spec.step"]);
+const dayOf = (iso: string, now = new Date()) => {
+  const d = new Date(iso), y = new Date(now); y.setDate(now.getDate() - 1);
+  const same = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return same(d, now) ? "Today" : same(d, y) ? "Yesterday" : d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+};
 
 const KEEP = 1000;
 
@@ -26,6 +30,8 @@ export function Trace({ project, live }: { project: string | null; live: boolean
   const [filter, setFilter] = useState("All");
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const [steps, setSteps] = useState(false);   // the Controller's words and steps, hidden unless asked for
 
   const load = useCallback(async () => {
     try {
@@ -45,8 +51,14 @@ export function Trace({ project, live }: { project: string | null; live: boolean
   const test = FILTERS.find(([n]) => n === filter)![1];
   // Text matches the actor, the kind (raw or as labelled), or anything in the event (a Spec, a Gate, a path…).
   const needle = text.trim().toLowerCase();
-  const shown = (events ?? []).filter((e) => test(e.kind)
-    && (!needle || `${e.actor} ${e.kind} ${eventLabel(e)} ${e.project ?? ""} ${JSON.stringify(e.data ?? {})}`.toLowerCase().includes(needle)));
+  const shown = (events ?? []).filter((e) => test(e.kind) && (steps || !QUIET.has(e.kind))
+    && (!needle || `${e.actor} ${e.kind} ${eventLabel(e)} ${describe(e).text} ${e.project ?? ""} ${JSON.stringify(e.data ?? {})}`.toLowerCase().includes(needle)));
+  const days: Array<[string, TraceEvent[]]> = [];
+  for (const e of shown) {
+    const day = dayOf(e.ts);
+    if (days.at(-1)?.[0] !== day) days.push([day, []]);
+    days.at(-1)![1].push(e);
+  }
 
   return (
     <section className="view">
@@ -57,28 +69,42 @@ export function Trace({ project, live }: { project: string | null; live: boolean
         <button className="btn" onClick={load}>Refresh</button>
       </div>
       <div className="chips">
-        {FILTERS.map(([name]) => (
-          <button key={name} className={`chip ${filter === name ? "active" : ""}`} onClick={() => setFilter(name)}>{name}</button>
-        ))}
-        <input className="trace-filter" placeholder="filter: actor, Spec, Gate, text…" aria-label="Filter the Trace" value={text} onChange={(e) => setText(e.target.value)} />
+        <div className="seg" role="group" aria-label="Show">
+          {FILTERS.map(([name]) => (
+            <button key={name} className={filter === name ? "on" : ""} aria-pressed={filter === name} onClick={() => setFilter(name)}>{name}</button>
+          ))}
+        </div>
+        <label className="check small"><input type="checkbox" checked={steps} onChange={(e) => setSteps(e.target.checked)} />Words and steps</label>
+        <input className="trace-filter" placeholder="Filter: Spec, Gate, file, text…" aria-label="Filter the Trace" value={text} onChange={(e) => setText(e.target.value)} />
       </div>
       {error && <div className="error pad">{error}</div>}
-      <div className="scroll">
-        {events && !shown.length ? <Empty title="Nothing here yet" /> : (
-          <table className="trace">
-            <tbody>
-              {shown.map((e) => (
-                <tr key={e.seq}>
-                  <td className="mono dim nowrap">{clock(e.ts)}</td>
-                  <td className={`nowrap ${TONE[e.kind] ?? ""}`} title={e.kind}>{eventLabel(e)}</td>
-                  <td className="nowrap">{e.project ?? <span className="dim">Home</span>}</td>
-                  <td className="dim nowrap">{e.actor}</td>
-                  <td className="dim ellipsis-cell">{summary(e)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      <div className="scroll trace-scroll">
+        {events && !shown.length ? <Empty title="Nothing here yet"><p>Every turn, Gate, Spec and change is recorded here as it happens.</p></Empty> : days.map(([day, list]) => (
+          <section key={day} className="tday">
+            <h3>{day}</h3>
+            <ol className="tlist">
+              {list.map((e) => {
+                const d = describe(e);
+                return (
+                  <li key={e.seq} className={`tev ${open === e.seq ? "open" : ""}`}>
+                    <button className="tev-row" aria-expanded={open === e.seq} onClick={() => setOpen(open === e.seq ? null : e.seq)} title={e.kind}>
+                      <time className="mono">{clock(e.ts).slice(-8, -3)}</time>
+                      <span className={`node ${d.tone}`}><Icon name={d.icon as IconName} size={12} /></span>
+                      <span className="what">{d.text}</span>
+                      {!project && <span className="pill">{e.project ? <><Glyph name={e.project} size={14} />{e.project}</> : "Home"}</span>}
+                    </button>
+                    {open === e.seq && (
+                      <dl className="tev-detail mono">
+                        <dt>kind</dt><dd>{e.kind}</dd><dt>seq</dt><dd>{e.seq}</dd><dt>at</dt><dd>{e.ts}</dd><dt>actor</dt><dd>{e.actor}</dd>
+                        {Object.entries(e.data ?? {}).map(([k, v]) => <div key={k} className="contents"><dt>{k}</dt><dd>{typeof v === "string" ? v : JSON.stringify(v)}</dd></div>)}
+                      </dl>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        ))}
       </div>
     </section>
   );

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { eventLabel, KIND_LABEL, summary } from "../src/shared/trace.ts";
+import { describe, eventLabel, KIND_LABEL, summary } from "../src/shared/trace.ts";
 
 const ev = (kind: string, data: Record<string, unknown> = {}) => ({ seq: 1, ts: "2026-09-30T20:00:00Z", project: "p", kind, actor: "user", data });
 
@@ -35,4 +35,17 @@ test("summaries leave out empty fields instead of printing null", () => {
   assert.equal(summary(ev("controller.set", { provider: "codex", model: "gpt-5.5", effort: null })), "provider codex · model gpt-5.5");
   assert.equal(summary(ev("gate.allowed", { gate: "G-3", tool: "Bash", spec: null })), "G-3 Bash");
   assert.equal(summary(ev("conversation.reset")), "");
+});
+
+test("the timeline describes events from what govd records, and never guesses", () => {
+  const ev = (kind: string, data: Record<string, unknown>, actor = "govd") => ({ seq: 1, ts: "2026-10-05T10:00:00.000Z", kind, project: "p", actor, data });
+  assert.deepEqual(describe(ev("gate.allowed", { gate: "G-1", tool: "Bash", by: "dashboard" }, "user")), { text: "You allowed Bash (Gate G-1) · dashboard", tone: "ok", icon: "check" });
+  assert.equal(describe(ev("gate.allowed", { tool: "Read", by: "quiet read" })).text, "Read ran without asking · quiet read");
+  assert.equal(describe(ev("gate.denied", { tool: "Bash", by: "the Spec ended" })).text, "Bash denied · the Spec ended");
+  assert.equal(describe(ev("turn.failed", { limit: { provider: "claude-code", resetsAt: null } })).text, "Turn stopped: claude-code hit its usage limit");
+  assert.equal(describe(ev("spec.done", { spec: "S-0001", files: 2 })).text, "S-0001 finished · 2 files");
+  assert.equal(describe(ev("checkpoint.undone", { turn: "T-9", files: ["a", "b", "c"] }, "user")).text, "You undid T-9 · 3 files");
+  assert.equal(describe(ev("sandbox.refused", { reason: "Landlock missing" })).text, "Refused to run: the sandbox is not verified (Landlock missing)");
+  assert.equal(describe(ev("turn.started", { prompt: "x".repeat(200) }, "user")).text.length < 110, true, "a long prompt is shortened");
+  assert.equal(describe(ev("acp.install.started", { name: "agent" })).text, "Artifact install started · agent", "unknown sentences fall back to the label");
 });
