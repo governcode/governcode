@@ -58,6 +58,8 @@
 /* ---------- Base ---------- */
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+/* The window never scrolls as a page: each view scrolls its own parts. */
+html, body { overflow: hidden; }
 body { background: var(--window); color: var(--label); font: 13px/1.5 var(--sans); font-feature-settings: "cv11", "ss03"; -webkit-font-smoothing: antialiased; letter-spacing: -0.003em; }
 button, select, textarea, input { font: inherit; color: inherit; }
 h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: -0.012em; }
@@ -281,7 +283,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .act time { font-size: 11.5px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 
 /* ---------- Conversation (Terminal) ---------- */
-.log { flex: 1; overflow: auto; padding: 28px 0 24px; display: flex; flex-direction: column; gap: 14px;
+/* position: relative, so positioned children (the hidden "You:" labels) scroll and clip with the log. */
+.log { flex: 1; overflow: auto; position: relative; padding: 28px 0 24px; display: flex; flex-direction: column; gap: 14px;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 16px), transparent 100%); }
 .log > * { width: min(760px, calc(100% - 64px)); margin-left: auto; margin-right: auto; flex: none; }
 .log > .intro { color: var(--label-3); text-align: center; padding: 40px 0; }
