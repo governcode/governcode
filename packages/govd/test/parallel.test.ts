@@ -306,3 +306,11 @@ test("turning wake off settles Specs still waiting to be told", async () => {
   await c.call("crew.set", { project: "p", crew: { wake: "off" } });
   assert.equal(d.ledger.spec("S-0001")!.delivery, "disposed");
 });
+
+test("a project whose folder is gone says so, instead of the sandbox's spawn error", async () => {
+  const { d, c, dir } = await setup();
+  rmSync(join(dir, "proj"), { recursive: true, force: true });
+  const r = await c.call("ask", { project: "p", prompt: "hello" });
+  assert.match(JSON.stringify(r), /the project folder .*proj no longer exists/);
+  assert.match(String(d.ledger.eventsOfKind("p", ["turn.failed"])[0].data.summary), /no longer exists/);
+});

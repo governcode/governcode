@@ -1258,6 +1258,10 @@ export class Daemon {
           for (const id of telling) L.updateSpec(id, { delivery: "claimed" }, "govd");
         }
         admit();
+        // A folder that is gone (moved, deleted, or in a /tmp a reboot cleared) would otherwise
+        // surface as the sandbox's own spawn error, which names govern-sup instead.
+        if (found && !statSync(found.path, { throwIfNoEntry: false })?.isDirectory())
+          throw new Error(`the project folder ${found.path} no longer exists (was it moved or deleted?)`);
         // A tool that can write the project can write .git; hooks and some config keys would then
         // run later, outside the sandbox, when the user runs git. Undone after every turn.
         guard = found ? gitGuard(project.path, join(this.stateDir(), "scratch")) : null;
