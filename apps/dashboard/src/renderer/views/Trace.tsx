@@ -35,7 +35,7 @@ export function Trace({ project, live }: { project: string | null; live: boolean
 
   const load = useCallback(async () => {
     try {
-      const r = await call<{ events: TraceEvent[] }>("trace.list", { ...(project ? { project } : {}), limit: 300 });
+      const r = await call<{ events: TraceEvent[] }>("trace.list", { ...(project ? { project } : {}), limit: 1000 });
       setEvents([...r.events].reverse());
       setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }

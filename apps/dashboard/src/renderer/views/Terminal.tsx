@@ -7,7 +7,7 @@ import { ProviderMark, providerName } from "../brand.tsx";
 
 export type Entry =
   | { t: "you"; text: string }
-  | { t: "text"; text: string }
+  | { t: "text"; text: string; by?: string }   // by: the Controller that wrote it, kept when the project changes Controller
   | { t: "tool"; name: string }
   | { t: "gate"; id: string; tool: string; canonical: string; arrived: number; answered?: "allow" | "deny"; covers?: string | null; scopes?: string[]; suggest?: string | null }
   | { t: "allowed"; tool: string; why: string }
@@ -94,11 +94,13 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
             case "you": return <div key={i} className="msg you"><span className="vh">You: </span><div className="bubble">{e.text}</div></div>;
             case "text": {
               // Consecutive replies read as one message: the mark and name only on the first.
-              const first = i === 0 || props.thread.entries[i - 1].t !== "text";
+              const prev = props.thread.entries[i - 1];
+              const who = e.by ?? ctl;
+              const first = i === 0 || prev.t !== "text" || (prev.by ?? ctl) !== who;
               return (
                 <div key={i} className="msg ctl">
-                  {first && ctl ? <ProviderMark id={ctl} size={26} /> : <span />}
-                  <div>{first && <div className="who">{ctl ? <><b>{providerName(ctl)}</b>Controller</> : <b>Controller</b>}</div>}<div className="body">{e.text}</div></div>
+                  {first && who ? <ProviderMark id={who} size={26} /> : <span />}
+                  <div>{first && <div className="who">{who ? <><b>{providerName(who)}</b>Controller</> : <b>Controller</b>}</div>}<div className="body">{e.text}</div></div>
                 </div>
               );
             }

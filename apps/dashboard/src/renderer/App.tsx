@@ -50,7 +50,8 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const askThread = useRef(new Map<string, string>());
-  const waking = useRef(new Set<string>());   // projects whose Controller is in a wake turn now
+  const waking = useRef(new Map<string, string | null>());   // projects in a wake turn now, and its Controller
+  const askBy = useRef(new Map<string, string>());   // each ask's Controller, so its replies keep their author
 
   useTheme();
   // A project's key in the conversations; Home's is "". Global screens other than Home have none.
@@ -132,7 +133,7 @@ export function App() {
   useEffect(() => api().onEvent((askId, ev: AskEvent) => {
     const key = askThread.current.get(askId);
     if (key === undefined) return;
-    push(key, (t) => ({ ...t, entries: addEvent(t.entries, ev) }));
+    push(key, (t) => ({ ...t, entries: addEvent(t.entries, ev, askBy.current.get(askId)) }));
     if (ev.kind === "gate" && !live) void refreshGates();
   }), [push, refreshGates, live]);
 
@@ -152,6 +153,7 @@ export function App() {
     const key = askThread.current.get(askId);
     if (key === undefined) return;
     askThread.current.delete(askId);
+    askBy.current.delete(askId);
     push(key, (t) => ({ ...t, busy: hasActiveAsk(askThread.current, key), entries: entry ? [...t.entries, entry] : t.entries }));
   }, [push]);
 
@@ -175,6 +177,8 @@ export function App() {
     const key = project;
     const askId = beginAsk(key);
     if (!askId) return;
+    const by = (key === HOME ? homeController : projects.find((p) => p.name === key)?.controller)?.provider;
+    if (by) askBy.current.set(askId, by);
     try {
       const provider = personalKey(key === HOME ? homeController : projects.find((p) => p.name === key)?.controller);
       const s = await call<{ settings: { personal?: Record<string, boolean | null> } }>("settings.get").catch(() => null);
@@ -244,11 +248,20 @@ export function App() {
                   <ProviderMark id={current.controller.provider} size={14} />{providerName(current.controller.provider)}{current.controller.model.trim() ? ` · ${modelLabel(current.controller.model, current.controller.effort)}` : ""} · Controller<Icon name="chevronDown" size={11} />
                 </button>
               </div>
-              <div className="tabs seg" role="tablist" aria-label={`${current.name} views`}>
+              <div className="tabs seg" role="tablist" aria-label={`${current.name} views`} onKeyDown={(e) => {
+                // Arrow keys move between tabs (and follow focus), Home and End jump to the ends.
+                const i = TABS.findIndex(([id]) => id === place.tab);
+                const to = e.key === "ArrowRight" ? (i + 1) % TABS.length : e.key === "ArrowLeft" ? (i + TABS.length - 1) % TABS.length
+                  : e.key === "Home" ? 0 : e.key === "End" ? TABS.length - 1 : -1;
+                if (to < 0) return;
+                e.preventDefault();
+                setPlace({ kind: "project", name: current.name, tab: TABS[to][0] });
+                requestAnimationFrame(() => document.getElementById(`tab-${TABS[to][0]}`)?.focus());
+              }}>
                 {TABS.map(([id, label]) => {
                   const n = id === "specs" ? reviewCount(current.name) : 0;
                   return (
-                    <button key={id} role="tab" aria-selected={place.tab === id} className={place.tab === id ? "on" : ""}
+                    <button key={id} id={`tab-${id}`} role="tab" aria-selected={place.tab === id} tabIndex={place.tab === id ? 0 : -1} className={place.tab === id ? "on" : ""}
                       onClick={() => setPlace({ kind: "project", name: current.name, tab: id })}>
                       {label}{n > 0 && <span className="n amber">{n}</span>}
                     </button>
@@ -294,10 +307,10 @@ export function App() {
   );
 }
 
-function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
+function addEvent(entries: Entry[], ev: AskEvent, by?: string): Entry[] {
   const e = ev as Record<string, any>;
   switch (ev.kind) {
-    case "text": return [...entries, { t: "text", text: String(e.text) }];
+    case "text": return [...entries, { t: "text", text: String(e.text), ...(by ? { by } : {}) }];
     case "tool": return [...entries, { t: "tool", name: String(e.name) }];
     case "gate": return [...entries, { t: "gate", id: String(e.id), tool: String(e.tool), canonical: String(e.canonical), arrived: Date.now(),
       covers: typeof e.covers === "string" ? e.covers : null, scopes: Array.isArray(e.scopes) ? e.scopes.map(String) : [],
@@ -323,17 +336,18 @@ function addEvent(entries: Entry[], ev: AskEvent): Entry[] {
  * Controller's words reach that project's Terminal from the Trace, from turn.started to its end;
  * other turns' events are left to their own ask streams.
  */
-function wakeEntry(ev: TraceEvent, waking: Set<string>): Entry | null {
+function wakeEntry(ev: TraceEvent, waking: Map<string, string | null>): Entry | null {
   const key = ev.project!, d = ev.data;
   if (ev.kind === "turn.started") {
     if (d.origin !== "wake" && d.origin !== "continuation") { waking.delete(key); return null; }
-    waking.add(key);
+    const controller = d.controller as { provider?: unknown } | undefined;
+    waking.set(key, typeof controller?.provider === "string" ? controller.provider : null);
     return d.origin === "wake" ? { t: "wake", specs: Array.isArray(d.specs) ? d.specs.map(String) : [] }
       : { t: "continuation", turn: String(d.continuationOf) };
   }
   if (!waking.has(key)) return null;
   switch (ev.kind) {
-    case "turn.text": return { t: "text", text: String(d.text) };
+    case "turn.text": { const by = waking.get(key); return { t: "text", text: String(d.text), ...(by ? { by } : {}) }; }
     case "turn.tool": return { t: "tool", name: String(d.name) };
     case "turn.completed":
     case "turn.failed": waking.delete(key); return { t: "done", ok: ev.kind === "turn.completed", summary: String(d.summary ?? "") };

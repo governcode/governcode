@@ -39,7 +39,10 @@ test("summaries leave out empty fields instead of printing null", () => {
 
 test("the timeline describes events from what govd records, and never guesses", () => {
   const ev = (kind: string, data: Record<string, unknown>, actor = "govd") => ({ seq: 1, ts: "2026-10-05T10:00:00.000Z", kind, project: "p", actor, data });
-  assert.deepEqual(describe(ev("gate.allowed", { gate: "G-1", tool: "Bash", by: "dashboard" }, "user")), { text: "You allowed Bash (Gate G-1) · dashboard", tone: "ok", icon: "check" });
+  assert.deepEqual(describe(ev("gate.allowed", { gate: "G-1", tool: "Bash", by: "user" }, "user")), { text: "You allowed Bash (Gate G-1)", tone: "ok", icon: "check" });
+  // govd settles a Gate with actor "user" even when it, not you, denied it (a timeout, a turn ending).
+  assert.equal(describe(ev("gate.denied", { gate: "G-3", tool: "Bash", by: "nobody answered within the hour" }, "user")).text, "Bash denied (Gate G-3) · nobody answered within the hour");
+  assert.equal(describe(ev("gate.denied", { gate: "G-4", tool: "Bash", by: "user" }, "user")).text, "You denied Bash (Gate G-4)");
   assert.equal(describe(ev("gate.allowed", { tool: "Read", by: "quiet read" })).text, "Read ran without asking · quiet read");
   assert.equal(describe(ev("gate.denied", { tool: "Bash", by: "the Spec ended" })).text, "Bash denied · the Spec ended");
   assert.equal(describe(ev("turn.failed", { limit: { provider: "claude-code", resetsAt: null } })).text, "Turn stopped: claude-code hit its usage limit");

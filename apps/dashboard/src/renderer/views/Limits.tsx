@@ -43,7 +43,7 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
   return (
     <section className="view">
       <div className="view-head">
-        <h1>Allowance</h1>
+        <h1 className="vh">Allowance</h1>
         <span className="dim">A measured hold, not a billing ceiling: usage reports lag, so a run can overshoot a little.</span>
         <span className="spacer" />
         <button className="btn" disabled={measuring} onClick={() => load(true)}>{measuring ? "Measuring…" : "Measure now"}</button>
@@ -129,8 +129,9 @@ function ResetTimeline({ providers }: { providers: ProviderLimit[] }) {
   const pins = providers.flatMap((p) => p.readings.filter((r) => r.resetsAt).map((r) => ({ p, r, at: Date.parse(r.resetsAt!) })))
     .filter((x) => x.at > now && x.at <= now + span).sort((a, b) => a.at - b.at);
   if (!providers.some((p) => p.readings.length)) return null;
-  const start = new Date(now); start.setMinutes(0, 0, 0);
-  const ticks = Array.from({ length: 7 }, (_, i) => start.getTime() + i * 2 * 3_600_000).filter((t) => t >= now - 3_600_000);
+  // Ticks on the even hours after now; "Now" itself marks the start.
+  const first = new Date(now); first.setMinutes(0, 0, 0); first.setHours(first.getHours() + 1 + (first.getHours() + 1) % 2);
+  const ticks = Array.from({ length: 6 }, (_, i) => first.getTime() + i * 2 * 3_600_000).filter((t) => t <= now + span);
   const x = (t: number) => `${Math.max(0, Math.min(100, ((t - now) / span) * 100))}%`;
   return (
     <div className="card timeline">
@@ -141,7 +142,7 @@ function ResetTimeline({ providers }: { providers: ProviderLimit[] }) {
           <div className="now" style={{ left: 0 }} />
           {ticks.map((t) => <span key={t} className="tick" style={{ left: x(t) }}>{new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}</span>)}
           {pins.map(({ p, r, at }, i) => (
-            <div key={`${p.provider}-${r.window}`} className="ev" style={{ left: x(at) }} title={`${providerName(p.provider)} ${r.window} resets ${clock(r.resetsAt!)}`}>
+            <div key={`${p.provider}-${r.window}${r.counted ? "-counted" : ""}`} className="ev" style={{ left: x(at) }} title={`${providerName(p.provider)} ${r.window} resets ${clock(r.resetsAt!)}`}>
               <span className={`lab ${i % 2 ? "low" : ""}`}><ProviderMark id={p.provider} size={14} />{providerName(p.provider)} · {r.window}</span>
               <span className="pin" style={{ background: p.verdict.ok ? "var(--accent)" : "var(--violet)" }} />
             </div>

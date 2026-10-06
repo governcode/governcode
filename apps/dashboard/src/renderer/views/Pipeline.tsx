@@ -225,7 +225,7 @@ function SpecDetail({ spec, recovery, onChanged }: { spec: Spec; recovery?: Reco
         <div className="row diff-head"><h3>Changes</h3><span className="spacer" />
           <button className="btn btn-quiet" onClick={showDiff}><Icon name="refresh" size={13} />{review === null ? "Show diff" : "Reload"}</button></div>
         {review !== null && matches(spec, review) ? <DiffView diff={review.diff} />
-          : spec.checkpoints.after ? <div className="dim small">Loading the diff…</div> : <div className="dim small">No changes yet{spec.status === "running" ? ": the Runner is still working." : "."}</div>}
+          : spec.checkpoints.after ? (msg && !msg.ok ? null : <div className="dim small">Loading the diff…</div>) : <div className="dim small">No changes yet{spec.status === "running" ? ": the Runner is still working." : "."}</div>}
         <details className="spec-more">
           <summary>Details and the full brief</summary>
           <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>

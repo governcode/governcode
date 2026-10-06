@@ -58,12 +58,15 @@ export function describe(e: TraceEvent): Described {
   const spec = str(d.spec);
   switch (e.kind) {
     case "gate.opened": return { text: `Gate ${str(d.gate)} opened · ${e.actor} wants ${str(d.tool)}`, tone: "warn", icon: "lock" };
-    case "gate.allowed": return you
-      ? { text: `You allowed ${str(d.tool)}${d.gate ? ` (Gate ${str(d.gate)})` : ""}${d.by ? ` · ${str(d.by)}` : ""}`, tone: "ok", icon: "check" }
-      : { text: `${str(d.tool)} ran without asking · ${str(d.by)}`, tone: "", icon: "check" };
-    case "gate.denied": return you
+    // An answered Gate records who answered in `by` ("user", or govd's reason such as a timeout);
+    // its actor is always "user", so `by` alone says whether it was you. No Gate id: it never asked.
+    case "gate.allowed": return !d.gate
+      ? { text: `${str(d.tool)} ran without asking · ${str(d.by)}`, tone: "", icon: "check" }
+      : d.by === "user" ? { text: `You allowed ${str(d.tool)} (Gate ${str(d.gate)})`, tone: "ok", icon: "check" }
+      : { text: `${str(d.tool)} allowed (Gate ${str(d.gate)}) · ${str(d.by)}`, tone: "ok", icon: "check" };
+    case "gate.denied": return d.by === "user"
       ? { text: `You denied ${str(d.tool)}${d.gate ? ` (Gate ${str(d.gate)})` : ""}`, tone: "danger", icon: "x" }
-      : { text: `${str(d.tool)} denied · ${str(d.by)}`, tone: "danger", icon: "x" };
+      : { text: `${str(d.tool)} denied${d.gate ? ` (Gate ${str(d.gate)})` : ""} · ${str(d.by)}`, tone: "danger", icon: "x" };
     case "turn.started":
       if (d.origin === "wake") return { text: "GovernCode started a turn to report finished Specs", tone: "accent", icon: "sparkle" };
       if (d.origin === "continuation") return { text: `GovernCode continued ${str(d.continuationOf)} after its usage limit reset`, tone: "accent", icon: "play" };
@@ -88,7 +91,7 @@ export function describe(e: TraceEvent): Described {
     case "checkpoint.undone": return { text: `You undid ${str(d.turn)}${files(d.files)}`, tone: "warn", icon: "undo" };
     case "checkpoint.failed": return { text: `No Checkpoint for ${str(d.turn)}${d.reason ? ` · ${str(d.reason)}` : ""}`, tone: "warn", icon: "undo" };
     case "sandbox.refused": return { text: `Refused to run: the sandbox is not verified${d.reason ? ` (${str(d.reason)})` : ""}`, tone: "danger", icon: "shieldX" };
-    case "recovery.set": return { text: `${d.atReset ? "Resume at reset on" : "Resume at reset off"} for ${str(d.target)}${you ? "" : " (Settings default)"}`, tone: "held", icon: "clock" };
+    case "recovery.set": return { text: `${d.atReset ? "Resume at reset on" : "Resume at reset off"} for ${str(d.target)}${you ? "" : " (set by GovernCode)"}`, tone: "held", icon: "clock" };
     case "recovery.resumed": return { text: `${str(d.target)} resumed${e.actor === "govd" ? " at its reset" : " by you"}`, tone: "info", icon: "play" };
     case "recovery.cleared": return { text: `You forgot the recovery choice for ${str(d.target)}`, tone: "", icon: "x" };
     case "allow.added": return { text: `Remembered: allow ${str(d.label || d.key)} for ${str(d.scope)}`, tone: "ok", icon: "check" };
