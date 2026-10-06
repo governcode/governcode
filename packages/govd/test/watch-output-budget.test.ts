@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { Duplex } from "node:stream";
 import { registerHooks } from "node:module";
 import type { Socket } from "node:net";
+import { tmpdir } from "node:os";
 import { PROTOCOL, Settings, type TraceEvent } from "@governcode/protocol";
 import { Ledger } from "../src/ledger.ts";
 import * as delegation from "../src/delegate.ts";
@@ -453,7 +454,7 @@ async function startupHarness(t: { after(fn: () => void | Promise<void>): void }
   let cleanup = () => {};
   t.after(() => cleanup());
   const h = harness(t, isolated.prototype, true);
-  h.ledger.addProject("p", "/inert/project", "project.opened");
+  h.ledger.addProject("p", tmpdir(), "project.opened");   // a folder that exists; nothing in it is touched
   h.ledger.setController("p", { provider, model: provider === "codex" ? "" : "opus", effort: "high" });
   setCrew(h.ledger, "p", { controllerWorks: true, handoff: "ask", subagents: { controller: false, runners: false }, wake: "auto", maxPercent: {}, runners: null });
   const spec = h.ledger.createSpec("p", { to: "codex", brief: "test", result: "done", scope: { read: [], write: [] }, budgetPercent: 5,
@@ -675,7 +676,7 @@ async function admittedRecoveryHarness(t: { after(fn: () => void | Promise<void>
   t.after(() => cleanup()); // consume every inert round before harness closes the Trace
   const h = harness(t, D.prototype);
   h.d.runs = new actual.SpecRuns();
-  h.ledger.addProject("p", "/inert/project", "project.opened");
+  h.ledger.addProject("p", tmpdir(), "project.opened");   // a folder that exists; nothing in it is touched
   setCrew(h.ledger, "p", { controllerWorks: true, handoff: "ask", subagents: { controller: false, runners: false }, wake: "auto", maxPercent: {}, runners: null });
   const spec = h.ledger.createSpec("p", { to: "codex", brief: "inert", result: "done", scope: { read: [], write: [] }, budgetPercent: 5,
     workspace: "worktree", model: "", effort: null, reason: "inert", mode: "async", waitSeconds: 600 }, "user");
