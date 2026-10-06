@@ -1,7 +1,7 @@
 # The GovernCode demo, with Tidepool
 
 About fifteen minutes. Talk to the Controller in plain words; the prompts below are only
-suggestions. Paste them into the Dashboard's **Terminal** view, or run `gov ask "..."` in a shell.
+suggestions. Paste them into the Dashboard's **Conversation** view, or run `gov ask "..."` in a shell.
 
 **You need:** GovernCode installed (`./install.sh --service` from a release), `govd` running, and
 Claude Code connected for GovernCode (`gov connect claude`; it is the Controller). Optional: Codex
@@ -49,7 +49,7 @@ Deleting always asks, at every level. Say **Deny**. Nothing is deleted.
 > Have the local model add a short section to the README explaining how to read the output.
 
 The Controller hands a **Spec** to the local model: no quota, no commands, and it can only
-propose the files it was given. Open **Pipeline**, read the **Diff**, then **Accept** or
+propose the files it was given. Open **Specs**, read the **Diff**, then **Accept** or
 **Discard**. Small local models make mistakes; the Controller reviews the draft too, and can
 throw a bad one away and try again.
 
@@ -58,8 +58,8 @@ throw a bad one away and try again.
 > Now have Codex add a --json flag to the CLI, with a test.
 
 Handing work to a paid Runner always asks. GovernCode checks Codex's measured usage against the
-reserve you keep (**Limits**), then Codex works in its own copy, in its own sandbox; its steps
-show up as Gates marked with the Spec. Review the diff in **Pipeline** and accept it.
+reserve you keep (**Allowance**), then Codex works in its own copy, in its own sandbox; its steps
+show up as Gates marked with the Spec. Review the diff in **Specs** and accept it.
 
 ## 6. Look around
 
