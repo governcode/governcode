@@ -16,7 +16,7 @@ export type Tab = "conversation" | "specs" | "checkpoints" | "notes" | "trace" |
 export type Place = { kind: "global"; id: Global } | { kind: "project"; name: string; tab: Tab };
 
 export function Sidebar(props: { place: Place; onPlace: (p: Place) => void; projects: Project[]; specs: Spec[]; gates: Gate[];
-  limits: ProviderLimit[]; needs: number; status: Status | null; hello: Hello | null; up: boolean; live: boolean; socketPath?: string; onNewProject: () => void; onOpenFolder: () => void }) {
+  limits: ProviderLimit[]; needs: number; status: Status | null; hello: Hello | null; up: boolean; live: boolean; socketPath?: string; onSearch: () => void; onNewProject: () => void; onOpenFolder: () => void }) {
   const at = (id: Global) => props.place.kind === "global" && props.place.id === id;
   const item = (id: Global, icon: IconName, label: string, tail?: ReactNode) => (
     <button className={`side-item ${at(id) ? "on" : ""}`} onClick={() => props.onPlace({ kind: "global", id })} aria-current={at(id) ? "page" : undefined}>
@@ -33,6 +33,8 @@ export function Sidebar(props: { place: Place; onPlace: (p: Place) => void; proj
         <span className="name">GovernCode</span>
         {props.hello && <span className="ver" title={`govd ${props.hello.version} · protocol ${props.hello.protocol}`}>{props.hello.version.replace(/-.*$/, "")}</span>}
       </div>
+      <button className="search" disabled={!props.up} onClick={props.onSearch} title="Jump anywhere or answer a Gate">
+        <Icon name="search" size={14} /><span>Search or jump to…</span><kbd>Ctrl K</kbd></button>
       <nav className="side-scroll" aria-label="GovernCode">
         {item("overview", "overview", "Overview")}
         {item("needs", "inbox", "Needs you", props.needs > 0 && <span className="badge">{props.needs}</span>)}

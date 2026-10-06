@@ -20,6 +20,7 @@ import { Overview } from "./views/Overview.tsx";
 import { NeedsYou } from "./views/NeedsYou.tsx";
 import { Settings } from "./views/Settings.tsx";
 import { Sidebar, type Place, type Tab } from "./views/Sidebar.tsx";
+import { Palette } from "./views/Palette.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import { hasActiveAsk } from "../shared/pending.ts";
 
@@ -39,6 +40,15 @@ export function App() {
   const [gatesAt, setGatesAt] = useState(0);
   const [threads, setThreads] = useState<Record<string, Thread>>({});
   const [dialog, setDialog] = useState<"new" | "open" | "controller" | null>(null);
+  const [palette, setPalette] = useState(false);
+  // Ctrl K (Cmd K on a Mac keyboard) opens the palette from anywhere; again closes it.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((v) => !v); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const askThread = useRef(new Map<string, string>());
   const waking = useRef(new Set<string>());   // projects whose Controller is in a wake turn now
 
@@ -221,7 +231,7 @@ export function App() {
   return (
     <div className="app">
       <Sidebar place={place} onPlace={setPlace} projects={projects} specs={specs} gates={gates} limits={limits} needs={needs}
-        status={status} hello={hello} up={up} live={live} socketPath={status?.socketPath} onNewProject={() => setDialog("new")} onOpenFolder={() => setDialog("open")} />
+        status={status} hello={hello} up={up} live={live} socketPath={status?.socketPath} onSearch={() => setPalette(true)} onNewProject={() => setDialog("new")} onOpenFolder={() => setDialog("open")} />
 
       <main className="main">
         {!up ? <Down status={status} /> : place.kind === "project" && current ? (
@@ -273,6 +283,8 @@ export function App() {
               onPlace={setPlace} onGatesChanged={() => void refreshGates()} onNewProject={() => setDialog("new")} onOpenFolder={() => setDialog("open")} />}
       </main>
 
+      {up && palette && <Palette projects={projects} gates={gates} specs={specs} onPlace={setPlace} onClose={() => setPalette(false)}
+        onGatesChanged={() => void refreshGates()} onNewProject={() => setDialog("new")} onOpenFolder={() => setDialog("open")} />}
       {up && dialog === "new" && <NewProject onClose={() => setDialog(null)} onDone={opened} />}
       {up && dialog === "open" && <OpenFolder onClose={() => setDialog(null)} onDone={opened} />}
       {up && personalAsk && <PersonalDialog provider={personalAsk.provider} home={personalAsk.home} onChoose={(use) => void choosePersonal(use)} onClose={closePersonal} />}
