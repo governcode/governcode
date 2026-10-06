@@ -52,7 +52,7 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
         <button className="btn" disabled={measuring} onClick={() => load(true)}>{measuring ? "Measuring…" : "Measure now"}</button>
       </div>
       {error && <div className="error pad">{error}</div>}
-      {providers && !providers.length ? <Empty title="No measured Runners"><p className="dim">GovernCode can delegate only to Runners that report their usage or have a budget.</p></Empty> : (
+      {providers && !providers.length ? <Empty title="No measured Runners" icon="gauge"><p className="dim">GovernCode can delegate only to Runners that report their usage or have a budget.</p></Empty> : (
         <div className="page"><div className="page-inner">
           <div className="page-head"><h1>Allowance</h1>
             <p>What each AI has left in its usage windows, and the share you keep back. A Spec that would reach into the reserve is held, never started.

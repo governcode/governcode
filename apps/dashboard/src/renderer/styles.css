@@ -618,3 +618,30 @@ kbd { font: 500 10.5px/1 var(--sans); color: var(--label-3); padding: 3px 5px; b
 .w-today h3 { grid-column: 1 / -1; }
 .w-today b { display: block; font-size: 22px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .w-today span { font-size: 12px; color: var(--label-3); }
+
+/* ---------- Empty states, first run, Checkpoints, the empty conversation ---------- */
+.empty-icon { width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: var(--fill-2); color: var(--label-2); margin-bottom: 6px; }
+.welcome { padding: 24px 26px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--surface)), var(--surface) 55%); }
+.welcome-head { display: flex; gap: 16px; align-items: center; }
+.welcome-head img { width: 54px; height: 54px; border-radius: 14px; box-shadow: var(--shadow-card); }
+.welcome-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+.welcome-head p { margin: 4px 0 0; color: var(--label-2); }
+.welcome-steps { list-style: none; margin: 18px 0 0; padding: 0; display: flex; flex-direction: column; }
+.welcome-steps li { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 14px 0; border-top: 1px solid var(--sep); }
+.welcome-steps .n { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: var(--fill-2); color: var(--label-2); }
+.welcome-steps li.done .n { background: var(--green); color: #032a14; }
+.welcome-steps b { font-size: 14px; }
+.welcome-steps p { margin: 2px 0 0; color: var(--label-2); font-size: 12.5px; }
+.cp-list { padding-left: max(24px, calc((100% - 820px) / 2)); padding-right: max(24px, calc((100% - 820px) / 2)); }
+.cp-intro { margin: 4px 2px 6px; }
+.cp .cp-icon { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: var(--accent-tint); color: var(--accent); }
+.cp.undone { opacity: .62; }
+.cp.undone .cp-icon { background: var(--fill-2); color: var(--label-3); }
+.cp-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.cp-file { font-size: 11.5px; padding: 3px 8px; border-radius: 6px; background: var(--fill); color: var(--label-2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log > .intro { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 9vh 0 20px; color: var(--label-2); }
+.log > .intro h2 { font-size: 22px; font-weight: 700; letter-spacing: -.02em; color: var(--label); margin-top: 6px; }
+.log > .intro p { margin: 0; max-width: 540px; line-height: 1.55; }
+.suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 10px; }
+.suggest .chip { padding: 7px 12px; border-radius: 10px; font-size: 12.5px; background: var(--surface); box-shadow: var(--shadow-card); border: 1px solid var(--card-edge); color: var(--label); }
+.suggest .chip:hover { background: var(--surface-2); }

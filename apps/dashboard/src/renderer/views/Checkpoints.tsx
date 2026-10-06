@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { call, clock, useFallbackPoll, useWatch, type Turn } from "../api.ts";
 import { Empty, Pill, UndoCheckpoint } from "../ui.tsx";
+import { Icon } from "../icons.tsx";
 
 export function Checkpoints({ project, live }: { project: string | null; live: boolean }) {
   const [turns, setTurns] = useState<Turn[] | null>(null);
@@ -32,21 +33,23 @@ export function Checkpoints({ project, live }: { project: string | null; live: b
         {project && <button className="btn" onClick={load}>Refresh</button>}
       </div>
       {error && <div className="error pad">{error}</div>}
-      {!project ? <Empty title="No project selected"><p className="dim">Home turns cannot write anything, so they have no Checkpoints. Pick a project in the sidebar.</p></Empty>
-        : turns && !turns.length ? <Empty title="No Checkpoints yet"><p className="dim">When a Controller turn changes files in {project}, it is recorded here and can be undone.</p></Empty>
+      {!project ? <Empty title="No project selected" icon="undo"><p className="dim">Home turns cannot write anything, so they have no Checkpoints. Pick a project in the sidebar.</p></Empty>
+        : turns && !turns.length ? <Empty title="No Checkpoints yet" icon="undo"><p className="dim">When a Controller turn changes files in {project}, it is recorded here and can be undone.</p></Empty>
         : (
-          <div className="scroll">
+          <div className="scroll cp-list">
+            <p className="dim small cp-intro">Each Controller turn that changed {project} is a Checkpoint. Undo puts exactly its files back, and refuses if you changed any of them since.</p>
             {turns?.map((t) => (
-              <div key={t.id} className="checkpoint">
+              <div key={t.id} className={`checkpoint cp ${t.undone || restored[t.id] ? "undone" : ""}`}>
                 <div className="row">
+                  <span className="cp-icon"><Icon name="undo" size={14} /></span>
                   <b className="mono">{t.id}</b>
                   <span className="dim mono">{clock(t.at)}</span>
-                  <span className="dim">{t.files.length} file{t.files.length === 1 ? "" : "s"}</span>
+                  <span className="dim">· {t.files.length} file{t.files.length === 1 ? "" : "s"}</span>
                   <span className="spacer" />
                   {t.undone || restored[t.id] ? <Pill tone="dim">undone</Pill>
                     : <UndoCheckpoint id={t.id} files={t.files} onUndone={(r) => { setRestored((m) => ({ ...m, [t.id]: r })); void load(); }} />}
                 </div>
-                <div className="mono small files">{t.files.join("  ")}</div>
+                <div className="cp-files">{t.files.map((f) => <span key={f} className="cp-file mono" title={f}>{f}</span>)}</div>
                 {restored[t.id] && <div className="ok small">Restored {restored[t.id].length} file(s): {restored[t.id].join(", ")}</div>}
               </div>
             ))}

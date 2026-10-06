@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "re
 import { call, clock, useWatch, type Controller, type Gate, type Project, type RecoveryItem } from "../api.ts";
 import { GateCard, Pill, UndoCheckpoint, type GateState } from "../ui.tsx";
 import { ProviderMark, providerName } from "../brand.tsx";
+import { Icon } from "../icons.tsx";
 
 export type Entry =
   | { t: "you"; text: string }
@@ -87,8 +88,19 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
         )}
       </div>
       <div className="log" ref={log}>
-        {!props.thread.entries.length && <div className="intro">Ask the Controller something, in plain words. It remembers this conversation until you start a new one.
-          Steps that need your say stop here as a Gate; how often depends on Settings › Gates.</div>}
+        {!props.thread.entries.length && (
+          <div className="intro">
+            {ctl ? <ProviderMark id={ctl} size={52} /> : <span className="empty-icon"><Icon name="chat" size={22} /></span>}
+            <h2>{props.project ? `Ask ${ctl ? providerName(ctl) : "the Controller"} about ${props.project.name}` : "Ask without a project"}</h2>
+            <p>{props.project ? "In plain words. It remembers this conversation until you start a new one, hands bounded jobs to Runners, and stops at a Gate for anything that needs your say."
+              : "At Home the Controller can read and plan, but not write. It can propose a new project for you to create."}</p>
+            <div className="suggest">
+              {(props.project ? SUGGEST_PROJECT : SUGGEST_HOME).map((s) => (
+                <button key={s} className="chip" onClick={() => setDraft(s)} title="Puts it in the message box; nothing is sent until you press Send">{s}</button>
+              ))}
+            </div>
+          </div>
+        )}
         {props.thread.entries.map((e, i) => {
           switch (e.t) {
             case "you": return <div key={i} className="msg you"><span className="vh">You: </span><div className="bubble">{e.text}</div></div>;
@@ -152,6 +164,10 @@ export function Terminal(props: { project: Project | null; thread: Thread; openG
     </section>
   );
 }
+
+// Starting points for an empty conversation: they fill the message box, never send.
+const SUGGEST_PROJECT = ["Where does this project stand?", "What should we work on next?", "Review the Specs waiting for me"];
+const SUGGEST_HOME = ["Help me plan a new project", "What happened across my projects today?", "Explain how GovernCode keeps the AIs in check"];
 
 /** "S-0001", "S-0001 and S-0002", "S-0001, S-0002 and S-0003". */
 function listed(ids: string[]): string {

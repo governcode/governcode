@@ -23,7 +23,7 @@ export function NeedsYou({ gates, specs, held, onAnswered, onPlace }: { gates: G
       </div>
       <div className="scroll">
         <div style={{ maxWidth: 860, width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: 10 }}>
-          {none && <Empty title="All clear"><p>When a Controller or Runner needs approval, a Spec finishes, or work waits for a reset, it shows up here.</p></Empty>}
+          {none && <Empty title="All clear" icon="check"><p>When a Controller or Runner needs approval, a Spec finishes, or work waits for a reset, it shows up here.</p></Empty>}
           {gates.length > 0 && <h3>Gates · Allow runs exactly the request shown</h3>}
           {gates.map((g) => (
             <GateCard key={g.id} id={g.id} tool={g.tool} canonical={g.canonical} project={g.project} opened={g.opened} covers={g.covers} scopes={g.scopes} suggest={g.suggest}

@@ -365,11 +365,11 @@ function wakeEntry(ev: TraceEvent, waking: Map<string, string | null>): Entry | 
 
 function Down({ status }: { status: Status | null }) {
   const [trying, setTrying] = useState(false);
-  if (!status || status.state === "connecting") return <Empty title="Connecting to govd…" />;
+  if (!status || status.state === "connecting") return <Empty title="Connecting to govd…" icon="refresh" />;
   const retry = async () => { setTrying(true); await api().retry(); setTrying(false); };
   return (
-    <Empty title="govd is not running">
-      <p className="dim">The Dashboard is a client of govd, the GovernCode daemon. Start it from the repository:</p>
+    <Empty title="govd is not running" icon="shieldX">
+      <p className="dim">The Dashboard shows what govd, GovernCode's background service, is doing; nothing runs without it. Start it from the repository:</p>
       <pre className="code cmd">{START_GOVD}</pre>
       <p className="dim">Retrying every 3 seconds. {status.state === "down" && <span className="mono">({status.error})</span>}</p>
       <button className="btn" disabled={trying} onClick={retry}>{trying ? "Trying…" : "Retry now"}</button>

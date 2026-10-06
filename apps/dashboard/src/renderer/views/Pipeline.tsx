@@ -60,7 +60,7 @@ export function Pipeline({ project, live, recoveryEnabled }: { project: string |
       </div>
       {error && <div className="error pad">{error}</div>}
       {specs && !specs.length ? (
-        <Empty title="No Specs yet"><p className="dim">When the Controller delegates a job to a Runner, the Spec appears here.</p></Empty>
+        <Empty title="No Specs yet" icon="branch"><p className="dim">When the Controller delegates a job to a Runner, the Spec appears here.</p></Empty>
       ) : (
         <div className="split">
           <div className="list">

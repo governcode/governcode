@@ -12,6 +12,7 @@ import { Icon, type IconName } from "../icons.tsx";
 import { Glyph, Ring } from "../ui.tsx";
 import type { ProviderLimit } from "./Limits.tsx";
 import type { Place } from "./Sidebar.tsx";
+import markUrl from "../../../../../docs/brand/governcode-icon.svg";
 
 const QUIET = new Set(["turn.text", "turn.tool", "spec.step", "context.shared", "tool.connected"]);
 // At most 20 kinds (govd's limit for one trace.list).
@@ -101,6 +102,7 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
         </div>
         <div className="ov-grid">
           <div className="ov-main">
+            {!props.projects.length && <Welcome onPlace={props.onPlace} onNewProject={props.onNewProject} onOpenFolder={props.onOpenFolder} />}
             <section>
               <div className="section-bar"><h2 className="section-title">Needs you <span className="count">{needs}</span></h2>
                 {needs > 0 && <button className="linkish" onClick={() => props.onPlace({ kind: "global", id: "needs" })}>Open all</button>}</div>
@@ -147,7 +149,7 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
               </div>
             </section>
 
-            <section>
+            {props.projects.length > 0 && <section>
               <div className="section-bar"><h2 className="section-title">Projects <span className="count">{props.projects.length}</span></h2></div>
               {!props.projects.length ? <div className="card all-clear"><span className="tile" style={{ background: "var(--accent-tint)", color: "var(--accent)" }}><Icon name="plus" /></span>
                 <span>No projects yet. <button className="linkish" onClick={props.onNewProject}>Create one</button> or <button className="linkish" onClick={props.onOpenFolder}>open a folder</button>, or ask at Home.</span></div> : (
@@ -173,7 +175,7 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
                   })}
                 </div>
               )}
-            </section>
+            </section>}
 
             <section>
               <div className="section-bar"><h2 className="section-title">Recent</h2>
@@ -223,6 +225,39 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
           </div>
         </div>
       </div></div>
+    </section>
+  );
+}
+
+/** The first run: three steps to a working crew, each showing where it stands. */
+function Welcome(props: { onPlace: (p: Place) => void; onNewProject: () => void; onOpenFolder: () => void }) {
+  const [tools, setTools] = useState<Array<{ tool: string; name: string; installed: boolean; connected: boolean }> | null>(null);
+  useEffect(() => { void call<{ tools: Array<{ tool: string; name: string; installed: boolean; connected: boolean }> }>("tools.list", {}).then((r) => setTools(r.tools), () => setTools([])); }, []);
+  const connected = tools?.filter((t) => t.connected) ?? [];
+  return (
+    <section className="card welcome">
+      <div className="welcome-head">
+        <img src={markUrl} alt="" />
+        <div><h2>Welcome to GovernCode</h2><p>Your AI coding tools, working as one crew, inside a sandbox, with you holding the keys. Three steps to start:</p></div>
+      </div>
+      <ol className="welcome-steps">
+        <li className={connected.length ? "done" : ""}>
+          <span className="n">{connected.length ? <Icon name="check" size={14} /> : 1}</span>
+          <div><b>Connect your AI tools</b>
+            <p>{tools === null ? "Checking…" : connected.length ? `Connected: ${connected.map((t) => t.name).join(", ")}.` : "Each tool signs in once, with its own sign-in. GovernCode never stores your passwords."}</p></div>
+          <button className="btn" onClick={() => props.onPlace({ kind: "global", id: "settings" })}>{connected.length ? "Manage tools" : "Connect tools"}</button>
+        </li>
+        <li>
+          <span className="n">2</span>
+          <div><b>Create or open a project</b><p>A project is a folder the crew works in. Changes reach it only after you review them.</p></div>
+          <span className="row"><button className="btn btn-quiet" onClick={props.onOpenFolder}>Open folder</button><button className="btn btn-accent" onClick={props.onNewProject}>New project</button></span>
+        </li>
+        <li>
+          <span className="n">3</span>
+          <div><b>Ask your Controller</b><p>Describe what you want in plain words. Or start at Home, and it can propose the project for you.</p></div>
+          <button className="btn" onClick={() => props.onPlace({ kind: "global", id: "home" })}>Ask Home</button>
+        </li>
+      </ol>
     </section>
   );
 }

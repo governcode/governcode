@@ -79,7 +79,7 @@ export function Trace({ project, live }: { project: string | null; live: boolean
       </div>
       {error && <div className="error pad">{error}</div>}
       <div className="scroll trace-scroll">
-        {events && !shown.length ? <Empty title="Nothing here yet"><p>Every turn, Gate, Spec and change is recorded here as it happens.</p></Empty> : days.map(([day, list]) => (
+        {events && !shown.length ? <Empty title="Nothing here yet" icon="clock"><p>Every turn, Gate, Spec and change is recorded here as it happens.</p></Empty> : days.map(([day, list]) => (
           <section key={day} className="tday">
             <h3>{day}</h3>
             <ol className="tlist">

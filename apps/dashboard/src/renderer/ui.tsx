@@ -2,6 +2,7 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { call, clock } from "./api.ts";
 import { parseDiff, sideBySide, type DiffLine } from "../shared/diff.ts";
+import { Icon, type IconName } from "./icons.tsx";
 
 export type Tone = "ok" | "warn" | "danger" | "info" | "accent" | "violet" | "dim";
 export function Pill({ tone, children, title }: { tone: Tone; children: ReactNode; title?: string }) {
@@ -177,9 +178,10 @@ export function DiffView({ diff }: { diff: string }) {
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+export function Empty({ title, icon, children }: { title: string; icon?: IconName; children?: ReactNode }) {
   return (
     <div className="empty">
+      {icon && <span className="empty-icon"><Icon name={icon} size={22} /></span>}
       <div className="empty-title">{title}</div>
       {children}
     </div>
