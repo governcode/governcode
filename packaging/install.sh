@@ -165,11 +165,21 @@ fi
 
 if [ "${1:-}" = "--service" ]; then
   mkdir -p "$(dirname "$unit")"
+  # The service gets this shell's PATH, the one whose Node passed the check above (and where the
+  # AI tools are found). Early at login, systemd's own PATH can hold only an older system Node.
+  # A PATH systemd could misread (a quote, a backslash, a newline) is left out.
+  envline=""
+  case "$PATH" in
+    *[\"\\]* | *"
+"*) echo "Your PATH has a quote, backslash or newline; the service uses systemd's PATH." ;;
+    *) envline="Environment=\"PATH=$(printf '%s' "$PATH" | sed 's/%/%%/g')\"" ;;
+  esac
   cat > "$unit" <<UNIT
 [Unit]
 Description=GovernCode daemon (govd)
 
 [Service]
+$envline
 ExecStart=$bindir/govd
 Restart=on-failure
 

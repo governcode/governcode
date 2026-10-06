@@ -118,3 +118,22 @@ test("install.sh --uninstall keeps a unit, link or launcher entry that is not Go
     assert.ok(!existsSync(join(s.t, "systemctl.log")), "systemctl never called for a unit that is not ours");
   } finally { rmSync(s.t, { recursive: true, force: true }); }
 });
+
+test("install.sh --service gives the service the PATH whose Node it checked", () => {
+  const s = setup();
+  try {
+    const unit = join(s.home, ".config/systemd/user/governcode.service");
+    const odd = join(s.t, "50%off");
+    mkdirSync(odd);
+    s.env.PATH = `${s.env.PATH}:${odd}`;
+    assert.equal(s.run("--service").status, 0);
+    const line = readFileSync(unit, "utf8").split("\n").find((l) => l.startsWith("Environment="));
+    assert.equal(line, `Environment="PATH=${s.env.PATH.replaceAll("%", "%%")}"`);
+    // A PATH systemd would misread is left out; systemd's own PATH is used.
+    s.env.PATH = `${s.env.PATH}:${join(s.t, 'a"b')}`;
+    const r = s.run("--service");
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /the service uses systemd's PATH/);
+    assert.ok(!readFileSync(unit, "utf8").includes("Environment="));
+  } finally { rmSync(s.t, { recursive: true, force: true }); }
+});
