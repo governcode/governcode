@@ -41,10 +41,15 @@ export function App() {
   const [threads, setThreads] = useState<Record<string, Thread>>({});
   const [dialog, setDialog] = useState<"new" | "open" | "controller" | null>(null);
   const [palette, setPalette] = useState(false);
-  // Ctrl K (Cmd K on a Mac keyboard) opens the palette from anywhere; again closes it.
+  // Ctrl K (Cmd K on a Mac keyboard) opens the palette from anywhere; again closes it. Not over a
+  // dialog, and not while govd is away.
+  const canPalette = useRef(false);
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((v) => !v); }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((v) => v ? false : canPalette.current);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -223,6 +228,7 @@ export function App() {
   useEffect(() => {
     if (place.kind === "project" && projects.length && !projects.some((p) => p.name === place.name)) setPlace({ kind: "global", id: "overview" });
   }, [place, projects]);
+  canPalette.current = status?.state === "up" && dialog === null && personalAsk === null;
   const needs = gates.length + specs.filter((s) => s.status === "needs-review").length + held.length;
   const reviewCount = (name: string) => specs.filter((s) => s.project === name && s.status === "needs-review").length;
   const conversation = (key: string) => (

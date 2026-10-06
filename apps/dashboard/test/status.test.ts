@@ -30,4 +30,7 @@ test("a Gate is answerable from a one-line row only when all of its request is s
   assert.equal(gateFitsInline("cat <<EOF > x\nharmless\nEOF\nrm -rf ~/work"), false, "a second line would be hidden");
   assert.equal(gateFitsInline("echo ok\rrm -rf ~"), false);
   assert.equal(gateFitsInline("x".repeat(141)), false, "too long to show in full");
+  for (const hidden of ["echo a\tb", "echo ok\u2028rm -rf ~", "echo \u202egnp.exe", "rm\u200b -rf build", "echo \ufeffx"]) {
+    assert.equal(gateFitsInline(hidden), false, JSON.stringify(hidden));
+  }
 });

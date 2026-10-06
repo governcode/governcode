@@ -33,8 +33,11 @@ export function projectStatus(name: string, specs: readonly SpecLike[], gates: r
 /** A Gate may be answered from a one-line row only when its whole request fits there: a single
  *  line, short enough to show in full. Anything else is answered where all of it is shown. */
 export const INLINE_GATE_MAX = 140;
+// Line breaks, other control characters, and invisible or direction-changing ones (zero-width,
+// bidi overrides, line and paragraph separators) could hide part of a request in a one-line row.
+const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
 export function gateFitsInline(canonical: string): boolean {
-  return !/[\r\n]/.test(canonical) && canonical.length <= INLINE_GATE_MAX;
+  return !HIDDEN.test(canonical) && canonical.length <= INLINE_GATE_MAX;
 }
 
 /** The window a provider is closest to its reserve in, as one number for a ring. */
