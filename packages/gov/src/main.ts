@@ -149,6 +149,23 @@ function answers(): { next(prompt: string, withdrawn?: AbortSignal): Promise<str
 const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (Anthropic)", codex: "Codex (OpenAI)" };
 // What gov controller sets without --model or --effort (the models the Dashboard suggests first).
 const CONTROLLER_DEFAULTS: Record<string, { model: string; effort: string }> = { "claude-code": { model: "opus", effort: "high" }, codex: { model: "gpt-5.5", effort: "medium" } };
+/** The command a typo most likely meant: one or two letters off, or the start of exactly one. */
+function closest(typed: string, names: string[]): string | null {
+  const dist = (a: string, b: string) => {
+    let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const next = [i];
+      for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      row = next;
+    }
+    return row[b.length];
+  };
+  const best = names.map((n) => [n, dist(typed, n)] as const).sort((x, y) => x[1] - y[1])[0];
+  if (best && best[1] <= (typed.length > 4 ? 2 : 1)) return best[0];
+  const starts = names.filter((n) => typed.length >= 3 && n.startsWith(typed));
+  return starts.length === 1 ? starts[0] : null;
+}
+
 // Short names people type for a window: gov budget opencode 5h 40 turns.
 const WINDOW_ALIASES: Record<string, string> = { "5h": "5-hour", "5hr": "5-hour", "5-hours": "5-hour", day: "daily", week: "weekly", month: "monthly" };
 const windowName = (w: string | undefined) => (w && Object.hasOwn(WINDOW_ALIASES, w) ? WINDOW_ALIASES[w] : w);
@@ -362,7 +379,11 @@ async function main(argv: string[]): Promise<number> {
     if (rest.length !== (i >= 0 ? 3 : 1) || (i >= 0 && i !== 1)) throw new Error("usage: gov tunnel HOST [--remote-socket PATH] | gov tunnel --stop HOST | gov tunnel");
     return t.runTunnel(rest[0], i >= 0 ? rest[i + 1] : undefined, env);
   }
-  if (cmd !== undefined && !COMMANDS.has(cmd)) { console.error(USAGE); return 2; }
+  if (cmd !== undefined && !COMMANDS.has(cmd)) {
+    const near = closest(cmd, [...COMMANDS, "help", "daemon", "tunnel", "socket-path"]);
+    console.error(`gov: unknown command ${oneLine(cmd)}${near ? `. Did you mean gov ${near}?` : ""} (gov help lists them all)`);
+    return 2;
+  }
   const api = await open();
   const command = async (): Promise<number> => {
     switch (cmd) {

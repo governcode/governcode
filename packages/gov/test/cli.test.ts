@@ -337,7 +337,7 @@ test("ACP inspect-installed is advertised in the top-level help without connecti
   assert.equal(existsSync(stateDir), false);
 });
 
-test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets it on stderr, without govd too", async () => {
+test("gov help, --help and -h print the usage on stdout and need no govd; an unknown command gets a short answer (and the likely command) on stderr, without govd too", async () => {
   const none = mkdtempSync(join(root, "none-"));   // no govd listens here
   for (const h of ["help", "--help", "-h"]) {
     const r = await run(none, [h]).done;
@@ -354,7 +354,12 @@ test("gov help, --help and -h print the usage on stdout and need no govd; an unk
   const bad = await run(none, ["frobnicate"]).done;
   assert.equal(bad.code, 2);
   assert.equal(bad.stdout, "");
-  assert.match(bad.stderr, /^usage: gov /);
+  assert.equal(bad.stderr, "gov: unknown command frobnicate (gov help lists them all)\n");
+  for (const [typed, meant] of [["limit", "limits"], ["stauts", "status"], ["frict", "friction"], ["spec", "specs"]]) {
+    const near = await run(none, [typed]).done;
+    assert.equal(near.code, 2);
+    assert.equal(near.stderr, `gov: unknown command ${typed}. Did you mean gov ${meant}? (gov help lists them all)\n`);
+  }
 });
 
 test("arguments are checked before govd is asked anything, with a usage line or a plain rule", async () => {
