@@ -52,7 +52,12 @@ export type DaemonOptions = { socketPath: string; ledgerPath: string; policyDir:
 // owner (a running Spec's, a wake turn's) waits for any client, up to GATE_WAIT_MS.
 type Gate = { id: string; project: string | null; tool: string; canonical: string; opened: string;
   owner: Socket | null; answer: (a: "allow" | "deny") => void; timer?: ReturnType<typeof setTimeout>;
-  kinds: Kind[]; scopes: AllowScope[]; ctx: GateContext };   // what a standing allow would cover
+  kinds: Kind[]; scopes: AllowScope[]; ctx: GateContext;   // what a standing allow would cover
+  step: StepKinds };   // what kind of step it is, for the Trace (gov friction)
+// The kinds of step a request is (`command:npm test`, `edit`, `runner:tool:WebSearch`...), whether
+// a rule covers them or not; `always`: a step no rule may cover (rm, curl, shell syntax...), so it
+// always asks. Recorded with each Gate and each step let through, never the request's own text.
+type StepKinds = { kinds: string[]; always: boolean };
 
 export class Daemon {
   readonly ledger: Ledger;
@@ -439,7 +444,7 @@ export class Daemon {
       const rule = this.allows.add(remember, k, g.ctx);
       this.ledger.append(g.project, "allow.added", "user", { rule: rule.id, scope: rule.scope, key: rule.key, label: rule.label, from: id });
     }
-    this.ledger.append(g.project, answer === "allow" ? "gate.allowed" : "gate.denied", "user", { gate: id, tool: g.tool, by });
+    this.ledger.append(g.project, answer === "allow" ? "gate.allowed" : "gate.denied", "user", { gate: id, tool: g.tool, by, ...g.step });
     this.gatesChanged();
     g.answer(answer);
     return true;
@@ -460,8 +465,9 @@ export class Daemon {
       const L = this.ledger;
       const { level, quietReads } = this.settings().gates;
       const a = analyze(req);
+      const step: StepKinds = { kinds: a.kinds.map((k) => k.key), always: a.ask };
       const pass = (by: string, why: string, extra: Record<string, unknown> = {}) => {
-        L.append(o.project, "gate.allowed", "govd", { tool: req.tool, by, ...extra, request: req.canonical.slice(0, 4000), turn: o.ctx.turn, spec: req.spec ?? null });
+        L.append(o.project, "gate.allowed", "govd", { tool: req.tool, by, ...extra, ...step, request: req.canonical.slice(0, 4000), turn: o.ctx.turn, spec: req.spec ?? null });
         o.notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why });
         answer("allow");
       };
@@ -484,7 +490,7 @@ export class Daemon {
       const abort = () => { this.settle(id, "deny", "the operation ended"); };
       const gate: Gate = { id, project: o.project, tool: req.tool, canonical: req.canonical,
         opened: new Date().toISOString(), owner: o.owner,
-        answer: (choice) => { o.signal?.removeEventListener("abort", abort); answer(choice); }, kinds, scopes, ctx: o.ctx };
+        answer: (choice) => { o.signal?.removeEventListener("abort", abort); answer(choice); }, kinds, scopes, ctx: o.ctx, step };
       if (!o.owner || o.mandatory) {
         gate.timer = setTimeout(() => this.settle(id, "deny", o.mandatory ? "nobody answered before the Gate expired" : "nobody answered within the hour"), GATE_WAIT_MS);
         gate.timer.unref?.();
@@ -492,7 +498,7 @@ export class Daemon {
       this.gates.set(id, gate);
       o.signal?.addEventListener("abort", abort, { once: true });
       o.onOpened?.(id);
-      L.append(o.project, "gate.opened", req.actor ?? o.actor, { gate: id, tool: req.tool });
+      L.append(o.project, "gate.opened", req.actor ?? o.actor, { gate: id, tool: req.tool, ...step });
       this.gatesChanged();
       o.notify({ kind: "gate", id, tool: req.tool, canonical: req.canonical, covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
         scopes, level, suggest: level === "balanced" && scopes.includes("project") ? "project" : null });
@@ -912,7 +918,7 @@ export class Daemon {
         return { id: s.id, status: s.status, files: s.files, note: s.note };
       }
       case "gate.list":
-        return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, timer: _t, kinds, ...g }) => ({ ...g,
+        return { gates: [...this.gates.values()].map(({ owner: _o, answer: _a, ctx: _c, timer: _t, step: _s, kinds, ...g }) => ({ ...g,
           covers: kinds.length ? kinds.map((k) => k.label).join("; ") : null,
           suggest: this.settings().gates.level === "balanced" && g.scopes.includes("project") ? "project" : null })) };
       case "plan.answer": {

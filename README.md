@@ -131,7 +131,8 @@ not asked about every `npm test`; a command like `cd app && npm test | tail` cou
 risky steps always ask (deleting, git commands that change the repository, installing packages,
 network tools, interpreters, handing work to a paid Runner), and everything is in the Trace.
 `gov friction [--project NAME] [--days N] [--json]` counts from it how often you were asked, who
-answered, and which tools you allowed every time; it only reads, and makes no rule. Details:
+answered, and which kinds of step (`npm test`, file edits) you allowed every time: candidates for a
+standing allow. It only reads, and makes no rule. Details:
 [docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
 
 **Project memory.** GovernCode, not the AI tool, keeps what a Controller knows about a project,

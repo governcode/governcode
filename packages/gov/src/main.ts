@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, Params, ProjectName, RUNNERS, SpecCheckpoints, SpecDiff, setBudget, type CountedWindow } from "@governcode/protocol";
 import type { AcpStoredRuntimeObservation } from "../../govd/src/acp-install.ts";
 import { runDemo } from "./demo.ts";
-import { FRICTION_KINDS, friction, readTrace, type FrictionReport } from "./friction.ts";
+import { FRICTION_KINDS, friction, kindName, readTrace, type FrictionReport } from "./friction.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
 const env = process.env;
@@ -1035,7 +1035,17 @@ function printFriction(r: FrictionReport, days: number): void {
   for (const x of r.tools) {
     console.log(`${x.tool.slice(0, w).padEnd(w)}  ${String(x.asked).padStart(5)}  ${String(x.allowed).padStart(7)}  ${String(x.denied).padStart(6)}  ${String(x.autoDenied).padStart(7)}${x.allowedEveryTime ? "  allowed every time" : ""}`);
   }
-  console.log(dim("Grouped by tool: the Trace does not record a Gate's kind of step. Allowed every time: 5 or more, never denied by you. No rule was made."));
+  if (r.kinds.length) {
+    const k = Math.min(40, Math.max(12, ...r.kinds.map((x) => kindName(x.kind).length)));
+    console.log(`\n${"Kind of step".padEnd(k)}  asked  allowed  denied  by govd  let through`);
+    for (const x of r.kinds) {
+      console.log(`${kindName(x.kind).slice(0, k).padEnd(k)}  ${String(x.asked).padStart(5)}  ${String(x.allowed).padStart(7)}  ${String(x.denied).padStart(6)}  ${String(x.autoDenied).padStart(7)}  ${String(x.passed).padStart(11)}${x.allowedEveryTime ? "  allowed every time" : ""}`);
+    }
+  }
+  const older = g.opened - r.kindsRecorded;
+  if (r.kinds.length) console.log(dim("A command of several kinds counts under each. Let through: by your rules, an approved plan or relaxed Gates."));
+  if (older > 0) console.log(dim(`${older} Gate${older === 1 ? "" : "s"} from an older govd recorded only the tool, not the kind.`));
+  console.log(dim("Allowed every time: 5 or more, never denied by you; a candidate for a standing allow. No rule was made."));
 }
 
 async function daemon(verb: string | undefined): Promise<number> {

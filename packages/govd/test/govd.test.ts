@@ -459,6 +459,11 @@ test("standing allows: a turn rule covers the same kind for this turn only; quie
   assert.ok(trace.some((e) => e.kind === "allow.added" && e.data.scope === "turn"));
   assert.ok(trace.some((e) => e.kind === "gate.allowed" && String(e.data.by).startsWith("rule R-")));
   assert.ok(trace.some((e) => e.kind === "gate.allowed" && e.data.by === "quiet read"));
+  // Each Gate and each step let through records its kind of step (gov friction), never more than the key.
+  const step = (e: any) => [e.kind, e.data.kinds, e.data.always];
+  assert.deepEqual(trace.filter((e) => e.kind === "gate.opened").map(step), [["gate.opened", ["command:npm test"], false], ["gate.opened", [], true]]);
+  assert.deepEqual(trace.filter((e) => e.kind === "gate.allowed" && e.data.gate).map(step), [["gate.allowed", ["command:npm test"], false], ["gate.allowed", [], true]]);
+  assert.deepEqual(trace.filter((e) => e.kind === "gate.allowed" && !e.data.gate).map(step), [["gate.allowed", ["command:npm test"], false], ["gate.allowed", [], false]], "the rule's step, then the quiet read");
   answerWith();
   r = await c.call("ask", { project: "a", prompt: "twice" });
   assert.equal(shown.length, 3, "a new turn asks again: npm test, npm test --watch, npm install");
@@ -475,6 +480,8 @@ test("standing allows: a turn rule covers the same kind for this turn only; quie
   shown = [];
   await c.call("ask", { project: "a", prompt: "go" });   // the fake asks for rm -rf dist
   assert.match(shown[0].error.message, /always asks/);
+  const denied = d.ledger.events("a", 5).filter((e) => e.kind === "gate.denied").at(-1)!;
+  assert.deepEqual([denied.data.by, denied.data.kinds, denied.data.always], ["user", [], true]);
   c.end(); d.close();
 });
 

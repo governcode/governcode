@@ -1,12 +1,12 @@
-// `gov friction` (#224, step 1): how often GovernCode got in the way, measured from the Trace before
-// any policy changes. It only reads: no setting, Gate, rule or sandbox behaviour is touched, and a
-// kind of step allowed every time is reported, never remembered.
+// `gov friction` (#224): how often GovernCode got in the way, measured from the Trace before any
+// policy changes. It only reads: no setting, Gate, rule or sandbox behaviour is touched, and a kind
+// of step allowed every time is reported, never remembered.
 //
 // Everything here is what govd actually records (daemon.ts, ledger.ts). What it does not record is
 // left out rather than guessed:
-// - A Gate's kind of step (the "npm test" a standing allow covers) is not in gate.opened; only its
-//   tool is (allow.added has the kind, but only for the Gates you remembered). So Gates are grouped
-//   by tool, and one tool (Bash, codex exec) can cover many kinds of command.
+// - A Gate's kind of step (`command:npm test`, `edit`: what a standing allow would cover) is in
+//   gate.opened, gate.allowed and gate.denied from this version on (data.kinds, data.always). Older
+//   events have only the tool: they are counted by tool, and left out of the kinds.
 // - A turn the user stopped is not recorded apart from other failed turns (its summary is free text).
 // - sandbox.refused records why govd would not start a turn (the sandbox is not verified here), not a
 //   tool; a step the kernel sandbox blocked inside a tool is not in the Trace at all.
@@ -21,6 +21,10 @@ export type FrictionOptions = {
 };
 
 export type ToolFriction = { tool: string; asked: number; allowed: number; denied: number; autoDenied: number; allowedEveryTime: boolean };
+/** One kind of step: `command:npm test`, `runner:edit`..., or `always:<tool>` for steps no rule may
+ *  cover (rm, curl, shell syntax: they always ask). A Gate for a command of several kinds counts
+ *  under each. passed: let through without a Gate (your rule, an approved plan, relaxed). */
+export type KindFriction = { kind: string; asked: number; allowed: number; denied: number; autoDenied: number; passed: number; allowedEveryTime: boolean };
 
 export type FrictionReport = {
   since: string | null;
@@ -40,6 +44,9 @@ export type FrictionReport = {
     passedBy: Record<string, number>;
   };
   tools: ToolFriction[];
+  kinds: KindFriction[];
+  /** Gates opened with their kind recorded (an older govd recorded only the tool). */
+  kindsRecorded: number;
   sandbox: { refused: number; refusedBy: Record<string, number>; gitScrubbed: number; gitGuardFailed: number };
   specs: { created: number; failed: number; limited: number; held: number };
 };
@@ -59,7 +66,7 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
     since: o.since ? o.since.toISOString() : null, project: o.project,
     turns: { started: 0, completed: 0, failed: 0, limited: 0 },
     gates: { opened: 0, byControllers: 0, byRunners: 0, perTurn: null, allowed: 0, denied: 0, autoDenied: 0, autoDeniedBy: {}, passed: 0, passedBy: {} },
-    tools: [],
+    tools: [], kinds: [], kindsRecorded: 0,
     sandbox: { refused: 0, refusedBy: {}, gitScrubbed: 0, gitGuardFailed: 0 },
     specs: { created: 0, failed: 0, limited: 0, held: 0 },
   };
@@ -69,6 +76,18 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
     let t = tools.get(name);
     if (!t) tools.set(name, t = { tool: name, asked: 0, allowed: 0, denied: 0, autoDenied: 0, allowedEveryTime: false });
     return t;
+  };
+  const kinds = new Map<string, KindFriction>();
+  // The kinds an event is about; none when govd did not record them.
+  const kindsOf = (e: TraceEvent): KindFriction[] => {
+    const d = e.data;
+    if (!Array.isArray(d.kinds)) return [];
+    const keys = d.always === true ? [`always:${toolOf(e)}`] : d.kinds.length ? d.kinds.map(String) : [`other:${toolOf(e)}`];
+    return keys.map((k) => {
+      let x = kinds.get(k);
+      if (!x) kinds.set(k, x = { kind: k, asked: 0, allowed: 0, denied: 0, autoDenied: 0, passed: 0, allowedEveryTime: false });
+      return x;
+    });
   };
   for (const e of events) {
     if (o.project !== undefined && e.project !== o.project) continue;
@@ -85,19 +104,25 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
         if (e.actor.startsWith("controller")) r.gates.byControllers++;
         else if (e.actor.startsWith("runner")) r.gates.byRunners++;
         tool(e).asked++;
+        if (Array.isArray(d.kinds)) r.kindsRecorded++;
+        for (const k of kindsOf(e)) k.asked++;
         break;
       case "gate.allowed":
         // With a Gate: you allowed it (only you can). Without one: govd let it through, `by` says why
         // ("quiet read", "relaxed", "plan", "rule R-3, R-7").
-        if (d.gate) { r.gates.allowed++; tool(e).allowed++; }
-        else { r.gates.passed++; bump(r.gates.passedBy, String(d.by ?? "").startsWith("rule") ? "rule" : String(d.by ?? "unknown")); }
+        if (d.gate) { r.gates.allowed++; tool(e).allowed++; for (const k of kindsOf(e)) k.allowed++; }
+        else {
+          r.gates.passed++; bump(r.gates.passedBy, String(d.by ?? "").startsWith("rule") ? "rule" : String(d.by ?? "unknown"));
+          // A quiet read is no kind (nothing to remember); the rest are what your rules and plans saved.
+          if (Array.isArray(d.kinds) && d.kinds.length) for (const k of kindsOf(e)) k.passed++;
+        }
         break;
       case "gate.denied":
         // `by` is "user" for your answer; anything else is govd's ("nobody answered within the hour",
         // "turn ended", "the Spec ended", "asker left", "govd stopped"...). A step asked after its turn
         // or Spec ended is denied without a Gate (no data.gate), and counted here the same way.
-        if (d.by === "user") { r.gates.denied++; tool(e).denied++; }
-        else { r.gates.autoDenied++; bump(r.gates.autoDeniedBy, String(d.by ?? "unknown")); tool(e).autoDenied++; }
+        if (d.by === "user") { r.gates.denied++; tool(e).denied++; for (const k of kindsOf(e)) k.denied++; }
+        else { r.gates.autoDenied++; bump(r.gates.autoDeniedBy, String(d.by ?? "unknown")); tool(e).autoDenied++; for (const k of kindsOf(e)) k.autoDenied++; }
         break;
       case "sandbox.refused": r.sandbox.refused++; bump(r.sandbox.refusedBy, String(d.reason ?? "unknown")); break;
       case "git.scrubbed": r.sandbox.gitScrubbed++; break;
@@ -111,7 +136,20 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
   r.gates.perTurn = r.turns.started ? r.gates.byControllers / r.turns.started : null;
   for (const t of tools.values()) t.allowedEveryTime = t.allowed >= min && t.denied === 0;
   r.tools = [...tools.values()].sort((a, b) => b.asked - a.asked || b.allowed - a.allowed || a.tool.localeCompare(b.tool));
+  // A step that always asks is never a candidate: no rule may cover it.
+  for (const k of kinds.values()) k.allowedEveryTime = !k.kind.startsWith("always:") && k.allowed >= min && k.denied === 0;
+  r.kinds = [...kinds.values()].sort((a, b) => b.asked - a.asked || b.passed - a.passed || a.kind.localeCompare(b.kind));
   return r;
+}
+
+/** A kind in words: `command:npm test` → "npm test", `runner:edit` → "file edits (Runners)". */
+export function kindName(kind: string): string {
+  const runner = kind.startsWith("runner:"), k = runner ? kind.slice(7) : kind;
+  const [head, ...rest] = k.split(":"), tail = rest.join(":");
+  const name = head === "command" ? tail : head === "edit" ? "file edits" : head === "tool" ? tail
+    : k === "delegate:local" ? "jobs for a local model" : k === "spec:discard" ? "discarding a Spec"
+    : head === "always" ? `${tail}, always asks` : head === "other" ? `${tail}, no kind` : k;
+  return runner ? `${name} (Runners)` : name;
 }
 
 /** One page of trace.list: the first `limit` events after seq `after`, or with no `after` the newest. */

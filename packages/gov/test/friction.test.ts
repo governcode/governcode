@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { TraceEvent } from "@governcode/protocol";
-import { friction, readTrace } from "../src/friction.ts";
+import { friction, kindName, readTrace } from "../src/friction.ts";
 
 let seq = 0;
 const at = (day: number) => new Date(Date.UTC(2026, 8, day, 12)).toISOString();
@@ -50,6 +50,49 @@ test("a tool allowed every time is a candidate; one you denied once is not; govd
   // A Runner's Gates are grouped by tool and Runner, not by Spec.
   assert.deepEqual(byTool["Bash (Runner · codex)"], { tool: "Bash (Runner · codex)", asked: 0, allowed: 0, denied: 0, autoDenied: 1, allowedEveryTime: false });
   assert.deepEqual(r.tools.map((t) => t.tool).slice(0, 2), ["Bash", "Edit"], "most asked first");
+});
+
+test("by kind of step: what a standing allow would cover, with the steps that always ask apart", () => {
+  /** A Gate as govd records it now: its kinds of step on the opening and on the answer. */
+  const kgate = (kinds: string[], by: string, answer: "allow" | "deny", always = false) => {
+    const id = `G-${seq + 1}`, step = { kinds, always };
+    return [ev("gate.opened", { gate: id, tool: "Bash", ...step }, { actor: C }),
+      ev(answer === "allow" ? "gate.allowed" : "gate.denied", { gate: id, tool: "Bash", by, ...step }, { actor: by === "user" ? "user" : "govd" })];
+  };
+  const events = [
+    ...Array.from({ length: 5 }, () => kgate(["command:npm test"], "user", "allow")).flat(),
+    ...kgate(["command:npm run", "command:git status"], "user", "allow"), ...kgate(["command:npm run"], "user", "deny"),
+    ...kgate([], "user", "allow", true), ...kgate([], "user", "allow", true), ...kgate([], "turn ended", "deny", true),
+    ...kgate(["runner:edit"], "the Spec ended", "deny"),
+    // Let through: by a rule (a kind), and a quiet read (no kind: nothing to remember).
+    ev("gate.allowed", { tool: "Bash", by: "rule R-1", kinds: ["command:npm test"], always: false }),
+    ev("gate.allowed", { tool: "Bash", by: "quiet read", kinds: [], always: false }),
+    // An older govd: the tool only. Counted by tool, left out of the kinds.
+    ...gate("Bash", "user", "allow"),
+  ];
+  const r = friction(events);
+  const by = Object.fromEntries(r.kinds.map((k) => [k.kind, k]));
+  assert.deepEqual(by["command:npm test"], { kind: "command:npm test", asked: 5, allowed: 5, denied: 0, autoDenied: 0, passed: 1, allowedEveryTime: true });
+  assert.deepEqual(by["command:npm run"], { kind: "command:npm run", asked: 2, allowed: 1, denied: 1, autoDenied: 0, passed: 0, allowedEveryTime: false });
+  assert.equal(by["command:git status"].asked, 1, "a command of two kinds counts under each");
+  assert.deepEqual(by["always:Bash"], { kind: "always:Bash", asked: 3, allowed: 2, denied: 0, autoDenied: 1, passed: 0, allowedEveryTime: false });
+  assert.equal(friction(events, { minAllowed: 2 }).kinds.find((k) => k.kind === "always:Bash")!.allowedEveryTime, false, "a step that always asks is never a candidate");
+  assert.equal(by["runner:edit"].autoDenied, 1);
+  assert.equal(r.kinds[0].kind, "command:npm test", "most asked first");
+  assert.equal(r.gates.opened, 12);
+  assert.equal(r.kindsRecorded, 11);
+  assert.equal(r.tools.find((t) => t.tool === "Bash")!.asked, 12, "the tool counts still include every Gate");
+});
+
+test("kinds read as words", () => {
+  assert.equal(kindName("command:npm test"), "npm test");
+  assert.equal(kindName("runner:command:cargo build"), "cargo build (Runners)");
+  assert.equal(kindName("edit"), "file edits");
+  assert.equal(kindName("runner:tool:WebSearch"), "WebSearch (Runners)");
+  assert.equal(kindName("delegate:local"), "jobs for a local model");
+  assert.equal(kindName("always:Bash"), "Bash, always asks");
+  assert.equal(kindName("always:Bash (Runner · codex)"), "Bash (Runner · codex), always asks");
+  assert.equal(kindName("something:new"), "something:new");
 });
 
 test("Runner Gates are counted apart from Controller turns; sandbox, .git and Spec events are counted", () => {

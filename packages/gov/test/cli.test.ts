@@ -605,7 +605,9 @@ test("gov friction reads only the window it reports, a page at a time, and asks 
   add("gate.allowed", { gate: "G-1", tool: "Edit", by: "user" }, old);
   add("turn.started", {}); add("turn.failed", { turn: "T-1", limit: { provider: "claude-code", resetsAt: null } });
   for (let i = 0; i < 5; i++) { add("gate.opened", { gate: `G-${i + 2}`, tool: "Edit" }); add("gate.allowed", { gate: `G-${i + 2}`, tool: "Edit", by: "user" }); }
-  add("gate.opened", { gate: "G-9", tool: "Bash" }); add("gate.denied", { gate: "G-9", tool: "Bash", by: "nobody answered within the hour" });
+  // This Gate is from a govd that records its kind of step; the Edit ones above are from an older one.
+  const step = { kinds: ["command:npm test"], always: false };
+  add("gate.opened", { gate: "G-9", tool: "Bash", ...step }); add("gate.denied", { gate: "G-9", tool: "Bash", by: "nobody answered within the hour", ...step });
   add("gate.allowed", { tool: "Bash", by: "quiet read" });
   add("sandbox.refused", { reason: "bwrap missing" });
   const page = (p: any) => p.after === undefined ? all.slice(-p.limit) : all.filter((e) => e.seq > p.after).slice(0, p.limit);
@@ -624,6 +626,9 @@ test("gov friction reads only the window it reports, a page at a time, and asks 
   assert.match(r.stdout, /^Sandbox +1 turn refused \(1 bwrap missing\)/m);
   assert.match(r.stdout, /^Edit +5 +5 +0 +0 +allowed every time$/m);
   assert.match(r.stdout, /^Bash +1 +0 +0 +1$/m);
+  assert.match(r.stdout, /^Kind of step +asked +allowed +denied +by govd +let through$/m);
+  assert.match(r.stdout, /^npm test +1 +0 +0 +1 +0$/m);
+  assert.match(r.stdout, /^5 Gates from an older govd recorded only the tool, not the kind\.$/m);
   const j = await run(g.dir, ["friction", "--days", "60", "--json"]).done;
   assert.equal(j.code, 0, j.stderr);
   const report = JSON.parse(j.stdout);
