@@ -192,6 +192,7 @@ const NR: u32 = 0;
 const ARCH: u32 = 4;
 const ARG0: u32 = 16;
 const ARG1: u32 = 24;
+const ARG2: u32 = 32;
 
 fn stmt(code: u32, k: u32) -> libc::sock_filter {
     libc::sock_filter { code: code as u16, jt: 0, jf: 0, k }
@@ -308,6 +309,13 @@ pub fn seccomp_filter(abi: i32, restrictions: Option<ChildRestrictions>) -> Resu
             f.extend([if_nr(nr, 1), ret(errno(libc::EPERM))]);
         }
     }
+    // New sockets (security review 2026-10-05). Landlock's TCP rules cover plain TCP only: an
+    // MPTCP socket (IPPROTO_MPTCP, which falls back to TCP) reached any port, local or remote, and
+    // could listen on any. So an internet socket must be a plain stream or datagram socket with
+    // protocol 0, TCP or UDP; any other protocol (MPTCP, SCTP, ICMP...) is refused. Families:
+    // Unix (Landlock decides from ABI 9; below it, refused), netlink (address and route lookups)
+    // and the two internet ones; any other (SMC, vsock, RDS, TIPC...) is not offered.
+    f.extend(socket_rule(abi));
     // Terminal ioctls that type into, or drive, the terminal a descriptor points at
     // (TIOCSTI, TIOCLINUX). The kernel reads the command as a 32-bit int, so the low word
     // is the whole command.
@@ -327,12 +335,6 @@ pub fn seccomp_filter(abi: i32, restrictions: Option<ChildRestrictions>) -> Resu
         return Ok(f);
     }
     f.extend([
-        // socket(AF_UNIX, ...): the daemon, session bus and keyring are all Unix sockets.
-        if_nr(libc::SYS_socket, 4),
-        load(ARG0),
-        jump(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, libc::AF_UNIX as u32, 0, 1),
-        ret(errno(libc::EACCES)),
-        ret(libc::SECCOMP_RET_ALLOW),
         // socketpair(.., SOCK_DGRAM, ..): an unconnected-capable datagram socket could
         // sendto() any pathname datagram socket (e.g. /dev/log) on kernels without Landlock
         // ABI 9. Stream and seqpacket pairs ignore destination addresses, so they stay.
@@ -345,6 +347,53 @@ pub fn seccomp_filter(abi: i32, restrictions: Option<ChildRestrictions>) -> Resu
     ]);
     f.push(ret(libc::SECCOMP_RET_ALLOW));
     Ok(f)
+}
+
+/// socket(family, type, protocol), as described in seccomp_filter; `socket_allowed` says the same
+/// in plain Rust, and the tests hold the two together.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn socket_rule(abi: i32) -> Vec<libc::sock_filter> {
+    let jeq = |k: u32, jt: u8, jf: u8| jump(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, k, jt, jf);
+    // Below ABI 9, Unix sockets are refused here (the daemon, session bus and keyring are Unix sockets).
+    let unix = if abi >= 9 { libc::SECCOMP_RET_ALLOW } else { errno(libc::EACCES) };
+    vec![
+        if_nr(libc::SYS_socket, 19),                       // 0: not socket(): past this rule
+        load(ARG0),                                        // 1
+        jeq(libc::AF_INET as u32, 6, 0),                   // 2: -> 9
+        jeq(libc::AF_INET6 as u32, 5, 0),                  // 3: -> 9
+        jeq(libc::AF_UNIX as u32, 0, 1),                   // 4
+        ret(unix),                                         // 5
+        jeq(libc::AF_NETLINK as u32, 0, 1),                // 6
+        ret(libc::SECCOMP_RET_ALLOW),                      // 7
+        ret(errno(libc::EAFNOSUPPORT)),                    // 8: any other family
+        load(ARG1),                                        // 9: an internet socket
+        stmt(libc::BPF_ALU | libc::BPF_AND | libc::BPF_K, 0xf), // 10: SOCK_TYPE_MASK
+        jeq(libc::SOCK_STREAM as u32, 2, 0),               // 11: -> 14
+        jeq(libc::SOCK_DGRAM as u32, 1, 0),                // 12: -> 14
+        ret(errno(libc::EACCES)),                          // 13: raw, seqpacket (SCTP)...
+        load(ARG2),                                        // 14
+        jeq(0, 3, 0),                                      // 15: -> 19
+        jeq(libc::IPPROTO_TCP as u32, 2, 0),               // 16: -> 19
+        jeq(libc::IPPROTO_UDP as u32, 1, 0),               // 17: -> 19
+        ret(errno(libc::EACCES)),                          // 18: MPTCP, SCTP, ICMP...
+        ret(libc::SECCOMP_RET_ALLOW),                      // 19
+    ]
+}
+
+/// What socket_rule decides, for the tests.
+#[cfg(test)]
+fn socket_allowed(abi: i32, family: i32, typ: i32, protocol: i32) -> u32 {
+    match family {
+        libc::AF_UNIX => if abi >= 9 { libc::SECCOMP_RET_ALLOW } else { errno(libc::EACCES) },
+        libc::AF_NETLINK => libc::SECCOMP_RET_ALLOW,
+        libc::AF_INET | libc::AF_INET6 => {
+            let kind = typ & 0xf;
+            if (kind == libc::SOCK_STREAM || kind == libc::SOCK_DGRAM) && [0, libc::IPPROTO_TCP, libc::IPPROTO_UDP].contains(&protocol) {
+                libc::SECCOMP_RET_ALLOW
+            } else { errno(libc::EACCES) }
+        }
+        _ => errno(libc::EAFNOSUPPORT),
+    }
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -386,13 +435,16 @@ mod tests {
     }
     // Interpret the actual generated classic BPF program, including branch offsets.
     fn decision(f: &[libc::sock_filter], nr: u32, arch: u32, arg0: u32, arg1: u32) -> u32 {
+        decision3(f, nr, arch, arg0, arg1, 0)
+    }
+    fn decision3(f: &[libc::sock_filter], nr: u32, arch: u32, arg0: u32, arg1: u32, arg2: u32) -> u32 {
         let mut pc = 0;
         let mut a = 0;
         for _ in 0..f.len() {
             let ins = &f[pc];
             let code = ins.code as u32;
             if code == libc::BPF_LD | libc::BPF_W | libc::BPF_ABS {
-                a = match ins.k { NR => nr, ARCH => arch, ARG0 => arg0, ARG1 => arg1, _ => panic!("bad load") };
+                a = match ins.k { NR => nr, ARCH => arch, ARG0 => arg0, ARG1 => arg1, ARG2 => arg2, _ => panic!("bad load") };
             } else if code == libc::BPF_RET | libc::BPF_K {
                 return ins.k;
             } else if code == libc::BPF_ALU | libc::BPF_AND | libc::BPF_K {
@@ -442,7 +494,8 @@ mod tests {
             let present = seccomp_filter(abi, Some(ChildRestrictions)).unwrap();
             // Removing exactly the inserted denials must recover every default BPF
             // instruction byte, including the old ABI branch and ioctl jump offsets.
-            let insertion = absent.iter().position(|ins| ins.k == libc::SYS_ioctl as u32
+            // (They go just before the socket rule, which comes before the ioctl rule.)
+            let insertion = absent.iter().position(|ins| ins.k == libc::SYS_socket as u32 && ins.jf == 19
                 && ins.code as u32 == libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K).unwrap();
             let added = 2 * (4 + restriction_chmod_syscalls(std::env::consts::ARCH, "linux", true, 64).unwrap().len());
             let words = |ins: &libc::sock_filter| (ins.code, ins.jt, ins.jf, ins.k);
@@ -480,14 +533,16 @@ mod tests {
                 assert_eq!(decision(&absent, nr as u32, AUDIT_ARCH, 0, 0), libc::SECCOMP_RET_ALLOW);
                 assert_eq!(decision(&present, nr as u32, AUDIT_ARCH, 0, 0), errno(libc::EPERM));
             }
-            for family in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK, -1] {
+            for family in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK, 43 /* AF_SMC */, libc::AF_VSOCK, libc::AF_PACKET, -1] {
                 for kind in [libc::SOCK_STREAM, libc::SOCK_DGRAM, libc::SOCK_SEQPACKET, -1] {
                     for flags in [0, libc::SOCK_CLOEXEC, libc::SOCK_NONBLOCK, libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK] {
                         let typ = (kind | flags) as u32;
                         assert_eq!(decision(&present, libc::SYS_socket as u32, AUDIT_ARCH, family as u32, typ), errno(libc::EPERM));
                         assert_eq!(decision(&present, libc::SYS_socketpair as u32, AUDIT_ARCH, family as u32, typ), errno(libc::EPERM));
-                        assert_eq!(decision(&absent, libc::SYS_socket as u32, AUDIT_ARCH, family as u32, typ),
-                            if abi < 9 && family == libc::AF_UNIX { errno(libc::EACCES) } else { libc::SECCOMP_RET_ALLOW });
+                        for protocol in [0, libc::IPPROTO_TCP, libc::IPPROTO_UDP, libc::IPPROTO_MPTCP, libc::IPPROTO_SCTP, libc::IPPROTO_ICMP, libc::IPPROTO_RAW, -1] {
+                            assert_eq!(decision3(&absent, libc::SYS_socket as u32, AUDIT_ARCH, family as u32, typ, protocol as u32),
+                                socket_allowed(abi, family, kind | flags, protocol), "family {family} type {typ} protocol {protocol}");
+                        }
                         assert_eq!(decision(&absent, libc::SYS_socketpair as u32, AUDIT_ARCH, family as u32, typ),
                             if abi < 9 && (kind & 0xf) == libc::SOCK_DGRAM { errno(libc::EACCES) } else { libc::SECCOMP_RET_ALLOW });
                     }

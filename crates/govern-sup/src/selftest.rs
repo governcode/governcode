@@ -1,6 +1,7 @@
 //! `govern-sup selftest`: proves the sandbox on this machine. It builds dummy targets in a
 //! temp dir (a stand-in daemon socket and state file, a keyring file, a read-only settings
-//! file, a FIFO standing for an input channel, a loopback TCP listener, a binary outside the
+//! file, a FIFO standing for an input channel, a loopback TCP listener, a port the policy lets it
+//! listen on (and never connect to), a binary outside the
 //! exec list), then re-runs itself as `check` INSIDE a real sandbox. Every "denied" check
 //! must fail and every "allowed" check must work; any other result fails the self-test.
 //! A control run without the sandbox first proves every denied check would otherwise work.
@@ -32,6 +33,17 @@ const CHECKS: &[(&str, bool)] = &[
     ("write into an input FIFO by path (#177)", false),
     ("connect to loopback TCP on a non-listed port", false),
     ("bind a TCP port", false),
+    // A server run (OpenCode) may listen on the one port its policy lists, and nothing inside the
+    // sandbox, itself or what it runs, may connect to it: only the daemon, outside, can.
+    ("bind the TCP port the policy lists", true),
+    ("connect to the TCP port it may bind", false),
+    // Landlock's TCP rules cover plain TCP only; seccomp refuses other internet protocols
+    // (security review 2026-10-05: an MPTCP socket reached any port). The IPv6 and MPTCP checks
+    // need a kernel with them: where the control run cannot do them, they prove nothing and
+    // must still be refused.
+    ("connect to the TCP port it may bind over IPv6", false),
+    ("open an MPTCP socket", false),
+    ("connect to the TCP port it may bind over MPTCP", false),
     ("run a binary outside the exec list", false),
     // Security review 2026-09-27.
     ("create System V shared memory", false),
@@ -45,21 +57,22 @@ const CHECKS: &[(&str, bool)] = &[
 const INHERITED_FD: i32 = 9;
 const SURVIVOR: &str = "survivor.txt";
 
-/// Runs inside the sandbox. `dir` is the self-test's temp dir; `port` its TCP listener.
+/// Runs inside the sandbox. `dir` is the self-test's temp dir; `port` its TCP listener; `bind`
+/// the port the policy lets it listen on.
 pub fn check(args: &[String]) -> Result<ExitCode, String> {
-    let (dir, port) = match args {
-        [d, p] => (PathBuf::from(d), p.parse::<u16>().map_err(|e| format!("bad port: {e}"))?),
-        _ => return Err("usage: govern-sup check DIR PORT".into()),
+    let (dir, port, bind) = match args {
+        [d, p, b] => (PathBuf::from(d), p.parse::<u16>().map_err(|e| format!("bad port: {e}"))?, b.parse::<u16>().map_err(|e| format!("bad port: {e}"))?),
+        _ => return Err("usage: govern-sup check DIR PORT BIND-PORT".into()),
     };
     let wt = dir.join("worktree");
     for (name, _) in CHECKS {
-        let worked = attempt(name, &dir, &wt, port);
+        let worked = attempt(name, &dir, &wt, port, bind);
         println!("{}\t{}", name, if worked { "worked" } else { "refused" });
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn attempt(name: &str, dir: &Path, wt: &Path, port: u16) -> bool {
+fn attempt(name: &str, dir: &Path, wt: &Path, port: u16, bind: u16) -> bool {
     let write = |p: &Path| OpenOptions::new().write(true).create(true).truncate(true).open(p).and_then(|mut f| f.write_all(b"x")).is_ok();
     match name {
         "write inside the worktree" => write(&wt.join("probe.txt")) && fs::read(wt.join("probe.txt")).is_ok(),
@@ -77,6 +90,25 @@ fn attempt(name: &str, dir: &Path, wt: &Path, port: u16) -> bool {
             .custom_flags(libc::O_NONBLOCK).open(dir.join("input.fifo")).is_ok(),
         "connect to loopback TCP on a non-listed port" => TcpStream::connect(("127.0.0.1", port)).is_ok(),
         "bind a TCP port" => TcpListener::bind(("127.0.0.1", 0)).is_ok(),
+        "bind the TCP port the policy lists" => TcpListener::bind(("127.0.0.1", bind)).is_ok(),
+        "connect to the TCP port it may bind over IPv6" => match TcpListener::bind(("::1", bind)) {
+            Ok(_listening) => TcpStream::connect(("::1", bind)).is_ok(),
+            Err(_) => false,
+        },
+        "open an MPTCP socket" => {
+            let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, libc::IPPROTO_MPTCP) };
+            if fd >= 0 { unsafe { libc::close(fd) }; }
+            fd >= 0
+        }
+        "connect to the TCP port it may bind over MPTCP" => match TcpListener::bind(("127.0.0.1", bind)) {
+            Ok(_listening) => mptcp_connect(bind),
+            Err(_) => false,
+        },
+        // Listening there is allowed (the check above), so a refusal here is the connect rule's.
+        "connect to the TCP port it may bind" => match TcpListener::bind(("127.0.0.1", bind)) {
+            Ok(_listening) => TcpStream::connect(("127.0.0.1", bind)).is_ok(),
+            Err(_) => false,
+        },
         "run a binary outside the exec list" => Command::new(dir.join("bin/not-allowed")).status().is_ok(),
         "create System V shared memory" => {
             let id = unsafe { libc::shmget(libc::IPC_PRIVATE, 4096, libc::IPC_CREAT | 0o600) };
@@ -108,6 +140,21 @@ fn attempt(name: &str, dir: &Path, wt: &Path, port: u16) -> bool {
         _ => false,
     }
 }
+
+/// An MPTCP connection to 127.0.0.1:`port` (no wrapper in std).
+fn mptcp_connect(port: u16) -> bool {
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, libc::IPPROTO_MPTCP) };
+    if fd < 0 { return false; }
+    let addr = libc::sockaddr_in { sin_family: libc::AF_INET as libc::sa_family_t, sin_port: port.to_be(),
+        sin_addr: libc::in_addr { s_addr: u32::from_be_bytes([127, 0, 0, 1]).to_be() }, sin_zero: [0; 8] };
+    let ok = unsafe { libc::connect(fd, (&addr as *const libc::sockaddr_in).cast(), std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t) } == 0;
+    unsafe { libc::close(fd) };
+    ok
+}
+
+/// Checks whose fixture this kernel may lack (IPv6, MPTCP): when the control run cannot do them
+/// they prove nothing, and are still expected to be refused.
+const OPTIONAL: &[&str] = &["connect to the TCP port it may bind over IPv6", "open an MPTCP socket", "connect to the TCP port it may bind over MPTCP"];
 
 /// The user's session bus socket, if this machine has one.
 fn session_bus() -> Option<PathBuf> {
@@ -151,6 +198,8 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
     let _listed = UnixListener::bind(dir.join("listed.sock")).map_err(io)?;
     let tcp = TcpListener::bind(("127.0.0.1", 0)).map_err(io)?;
     let port = tcp.local_addr().map_err(io)?.port();
+    // A free port for the bind checks, released again so the check can take it.
+    let bind = TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).map_err(io)?.port();
     let fifo = dir.join("input.fifo");
     let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
     if unsafe { libc::mkfifo(c.as_ptr(), 0o600) } != 0 {
@@ -167,6 +216,7 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
         "write": [dir.join("worktree"), "/dev/null"],
         "exec": ["/usr/bin", "/bin", "/usr/lib", "/lib", "/lib64", exe_dir],
         "tcp_connect": [443],
+        "tcp_bind": [bind],
         "unix_connect": [dir.join("listed.sock")],
         "cwd": dir.join("worktree"),
     });
@@ -187,14 +237,14 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
     // Control run, unsandboxed: every check must work here, or a fixture is broken and a
     // "refused" inside the sandbox would prove nothing.
     let mut cmd = Command::new(me);
-    cmd.arg("check").arg(dir).arg(port.to_string());
+    cmd.arg("check").arg(dir).arg(port.to_string()).arg(bind.to_string());
     with_inherited(&mut cmd);
     let control = cmd.output().map_err(io)?;
     let control_survived = survived();
     let broken: Vec<String> = String::from_utf8_lossy(&control.stdout).lines()
         .filter_map(|l| l.split_once('\t'))
         .map(|(n, r)| (n, if n == "leave a process running after the tool exits" { control_survived } else { r == "worked" }))
-        .filter(|(n, worked)| !*worked && !(*n == "reach the session bus (systemd --user)" && session_bus().is_none()))
+        .filter(|(n, worked)| !*worked && !(*n == "reach the session bus (systemd --user)" && session_bus().is_none()) && !OPTIONAL.contains(n))
         .map(|(n, _)| n.to_string()).collect();
     if !control.status.success() || !broken.is_empty() {
         return Err(format!("self-test fixtures are broken (these failed even unsandboxed: {})", broken.join(", ")));
@@ -205,7 +255,7 @@ fn run(me: &Path, dir: &Path, json: bool) -> Result<ExitCode, String> {
     let _ = fs::remove_file(&survivor);
 
     let mut cmd = Command::new(me);
-    cmd.args(["run", "--policy"]).arg(&policy_file).arg("--").arg(me).arg("check").arg(dir).arg(port.to_string());
+    cmd.args(["run", "--policy"]).arg(&policy_file).arg("--").arg(me).arg("check").arg(dir).arg(port.to_string()).arg(bind.to_string());
     with_inherited(&mut cmd);
     let out = cmd.output().map_err(io)?;
     let sandbox_survived = survived();
