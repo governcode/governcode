@@ -386,7 +386,7 @@ test("a Runner or window GovernCode does not have is refused before anything is 
     [["runner", "antigravity", "--model", "x"], "gov: unknown Runner antigravity (Runners: agy, codex, grok, ollama, opencode)"],
     [["reserve", "gemini", "weekly", "20"], "gov: unknown Runner gemini"],
     [["budget", "antigravity", "daily", "5", "turns"], "gov: unknown Runner antigravity"],
-    [["budget", "codex", "5h", "5", "turns"], "gov: unknown window 5h (windows: 5-hour, daily, weekly, monthly)"],
+    [["budget", "codex", "fortnight", "5", "turns"], "gov: unknown window fortnight (windows: 5-hour, daily, weekly, monthly)"],
     [["crew", "runners", "codex,antigravity"], "gov: unknown Runner antigravity"], [["crew", "max", "gemini", "10"], "gov: unknown Runner gemini"],
   ] as const) {
     const r = await run(g.dir, [...args], { cwd: g.path }).done;
@@ -399,6 +399,11 @@ test("a Runner or window GovernCode does not have is refused before anything is 
   assert.deepEqual(g.calls.at(-1)!.params.reserves, { codex: { primary: 20 } });
   assert.equal((await run(g.dir, ["reserve", "grok", "period", "20"]).done).code, 0);
   assert.deepEqual(g.calls.at(-1)!.params.reserves, { grok: { period: 20 } });
+  // The short names people type are the windows they mean.
+  assert.equal((await run(g.dir, ["budget", "opencode", "5h", "40", "turns"]).done).code, 0);
+  assert.deepEqual(g.calls.at(-1)!.params.budgets.opencode, { unit: "turns", windows: { "5-hour": 40 } });
+  assert.equal((await run(g.dir, ["reserve", "codex", "week", "20"]).done).code, 0);
+  assert.deepEqual(g.calls.at(-1)!.params.reserves, { codex: { weekly: 20 } });
   const off = await run(g.dir, ["budget", "antigravity", "off"]).done;
   assert.equal(off.code, 0, off.stderr);
   assert.deepEqual(g.calls.at(-1)!.params.budgets, {}, "a budget saved under a typo can go");

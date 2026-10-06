@@ -149,6 +149,9 @@ function answers(): { next(prompt: string, withdrawn?: AbortSignal): Promise<str
 const PROVIDER_NAMES: Record<string, string> = { "claude-code": "Claude Code (Anthropic)", codex: "Codex (OpenAI)" };
 // What gov controller sets without --model or --effort (the models the Dashboard suggests first).
 const CONTROLLER_DEFAULTS: Record<string, { model: string; effort: string }> = { "claude-code": { model: "opus", effort: "high" }, codex: { model: "gpt-5.5", effort: "medium" } };
+// Short names people type for a window: gov budget opencode 5h 40 turns.
+const WINDOW_ALIASES: Record<string, string> = { "5h": "5-hour", "5hr": "5-hour", "5-hours": "5-hour", day: "daily", week: "weekly", month: "monthly" };
+const windowName = (w: string | undefined) => (w && Object.hasOwn(WINDOW_ALIASES, w) ? WINDOW_ALIASES[w] : w);
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const warn = (s: string) => `\x1b[33m${s}\x1b[0m`;
 const resetWhen = (iso: string) => {
@@ -593,7 +596,8 @@ async function main(argv: string[]): Promise<number> {
       case "budget": {
         // gov budget codex daily 20 turns: at most 20 Runner turns a day, counted by GovernCode.
         // gov budget codex daily off; gov budget codex off. Without arguments: the budgets.
-        const [provider, window, value, unitArg] = rest;
+        const [provider, typed, value, unitArg] = rest;
+        const window = windowName(typed);
         const usage = `usage: gov budget [PROVIDER (${Object.keys(COUNTED_WINDOWS).join("|")}) N tokens|turns | PROVIDER [WINDOW] off]`;
         // Removing a whole budget takes any name, so one saved under a typo can go.
         if (provider && window !== "off") {
@@ -846,7 +850,8 @@ async function main(argv: string[]): Promise<number> {
       }
       case "reserve": {
         // gov reserve codex weekly 15: keep 15% of Codex's weekly window back (0 to 90).
-        const [provider, window, value] = rest;
+        const [provider, typed, value] = rest;
+        const window = windowName(typed);
         const n = Number(value);
         if (!provider || !window || !value || !Number.isInteger(n) || n < 0 || n > 90) throw new Error("usage: gov reserve PROVIDER WINDOW PERCENT   (0-90, e.g. gov reserve codex weekly 15)");
         runner(provider);
