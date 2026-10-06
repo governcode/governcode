@@ -29,17 +29,17 @@ releases, tagged `vX.Y.Z`). The first Motion is
 
 > **Status: pre-alpha, release candidate.** Developers can try it on Linux, from the
 > CLI or the early Dashboard: the sandbox, Gates, Checkpoints, Limits, and delegation from a
-> Claude Code or Codex Controller to a Codex, Antigravity, Grok or local-model Runner work end to end.
+> Claude Code or Codex Controller to a Codex, Antigravity, Grok, OpenCode or local-model Runner work end to end.
 > Expect rough edges.
 
 **Install the release candidate (Linux x86_64):** download
-`governcode-0.1.0-motion.9-linux-x86_64.tar.gz` and `SHA256SUMS` from the
+`governcode-0.1.0-motion.10-linux-x86_64.tar.gz` and `SHA256SUMS` from the
 [releases page](https://github.com/governcode/governcode/releases), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar xzf governcode-0.1.0-motion.9-linux-x86_64.tar.gz
-cd governcode-0.1.0-motion.9-linux-x86_64 && ./install.sh --service   # everything under ~/.local, no root; govd starts at login
+tar xzf governcode-0.1.0-motion.10-linux-x86_64.tar.gz
+cd governcode-0.1.0-motion.10-linux-x86_64 && ./install.sh --service   # everything under ~/.local, no root; govd starts at login
 gov connect claude   # sign Claude Code in for GovernCode (once); gov connect codex too, for the demo's Runner steps
 gov demo
 governcode-dashboard # the desktop app (also "GovernCode Dashboard" in your app launcher)
@@ -351,7 +351,7 @@ Honest limits, for now:
   sandbox holds whatever it does to the Spec's scope; the Gate is your review of each call Grok
   brings, not a second sandbox.
 
-### OpenCode as a Runner (development build)
+### OpenCode as a Runner
 
 With [OpenCode](https://opencode.ai) 2.0 (`opencode`) and an OpenCode Go subscription, OpenCode can
 take Specs (`gov connect opencode`, or Settings › Tools). Connect asks for the API key from
@@ -383,7 +383,7 @@ self-test proves that rule on every start.
   limit is reached, the Spec is held like any limited Spec; no reset time is given, so resume it
   yourself.
 - New: tested against a fake built from OpenCode 2.0.23's real events, and run live in the sandbox
-  with a free model; not yet run with a real OpenCode Go key.
+  with a free model and with an OpenCode Go model.
 
 Gemini CLI (for Gemini API keys) comes later, once GovernCode can hold a key safely.
 
