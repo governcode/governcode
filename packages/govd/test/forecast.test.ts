@@ -34,3 +34,15 @@ test("no rise, or already inside the reserve: no time to reach it", () => {
   const inside: Point[] = [{ at: T - H, used: 85, resetsAt: reset(5) }, { at: T, used: 95, resetsAt: reset(5) }];
   assert.equal(forecast("5h", inside, 10, T)!.reachesReserveAt, null);
 });
+
+test("a reset is seen by its time (whatever the text) or, with none given, by a drop in use", () => {
+  const sameTimeOtherText: Point[] = [{ at: T - H, used: 20, resetsAt: "2026-10-05T12:00:00Z" }, { at: T, used: 24, resetsAt: "2026-10-05T12:00:00.000Z" }];
+  assert.equal(forecast("5h", sameTimeOtherText, 10, T)?.perHour, 4);
+  const droppedWithoutTime: Point[] = [{ at: T - 3 * H, used: 80, resetsAt: null }, { at: T - 2 * H, used: 5, resetsAt: null }, { at: T, used: 15, resetsAt: null }];
+  assert.equal(forecast("5h", droppedWithoutTime, 10, T)?.perHour, 5, "only the readings after the drop count");
+});
+
+test("a time already past is not shown as the future", () => {
+  const stale: Point[] = [{ at: T - 5 * H, used: 40, resetsAt: reset(48) }, { at: T - 4 * H, used: 80, resetsAt: reset(48) }];
+  assert.equal(forecast("weekly", stale, 10, T)?.reachesReserveAt, null);
+});

@@ -14,9 +14,19 @@ export const MIN_SPAN_MS = 20 * 60_000;
 export function forecast(window: string, points: readonly Point[], reservePercent: number, now: number): Forecast | null {
   const last = points.at(-1);
   if (!last) return null;
-  // The current period only: a window that reset has a new resetsAt, and its old readings do not count.
-  const period = points.filter((p) => p.resetsAt === last.resetsAt && p.at >= now - PACE_SPAN_MS && p.at <= now);
-  const first = period[0];
+  // The current period only, walking back from the latest reading: a window that reset has a new
+  // reset time (compared as a time, to the minute; a vendor's text may vary) or, with none given,
+  // shows a drop in use. Readings from before that, or older than the pace span, do not count.
+  const sameReset = (a: string | null, b: string | null) => a === null || b === null ? a === b
+    : Math.abs(Date.parse(a) - Date.parse(b)) < 60_000;
+  let start = points.length - 1;
+  while (start > 0) {
+    const prev = points[start - 1], cur = points[start];
+    if (!sameReset(prev.resetsAt, last.resetsAt) || prev.used > cur.used + 1 || prev.at < now - PACE_SPAN_MS) break;
+    start--;
+  }
+  const first = points[start];
+  if (last.at > now || first.at < now - PACE_SPAN_MS) return null;
   if (!first || last.at - first.at < MIN_SPAN_MS) return null;
   const perHour = Math.max(0, (last.used - first.used) / ((last.at - first.at) / 3_600_000));
   const base = { window, perHour: Math.round(perHour * 10) / 10, since: new Date(first.at).toISOString() };
@@ -25,5 +35,6 @@ export function forecast(window: string, points: readonly Point[], reservePercen
   if (perHour <= 0 || left <= 0) return { ...base, reachesReserveAt: null, resetsFirst: perHour <= 0 && Number.isFinite(reset) };
   const reaches = last.at + (left / perHour) * 3_600_000;
   if (Number.isFinite(reset) && reaches >= reset) return { ...base, reachesReserveAt: null, resetsFirst: true };
+  if (reaches <= now) return { ...base, reachesReserveAt: null, resetsFirst: false };   // a stale reading: it may be there already
   return { ...base, reachesReserveAt: new Date(reaches).toISOString(), resetsFirst: false };
 }

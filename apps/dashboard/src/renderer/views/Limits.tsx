@@ -70,9 +70,11 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
 /** A time to come, in words: "14:20", "tomorrow 09:10" or "Thu 14:00". */
 function when(iso: string): string {
   const d = new Date(iso), now = new Date();
+  if (Number.isNaN(d.getTime())) return iso;   // a vendor's own text, shown as given
   const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86_400_000);
-  return days <= 0 ? hm : days === 1 ? `tomorrow ${hm}` : `${d.toLocaleDateString([], { weekday: "short" })} ${hm}`;
+  return days <= 0 ? hm : days === 1 ? `tomorrow ${hm}` : days < 7 ? `${d.toLocaleDateString([], { weekday: "short" })} ${hm}`
+    : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
 }
 
 const keepOf = (p: ProviderLimit, r: Reading) => r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;
@@ -124,7 +126,7 @@ function ProviderCard({ p }: { p: ProviderLimit }) {
             </div>
           );
         })}
-        {(p.forecasts ?? []).filter((f) => f.perHour > 0).slice(0, 2).map((f) => (
+        {(p.forecasts ?? []).filter((f) => f.perHour > 0 && (f.reachesReserveAt || f.resetsFirst)).slice(0, 2).map((f) => (
           <div key={f.window} className="forecast" title={`From readings since ${clock(f.since)}: about ${f.perHour}% an hour`}>
             <Icon name="sparkle" size={12} />
             {f.reachesReserveAt ? <>At this pace the {f.window} window reaches its reserve around {when(f.reachesReserveAt)}.</>
