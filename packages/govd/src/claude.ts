@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeF
 import { runHome } from "./homes.ts";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ControllerChoice } from "@governcode/protocol";
 
 export type Policy = { version: 1; read: string[]; write: string[]; exec: string[]; tcp_connect: number[]; tcp_bind?: number[]; unix_connect: string[]; cwd: string };
@@ -132,9 +133,12 @@ export function claudePolicy(worktree: string, sessionTmp: string, readOnly = fa
   };
 }
 
-/** Where the MCP server file lives, so the policy can let the tool read it. */
+/** The folder of the JSON-lines reader the MCP server imports (by path, see mcp-controller.ts). */
+const MCP_LINES_DIR = fileURLToPath(new URL("../../protocol/src", import.meta.url));
+
+/** Where the MCP server file and what it imports live, so the policy can let the tool read them. */
 export function withMcpRead(p: Policy, mcp?: McpServer): Policy {
-  return mcp ? { ...p, read: [...p.read, dirname(mcp.script), dirname(mcp.node)] } : p;
+  return mcp ? { ...p, read: [...p.read, dirname(mcp.script), MCP_LINES_DIR, dirname(mcp.node)] } : p;
 }
 
 // No provider keys or config locations (ANTHROPIC_*, CLAUDE_*, OPENAI_*...): every tool uses the

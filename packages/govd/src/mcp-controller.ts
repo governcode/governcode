@@ -3,7 +3,9 @@
 // INSIDE its own sandbox; the only thing it can reach is the per-turn socket govd opened for
 // this turn (listed in the turn's unix_connect, nothing else). That socket offers delegation
 // and read-only views, never Gate answers or undo: those stay with the user.
-import { jsonLine, jsonLines } from "@governcode/protocol/lines";
+// By path, not by package name: the sandbox lets this read its own folder and the one this file is
+// in (withMcpRead), not node_modules.
+import { jsonLine, jsonLines } from "../../protocol/src/lines.ts";
 import { connect } from "node:net";
 
 const socketPath = process.argv[2];
