@@ -79,7 +79,7 @@ function ProviderCard({ p, onPlace }: { p: ProviderLimit; onPlace?: (p: Place) =
           <Ring size={112} stroke={10} percent={outer.usedPercent} reserve={keepOf(p, outer)} color={color} />
           {inner && <span className="inner"><Ring size={84} stroke={8} percent={inner.usedPercent} reserve={keepOf(p, inner)} color="var(--accent)" /></span>}
           <span className="center"><b>{outer.counted ? outer.counted.used : `${Math.round(outer.usedPercent)}%`}</b>
-            <small>{outer.counted ? `of ${outer.counted.cap} ${outer.counted.unit}` : outer.window}</small></span>
+            <small>{outer.counted ? `of ${outer.counted.cap} ${outer.counted.unit}` : `${outer.window} used`}</small></span>
         </>}
       </div>
       <div className="prov-body">
