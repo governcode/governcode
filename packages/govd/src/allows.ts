@@ -356,6 +356,12 @@ export function shellSegments(text: string): string[][] | null {
   return segs.filter((w) => !(w[0] === "cd" && w.length <= 2));    // cd changes nothing outside this command
 }
 
+// A command's kind is its program and subcommand as the AI wrote them; it is recorded only in the
+// shape of a program name (short, printable, no spaces inside a word), so the Trace never takes up
+// a quoted phrase, a token or terminal escape codes from it. Anything else is recorded as "(other)".
+const KIND_SHAPE = /^(runner:)?(command:[A-Za-z0-9._+-]{1,40}( [A-Za-z0-9][A-Za-z0-9._:-]{0,39})?|edit|tool:[A-Za-z0-9_]{1,41}|delegate:local|spec:discard)$/;
+export const recordedKind = (key: string) => KIND_SHAPE.test(key) ? key : `${key.startsWith("runner:") ? "runner:" : ""}command:(other)`;
+
 /** What a request needs: `ask` when some part must always ask; `quiet` when every part is a
  *  plain read; otherwise the kinds a rule (or the user) must cover. */
 export function analyze(req: { tool: string; base?: string; spec?: string; input: Record<string, unknown> }): Analysis {

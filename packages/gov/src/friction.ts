@@ -142,11 +142,12 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
   return r;
 }
 
-/** A kind in words: `command:npm test` → "npm test", `runner:edit` → "file edits (Runners)". */
+/** A kind in words: `command:npm test` → "npm test", `runner:edit` → "file edits (Runners)".
+ *  For a terminal: control characters (escape codes from an older Trace) show as "?". */
 export function kindName(kind: string): string {
-  const runner = kind.startsWith("runner:"), k = runner ? kind.slice(7) : kind;
+  const runner = kind.startsWith("runner:"), k = (runner ? kind.slice(7) : kind).replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
   const [head, ...rest] = k.split(":"), tail = rest.join(":");
-  const name = head === "command" ? tail : head === "edit" ? "file edits" : head === "tool" ? tail
+  const name = k === "command:(other)" ? "other commands" : head === "command" ? tail : head === "edit" ? "file edits" : head === "tool" ? tail
     : k === "delegate:local" ? "jobs for a local model" : k === "spec:discard" ? "discarding a Spec"
     : head === "always" ? `${tail}, always asks` : head === "other" ? `${tail}, no kind` : k;
   return runner ? `${name} (Runners)` : name;

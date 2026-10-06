@@ -145,30 +145,27 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
 
             {props.projects.length > 0 && <section>
               <div className="section-bar"><h2 className="section-title">Projects <span className="count">{props.projects.length}</span></h2></div>
-              {!props.projects.length ? <div className="card all-clear"><span className="tile" style={{ background: "var(--accent-tint)", color: "var(--accent)" }}><Icon name="plus" /></span>
-                <span>No projects yet. <button className="linkish" onClick={props.onNewProject}>Create one</button> or <button className="linkish" onClick={props.onOpenFolder}>open a folder</button>, or ask at Home.</span></div> : (
-                <div className="projects">
-                  {props.projects.map((p) => {
-                    const st = projectStatus(p.name, props.specs, props.gates);
-                    const bars = sparks.get(p.name) ?? Array(24).fill(0);
-                    const max = Math.max(1, ...bars);
-                    const crew = [...new Set([p.controller.provider, ...props.specs.filter((s) => s.project === p.name).map((s) => s.to)])].slice(0, 4);
-                    const color = st.dot === "held" ? "var(--violet)" : st.dot === "needs" ? "var(--amber-solid)" : "var(--blue)";
-                    return (
-                      <button key={p.name} className="card proj" onClick={() => projectTab(p.name, "conversation")}>
-                        <div className="top"><Glyph name={p.name} size={30} /><b>{p.name}</b></div>
-                        <div className="state"><span className={`dot ${st.dot ?? ""}`} /><span>{st.text}</span></div>
-                        <svg className="spark" viewBox="0 0 240 34" preserveAspectRatio="none" aria-hidden="true">
-                          {bars.map((v, i) => <rect key={i} x={i * 10 + 1} y={34 - Math.max(2, (v / max) * 34)} width={7.5} height={Math.max(2, (v / max) * 34)} rx={1.5}
-                            fill={v ? color : "var(--fill-2)"} opacity={v ? 0.35 + 0.65 * (v / max) : 1} />)}
-                        </svg>
-                        <div className="foot"><span className="marks">{crew.map((c) => <ProviderMark key={c} id={c} size={20} />)}</span>
-                          <span className="names">{crew.map(providerName).join(", ")}</span></div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              <div className="projects">
+                {props.projects.map((p) => {
+                  const st = projectStatus(p.name, props.specs, props.gates);
+                  const bars = sparks.get(p.name) ?? Array(24).fill(0);
+                  const max = Math.max(1, ...bars);
+                  const crew = [...new Set([p.controller.provider, ...props.specs.filter((s) => s.project === p.name).map((s) => s.to)])].slice(0, 4);
+                  const color = st.dot === "held" ? "var(--violet)" : st.dot === "needs" ? "var(--amber-solid)" : "var(--blue)";
+                  return (
+                    <button key={p.name} className="card proj" onClick={() => projectTab(p.name, "conversation")}>
+                      <div className="top"><Glyph name={p.name} size={30} /><b>{p.name}</b></div>
+                      <div className="state"><span className={`dot ${st.dot ?? ""}`} /><span>{st.text}</span></div>
+                      <svg className="spark" viewBox="0 0 240 34" preserveAspectRatio="none" aria-hidden="true">
+                        {bars.map((v, i) => <rect key={i} x={i * 10 + 1} y={34 - Math.max(2, (v / max) * 34)} width={7.5} height={Math.max(2, (v / max) * 34)} rx={1.5}
+                          fill={v ? color : "var(--fill-2)"} opacity={v ? 0.35 + 0.65 * (v / max) : 1} />)}
+                      </svg>
+                      <div className="foot"><span className="marks">{crew.map((c) => <ProviderMark key={c} id={c} size={20} />)}</span>
+                        <span className="names">{crew.map(providerName).join(", ")}</span></div>
+                    </button>
+                  );
+                })}
+              </div>
             </section>}
 
             <section>

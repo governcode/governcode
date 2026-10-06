@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry", "acp-install"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry", "acp-install", "trace-totals"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 

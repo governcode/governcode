@@ -24,8 +24,8 @@ export function Watch({ popout = false, onNeeds }: { popout?: boolean; onNeeds?:
   const [marks, setMarks] = useState<TraceEvent[]>([]);
   // Today from govd's count over the whole Trace, and every event after the one it counted up to.
   const [totals, setTotals] = useState<{ today: WatchToday; seq: number } | null>(null);
-  const seen = useRef<TraceEvent[]>([]);
-  seen.current = events;
+  // Every live event, as it arrives (not when React renders): a totals reply adds the ones after its count.
+  const live = useRef<TraceEvent[]>([]);
   const [specs, setSpecs] = useState<Spec[]>([]);
   const [gates, setGates] = useState<Gate[]>([]);
   const [limits, setLimits] = useState<ProviderLimit[]>([]);
@@ -45,6 +45,7 @@ export function Watch({ popout = false, onNeeds }: { popout?: boolean; onNeeds?:
   useWatch((w) => {
     if (w.kind === "gates") { void loadGates(); return; }
     const e = w.event;
+    live.current = [...live.current, e].slice(-KEEP);
     setEvents((all) => all.some((x) => x.seq === e.seq) ? all : [...all, e].slice(-KEEP));
     if (MARKS.includes(e.kind)) setMarks((all) => all.some((x) => x.seq === e.seq) ? all : [...all, e].slice(-KEEP));
     setTotals((t) => t && e.seq > t.seq ? { today: tally([e], new Date(), t.today), seq: e.seq } : t);
@@ -61,7 +62,7 @@ export function Watch({ popout = false, onNeeds }: { popout?: boolean; onNeeds?:
       try {
         const { totals: t } = await call<{ totals: WatchToday & { seq: number } }>("trace.totals", { since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString() });
         const { seq, ...counted } = t;
-        const after = seen.current.filter((e) => e.seq > seq);   // arrived while it was counting
+        const after = live.current.filter((e) => e.seq > seq);   // arrived while it was counting
         setTotals({ today: tally(after, new Date(), counted), seq: Math.max(seq, ...after.map((e) => e.seq)) });
       } catch { /* an older govd */ }
     })();

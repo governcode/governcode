@@ -1029,11 +1029,15 @@ function printFriction(r: FrictionReport, days: number): void {
   console.log(`         ${g.passed} let through without a Gate${why(g.passedBy)}`);
   console.log(`Sandbox  ${s.refused} turn${s.refused === 1 ? "" : "s"} refused${why(s.refusedBy)} · .git restored ${s.gitScrubbed} time${s.gitScrubbed === 1 ? "" : "s"} · .git guard failed ${s.gitGuardFailed} time${s.gitGuardFailed === 1 ? "" : "s"}`);
   console.log(`Specs    ${specs.created} created · ${specs.failed} failed${limited(specs.limited)} · ${specs.held} held`);
-  if (!r.tools.length) return;
-  const w = Math.min(40, Math.max(4, ...r.tools.map((x) => x.tool.length)));
-  console.log(`\n${"Tool".padEnd(w)}  asked  allowed  denied  by govd`);
-  for (const x of r.tools) {
-    console.log(`${x.tool.slice(0, w).padEnd(w)}  ${String(x.asked).padStart(5)}  ${String(x.allowed).padStart(7)}  ${String(x.denied).padStart(6)}  ${String(x.autoDenied).padStart(7)}${x.allowedEveryTime ? "  allowed every time" : ""}`);
+  // Steps a rule or plan let through have kinds but no tool row: either table can stand alone.
+  if (!r.tools.length && !r.kinds.length) return;
+  if (r.tools.length) {
+    const shown = (t: string) => t.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");   // no escape codes reach the terminal
+    const w = Math.min(40, Math.max(4, ...r.tools.map((x) => x.tool.length)));
+    console.log(`\n${"Tool".padEnd(w)}  asked  allowed  denied  by govd`);
+    for (const x of r.tools) {
+      console.log(`${shown(x.tool).slice(0, w).padEnd(w)}  ${String(x.asked).padStart(5)}  ${String(x.allowed).padStart(7)}  ${String(x.denied).padStart(6)}  ${String(x.autoDenied).padStart(7)}${x.allowedEveryTime ? "  allowed every time" : ""}`);
+    }
   }
   if (r.kinds.length) {
     const k = Math.min(40, Math.max(12, ...r.kinds.map((x) => kindName(x.kind).length)));

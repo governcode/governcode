@@ -634,6 +634,13 @@ test("gov friction reads only the window it reports, a page at a time, and asks 
   const report = JSON.parse(j.stdout);
   assert.equal(report.gates.opened, 7);
   assert.deepEqual(report.tools.find((t: any) => t.tool === "Edit"), { tool: "Edit", asked: 6, allowed: 6, denied: 0, autoDenied: 0, allowedEveryTime: true });
+  // Every step let through by a rule: no Gate, so no tool row, but the kinds still show.
+  const ruled = [1, 2, 3].map((i) => ({ seq: i, ts: recent, project: "app", kind: "gate.allowed", actor: "govd", data: { tool: "Bash", by: "rule R-1", kinds: ["command:npm test"], always: false } }));
+  const g2 = await fakeGovd((m, p) => (m === "trace.list" ? { events: p.after === undefined ? ruled.slice(-p.limit) : ruled.filter((e) => e.seq > p.after).slice(0, p.limit) } : undefined));
+  const r2 = await run(g2.dir, ["friction"]).done;
+  assert.equal(r2.code, 0, r2.stderr);
+  assert.doesNotMatch(r2.stdout, /^Tool /m);
+  assert.match(r2.stdout, /^npm test +0 +0 +0 +0 +3$/m);
   const before = g.calls.length;
   for (const args of [["friction", "--days", "0"], ["friction", "--days"], ["friction", "--project", "My App"], ["friction", "extra"], ["friction", "--json", "--json"]]) {
     const bad = await run(g.dir, args).done;

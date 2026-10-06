@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
-import { Allows, analyze, isQuietRead, kindOf, plainWords, scopesFor, shellSegments } from "../src/allows.ts";
+import { Allows, analyze, isQuietRead, kindOf, plainWords, recordedKind, scopesFor, shellSegments } from "../src/allows.ts";
 import { scratch } from "./scratch.ts";
 
 const bash = (command: unknown, spec?: string) => ({ tool: "Bash", input: { command } as Record<string, unknown>, ...(spec ? { spec } : {}) });
@@ -200,4 +200,18 @@ test("delegation: a local model is a kind like any other; a paid Runner always a
   assert.equal(d("anything").ask, true);
   assert.deepEqual(analyze({ tool: "mcp__governcode__spec_discard", input: { id: "S-1" } }).kinds.map((k) => k.key), ["spec:discard"]);
   assert.equal(analyze({ tool: "mcp__governcode__spec_accept", input: {} }).ask, true, "accepting is never an AI's step");
+});
+
+test("a kind is recorded in the Trace only in the shape of a program name", () => {
+  const key = (command: string, spec?: string) => analyze({ tool: "Bash", input: { command }, ...(spec ? { spec } : {}) }).kinds.map((k) => recordedKind(k.key));
+  assert.deepEqual(key("npm test"), ["command:npm test"]);
+  assert.deepEqual(key("cargo build", "S-0001"), ["runner:command:cargo build"]);
+  assert.deepEqual(key("git status"), ["command:git status"]);
+  // A quoted phrase, a long word or escape codes as the program: the kind still works for rules,
+  // but the Trace records only that it was some other command.
+  assert.deepEqual(key("'my secret phrase' status"), ["command:(other)"]);
+  assert.deepEqual(key(`'${"x".repeat(5000)}' build`), ["command:(other)"]);
+  assert.deepEqual(key("'\x1b[31mRED\x1b[0m' build"), ["command:(other)"]);
+  assert.deepEqual(key("'my secret phrase' status", "S-0001"), ["runner:command:(other)"]);
+  for (const k of ["edit", "runner:edit", "tool:WebSearch", "delegate:local", "runner:spec:discard"]) assert.equal(recordedKind(k), k);
 });

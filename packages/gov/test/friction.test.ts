@@ -93,6 +93,9 @@ test("kinds read as words", () => {
   assert.equal(kindName("always:Bash"), "Bash, always asks");
   assert.equal(kindName("always:Bash (Runner · codex)"), "Bash (Runner · codex), always asks");
   assert.equal(kindName("something:new"), "something:new");
+  assert.equal(kindName("command:(other)"), "other commands");
+  assert.equal(kindName("runner:command:(other)"), "other commands (Runners)");
+  assert.equal(kindName("command:\x1b]0;owned\x07 x"), "?]0;owned? x", "no escape codes reach the terminal");
 });
 
 test("Runner Gates are counted apart from Controller turns; sandbox, .git and Spec events are counted", () => {

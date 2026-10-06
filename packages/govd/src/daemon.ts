@@ -23,7 +23,7 @@ import { crewBrief, crewOf, setCrew, DEFAULT_CREW } from "./crew.ts";
 import type { DelegationContext, PlanItem } from "./delegate.ts";
 import { CountedStore, LimitGate, withBudget, type UsageSource } from "./limits.ts";
 import { ollamaUsage } from "./local.ts";
-import { Allows, analyze, scopesFor, type AllowRule, type AllowScope, type GateContext, type Kind } from "./allows.ts";
+import { Allows, analyze, recordedKind, scopesFor, type AllowRule, type AllowScope, type GateContext, type Kind } from "./allows.ts";
 import { openControllerSocket, openTurnSocket, accept, cancelSpec, discard, resumeSpec, resumeSpecIssue, SpecRuns, untold } from "./delegate.ts";
 import { applyToProject, changedFiles, diff as specDiff, projectFiles, snapshot, specPaths, turnStore } from "./specstore.ts";
 import { recoveryState, recoveryStates, type RecoveryState } from "./recovery.ts";
@@ -465,7 +465,7 @@ export class Daemon {
       const L = this.ledger;
       const { level, quietReads } = this.settings().gates;
       const a = analyze(req);
-      const step: StepKinds = { kinds: a.kinds.map((k) => k.key), always: a.ask };
+      const step: StepKinds = { kinds: a.kinds.map((k) => recordedKind(k.key)), always: a.ask };
       const pass = (by: string, why: string, extra: Record<string, unknown> = {}) => {
         L.append(o.project, "gate.allowed", "govd", { tool: req.tool, by, ...extra, ...step, request: req.canonical.slice(0, 4000), turn: o.ctx.turn, spec: req.spec ?? null });
         o.notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why });
@@ -487,6 +487,8 @@ export class Daemon {
       // Only the kinds no rule covers yet are offered to remember.
       const kinds = o.mandatory || a.ask ? [] : a.kinds.filter((k) => !this.allows.match(k, o.ctx));
       const scopes = kinds.length ? scopesFor(kinds[0], o.ctx) : [];
+      // The Gate is about the kinds no rule covers yet (all of them, when nothing may be remembered).
+      if (!o.mandatory && !a.ask && kinds.length) step.kinds = kinds.map((k) => recordedKind(k.key));
       const abort = () => { this.settle(id, "deny", "the operation ended"); };
       const gate: Gate = { id, project: o.project, tool: req.tool, canonical: req.canonical,
         opened: new Date().toISOString(), owner: o.owner,
