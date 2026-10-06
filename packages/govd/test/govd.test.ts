@@ -418,6 +418,26 @@ test("trace.list pages through every event with after, oldest first", async () =
   c.end(); d.close();
 });
 
+test("trace.list by kind reaches every project and all of history; trace.totals counts the whole Trace since a time", async () => {
+  const d = daemon("bykind");
+  await d.listen();
+  const c = client(join(root, "bykind", "govd.sock"));
+  d.ledger.append("q", "turn.started", "claude", { prompt: "long" });
+  for (let i = 0; i < 1200; i++) d.ledger.append(i % 2 ? null : "q", "turn.tool", "claude", { name: "Bash" });
+  d.ledger.append(null, "turn.started", "codex", { prompt: "home" });
+  const starts = (await c.call("trace.list", { limit: 10, kinds: ["turn.started"] })).result.events;
+  assert.deepEqual(starts.map((e: any) => e.project), ["q", null], "a turn begun 1,200 events ago is still found, in every project");
+  assert.match((await c.call("trace.list", { limit: 10, kinds: ["turn.started"], after: 0 })).error?.message ?? "", /pages by kind are not offered/);
+  d.ledger.append("q", "spec.done", "codex", {});
+  d.ledger.append("q", "gate.allowed", "user", { gate: "G-1", by: "user" });
+  d.ledger.append("q", "gate.denied", "user", { gate: "G-2", by: "govd" });
+  d.ledger.append("q", "gate.allowed", "user", { rule: "R-1" });
+  const { totals } = (await c.call("trace.totals", { since: new Date(Date.now() - 60_000).toISOString() })).result;
+  assert.deepEqual(totals, { turns: 2, specsFinished: 1, answeredByYou: 1, letThrough: 1, seq: d.ledger.events(undefined, 1)[0].seq });
+  assert.equal((await c.call("trace.totals", { since: new Date(Date.now() + 60_000).toISOString() })).result.totals.turns, 0);
+  c.end(); d.close();
+});
+
 test("standing allows: a turn rule covers the same kind for this turn only; quiet reads never ask; a project rule stays", async () => {
   const d = daemon("allows");
   d.selftest();

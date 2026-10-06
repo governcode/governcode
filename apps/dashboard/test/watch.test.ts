@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildWatch } from "../src/shared/watch.ts";
+import { buildWatch, MARKS, mergeEvents, tally } from "../src/shared/watch.ts";
 import { describe } from "../src/shared/trace.ts";
 
 let seq = 0;
@@ -11,7 +11,7 @@ const now = new Date("2026-10-05T12:00:00.000Z");
 test("a Controller turn is watched from its start until it ends, with its latest step", () => {
   const events = [
     ev("turn.started", "a", { prompt: "Add pagination", controller: { provider: "claude-code" } }, "user"),
-    ev("turn.tool", "a", { name: "Read src/routes.ts" }, "controller · claude-code"),
+    ev("turn.tool", "a", { name: "Read" }, "controller · claude-code"),
     ev("turn.text", "a", { text: "Codex will write it." }, "controller · claude-code"),
     ev("turn.started", "b", { prompt: "Done already", controller: { provider: "codex" } }, "user"),
     ev("turn.completed", "b", { summary: "ok" }),
@@ -41,4 +41,22 @@ test("the moment-to-moment events read as sentences too", () => {
   assert.equal(describe(ev("turn.text", "a", { text: "Codex will   write it." }, "controller · claude-code")).text, "controller · claude-code: “Codex will write it.”");
   assert.equal(describe(ev("spec.step", "a", { spec: "S-1", name: "apply_patch x.ts" })).text, "S-1 · apply_patch x.ts");
   assert.equal(describe(ev("turn.tool", "a", { name: "Task", subagent: "find the tests" }, "controller · claude-code")).text, "controller · claude-code started a subagent: “find the tests”");
+});
+
+test("a long turn stays on Watch when its start is older than the feed: the marks are kept apart", () => {
+  const start = ev("turn.started", "a", { prompt: "Long one", controller: { provider: "claude-code" } }, "user");
+  const steps = Array.from({ length: 700 }, () => ev("turn.tool", "a", { name: "Bash" }, "controller · claude-code"));
+  const feed = steps.slice(-600);   // what the feed still holds: the start has gone
+  assert.equal(buildWatch(feed, [], now).turns.length, 0, "the feed alone loses it");
+  const marks = [start].filter((e) => MARKS.includes(e.kind));
+  const w = buildWatch(mergeEvents(marks, feed), [], now);
+  assert.deepEqual(w.turns.map((t) => [t.prompt, t.lastStep]), [["Long one", "Bash"]]);
+  assert.equal(mergeEvents(feed, feed).length, 600, "each event once");
+});
+
+test("today: govd's totals, plus what arrives after them, never counted twice", () => {
+  const base = { turns: 40, specsFinished: 3, answeredByYou: 7, letThrough: 900 };
+  const later = [ev("turn.started", "a", {}, "user"), ev("gate.allowed", "a", { tool: "Read", by: "quiet read" }), ev("turn.started", "a", {}, "user", "2026-10-04T23:00:00.000Z")];
+  assert.deepEqual(tally(later, now, base), { turns: 41, specsFinished: 3, answeredByYou: 7, letThrough: 901 });
+  assert.deepEqual(base.turns, 40, "the base itself is left alone");
 });

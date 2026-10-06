@@ -64,12 +64,27 @@ export class Ledger {
     return rows.map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
-  /** A project's events of some kinds, newest last (all of its history, not a recent window). */
-  eventsOfKind(project: string | null, kinds: TraceEvent["kind"][], limit = 500): TraceEvent[] {
-    const where = project === null ? "project IS NULL" : "project = ?";
+  /** A project's events of some kinds (every project's, when it is undefined), newest last: all of
+   *  its history, not a recent window. */
+  eventsOfKind(project: string | null | undefined, kinds: TraceEvent["kind"][], limit = 500): TraceEvent[] {
+    const where = project === undefined ? "1" : project === null ? "project IS NULL" : "project = ?";
     const rows = this.db.prepare(`SELECT * FROM events WHERE ${where} AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT ?`)
-      .all(...(project === null ? [] : [project]), ...kinds, limit) as Array<Record<string, unknown>>;
+      .all(...(typeof project === "string" ? [project] : []), ...kinds, limit) as Array<Record<string, unknown>>;
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
+  }
+
+  /** What happened since a time, in every project: turns begun, Specs finished, Gates the user
+   *  answered and steps let through without one (as Watch counts them); `seq` is the newest event
+   *  counted, so a caller can add the ones that follow. */
+  totals(since: string): { turns: number; specsFinished: number; answeredByYou: number; letThrough: number; seq: number } {
+    const r = this.db.prepare(`SELECT
+        COUNT(CASE WHEN kind = 'turn.started' THEN 1 END) AS turns,
+        COUNT(CASE WHEN kind = 'spec.done' THEN 1 END) AS specsFinished,
+        COUNT(CASE WHEN kind IN ('gate.allowed', 'gate.denied') AND json_extract(data, '$.by') = 'user' THEN 1 END) AS answeredByYou,
+        COUNT(CASE WHEN kind = 'gate.allowed' AND COALESCE(json_extract(data, '$.by'), '') != 'user' AND json_extract(data, '$.gate') IS NULL THEN 1 END) AS letThrough
+      FROM events WHERE ts >= ?`).get(since) as Record<string, number>;
+    const seq = (this.db.prepare("SELECT MAX(seq) AS seq FROM events").get() as { seq: number | null }).seq ?? 0;
+    return { turns: r.turns, specsFinished: r.specsFinished, answeredByYou: r.answeredByYou, letThrough: r.letThrough, seq };
   }
 
   /** Open artifact operations across the entire Trace, without loading finished history. */

@@ -426,7 +426,9 @@ the sandbox status; clients check features, not versions. Methods, by area:
   `acp.installed`, `acp.installed.inspect`, `acp.install.cancel`;
 - recovery: `recovery.list`, `recovery.set`, `recovery.resume`, `recovery.clear`; Controller
   turns continue through `ask` with `continuationOf`, not `recovery.resume`;
-- the record: `trace.list`, and `watch`: after it, the connection also receives every Trace
+- the record: `trace.list` (with `kinds`, every event of those kinds however old, in one project
+  or all of them), `trace.totals` (what happened since a time: turns, Specs finished, Gates you
+  answered, steps let through), and `watch`: after it, the connection also receives every Trace
   append (`{kind: "trace", event}`) and a `{kind: "gates"}` nudge whenever a Gate opens or is
   settled, so clients update without polling. `watch` defaults to `wake: false`; `wake: true`
   declares that the client can show unattended work and permits wake turns and opted-in

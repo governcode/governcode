@@ -109,7 +109,8 @@ function pageWindow(size: { width: number; height: number; minWidth: number; min
 
 function createWindow(): void {
   win = pageWindow({ width: 1360, height: 860, minWidth: 960, minHeight: 600, title: "GovernCode" });
-  win.on("closed", () => { win = null; });
+  // Watch is the Dashboard's companion: it closes with it, so it never outlives the window it sends you to.
+  win.on("closed", () => { win = null; if (watchWin && !watchWin.isDestroyed()) watchWin.close(); });
 }
 
 app.enableSandbox();
@@ -132,7 +133,7 @@ app.whenReady().then(() => {
   link.onWatch((ev) => { for (const w of windows()) w.webContents.send(Channel.watch, ev); });
   void link.start();
   createWindow();
-  app.on("activate", () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
+  app.on("activate", () => { if (!win) createWindow(); });
 });
 
 app.on("window-all-closed", () => {

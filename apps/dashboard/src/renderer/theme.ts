@@ -21,7 +21,10 @@ export function useTheme(): ThemeChoice {
   const [choice, setChoice] = useState<ThemeChoice>(themeChoice);
   useEffect(() => {
     listeners.add(setChoice);
-    return () => { listeners.delete(setChoice); };
+    // A choice made in the other window (the Dashboard and Watch share this storage).
+    const other = (e: StorageEvent) => { if (e.key === KEY || e.key === null) setChoice(themeChoice()); };
+    addEventListener("storage", other);
+    return () => { listeners.delete(setChoice); removeEventListener("storage", other); };
   }, []);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");

@@ -1,8 +1,8 @@
 // Watch: what your crew is doing right now, live. Each Controller at work with its latest step,
 // each Runner in its lane, what waits for you, the allowance, and a feed of everything as it
 // happens. Read-only: decisions are made in Needs you. Also its own window (Pop out).
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { buildWatch } from "../../shared/watch.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildWatch, MARKS, mergeEvents, tally, type WatchToday } from "../../shared/watch.ts";
 import { describe } from "../../shared/trace.ts";
 import { providerUsage } from "../../shared/status.ts";
 import { api, call, clock, useWatch, type Gate, type Spec, type TraceEvent } from "../api.ts";
@@ -20,6 +20,12 @@ const since = (iso: string | null, now: number) => {
 
 export function Watch({ popout = false, onNeeds }: { popout?: boolean; onNeeds?: () => void }) {
   const [events, setEvents] = useState<TraceEvent[]>([]);
+  // Where turns and Runners began, kept apart from the feed: a long turn's start soon leaves the feed.
+  const [marks, setMarks] = useState<TraceEvent[]>([]);
+  // Today from govd's count over the whole Trace, and every event after the one it counted up to.
+  const [totals, setTotals] = useState<{ today: WatchToday; seq: number } | null>(null);
+  const seen = useRef<TraceEvent[]>([]);
+  seen.current = events;
   const [specs, setSpecs] = useState<Spec[]>([]);
   const [gates, setGates] = useState<Gate[]>([]);
   const [limits, setLimits] = useState<ProviderLimit[]>([]);
@@ -31,22 +37,41 @@ export function Watch({ popout = false, onNeeds }: { popout?: boolean; onNeeds?:
   const loadGates = useCallback(async () => { try { setGates((await call<{ gates: Gate[] }>("gate.list")).gates); } catch { /* shown as quiet */ } }, []);
   const loadLimits = useCallback(async () => { try { setLimits((await call<{ providers: ProviderLimit[] }>("limits.list", { measure: false })).providers); } catch { /* shown as quiet */ } }, []);
   useEffect(() => {
-    void (async () => { try { setEvents((await call<{ events: TraceEvent[] }>("trace.list", { limit: 400 })).events); } catch { /* shown as quiet */ } })();
+    // Merged, not replaced: live events can arrive before these replies.
+    void (async () => { try { const got = (await call<{ events: TraceEvent[] }>("trace.list", { limit: 400 })).events; setEvents((all) => mergeEvents(got, all).slice(-KEEP)); } catch { /* shown as quiet */ } })();
+    void (async () => { try { const got = (await call<{ events: TraceEvent[] }>("trace.list", { limit: 200, kinds: MARKS })).events; setMarks((all) => mergeEvents(got, all).slice(-KEEP)); } catch { /* shown as quiet */ } })();
     void loadSpecs(); void loadGates(); void loadLimits();
   }, [loadSpecs, loadGates, loadLimits]);
   useWatch((w) => {
     if (w.kind === "gates") { void loadGates(); return; }
-    setEvents((all) => all.some((e) => e.seq === w.event.seq) ? all : [...all, w.event].slice(-KEEP));
+    const e = w.event;
+    setEvents((all) => all.some((x) => x.seq === e.seq) ? all : [...all, e].slice(-KEEP));
+    if (MARKS.includes(e.kind)) setMarks((all) => all.some((x) => x.seq === e.seq) ? all : [...all, e].slice(-KEEP));
+    setTotals((t) => t && e.seq > t.seq ? { today: tally([e], new Date(), t.today), seq: e.seq } : t);
     setFresh(w.event.seq);
     if (w.event.kind.startsWith("spec.") && w.event.kind !== "spec.step") { void loadSpecs(); void loadLimits(); }
     if (w.event.kind === "settings.changed") void loadLimits();
   });
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const day = new Date(now).toDateString();
+  useEffect(() => {
+    // From local midnight; again when the day turns. An older govd has no count: Today then comes from the feed.
+    setTotals(null);
+    void (async () => {
+      try {
+        const { totals: t } = await call<{ totals: WatchToday & { seq: number } }>("trace.totals", { since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString() });
+        const { seq, ...counted } = t;
+        const after = seen.current.filter((e) => e.seq > seq);   // arrived while it was counting
+        setTotals({ today: tally(after, new Date(), counted), seq: Math.max(seq, ...after.map((e) => e.seq)) });
+      } catch { /* an older govd */ }
+    })();
+  }, [day]);
 
-  const w = useMemo(() => buildWatch(events, specs, new Date(now)), [events, specs, Math.floor(now / 60_000)]);   // the clock matters to the minute only
+  const w = useMemo(() => buildWatch(mergeEvents(marks, events), specs, new Date(now)), [marks, events, specs, Math.floor(now / 60_000)]);   // the clock matters to the minute only
+  const today = totals?.today ?? w.today;
   const feed = [...events].reverse().slice(0, 40);
   const reviews = specs.filter((s) => s.status === "needs-review");
-  const busy = w.turns.length + w.runners.length;
+  const busy = w.turns.length + w.runners.filter((r) => r.status === "running").length;   // queued is not working yet
   const popOut = () => { void api().openWatch(); };
 
   return (
@@ -141,10 +166,10 @@ export function Watch({ popout = false, onNeeds }: { popout?: boolean; onNeeds?:
           </div>
           <div className="w-card w-today">
             <h3>Today</h3>
-            <div><b>{w.today.turns}</b><span>turns</span></div>
-            <div><b>{w.today.specsFinished}</b><span>Specs finished</span></div>
-            <div><b>{w.today.answeredByYou}</b><span>Gates you answered</span></div>
-            <div><b>{w.today.letThrough}</b><span>steps let through</span></div>
+            <div><b>{today.turns}</b><span>turns</span></div>
+            <div><b>{today.specsFinished}</b><span>Specs finished</span></div>
+            <div><b>{today.answeredByYou}</b><span>Gates you answered</span></div>
+            <div><b>{today.letThrough}</b><span>steps let through</span></div>
           </div>
         </aside>
       </div>

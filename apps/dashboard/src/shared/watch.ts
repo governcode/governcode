@@ -34,13 +34,29 @@ export function buildWatch(events: readonly TraceEvent[], specs: readonly SpecLi
   const runners: WatchRunner[] = specs.filter((s) => s.status === "running" || s.status === "queued").map((s) => ({
     id: s.id, project: s.project, to: s.to, brief: oneLine(s.brief, 160), status: s.status, since: started.get(s.id) ?? null, lastStep: step.get(s.id) ?? null,
   }));
-  const today: WatchToday = { turns: 0, specsFinished: 0, answeredByYou: 0, letThrough: 0 };
-  for (const e of ordered) {
+  return { turns, runners, today: tally(ordered, now) };
+}
+
+/** Today's totals from these events alone: govd's `trace.totals` counts the same over the whole
+ *  Trace, and Watch adds the events that arrive after it with this. */
+export function tally(events: readonly TraceEvent[], now = new Date(), base: WatchToday = { turns: 0, specsFinished: 0, answeredByYou: 0, letThrough: 0 }): WatchToday {
+  const today = { ...base };
+  for (const e of events) {
     if (!sameDay(e.ts, now)) continue;
     if (e.kind === "turn.started") today.turns++;
     else if (e.kind === "spec.done") today.specsFinished++;
     else if ((e.kind === "gate.allowed" || e.kind === "gate.denied") && e.data.by === "user") today.answeredByYou++;
     else if (e.kind === "gate.allowed" && !e.data.gate) today.letThrough++;
   }
-  return { turns, runners, today };
+  return today;
+}
+
+/** The kinds that open and close work: Watch keeps these apart from its feed, however long ago. */
+export const MARKS = ["turn.started", "turn.completed", "turn.failed", "spec.started"];
+
+/** Two lists of events as one, each event once, oldest first. */
+export function mergeEvents(a: readonly TraceEvent[], b: readonly TraceEvent[]): TraceEvent[] {
+  const seen = new Map<number, TraceEvent>();
+  for (const e of [...a, ...b]) seen.set(e.seq, e);
+  return [...seen.values()].sort((x, y) => x.seq - y.seq);
 }

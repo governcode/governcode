@@ -771,8 +771,10 @@ export class Daemon {
         L.append(p.project, "context.shared", "user", { provider: p.provider, share: p.share });
         return { ok: true };
       case "trace.list":
-        if (p.kinds && p.project && p.after !== undefined) throw new RpcError(Errors.badParams, "after: pages by kind are not offered; page without kinds");
-        return { events: p.kinds && p.project ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit, p.after) };
+        if (p.kinds && p.after !== undefined) throw new RpcError(Errors.badParams, "after: pages by kind are not offered; page without kinds");
+        return { events: p.kinds ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit, p.after) };
+      case "trace.totals":
+        return { totals: L.totals(new Date(p.since).toISOString()) };
       case "ask": {
         // An unattended turn is using the Controller: the user's message goes next.
         const waking = p.project ? this.waking.get(p.project) : undefined;

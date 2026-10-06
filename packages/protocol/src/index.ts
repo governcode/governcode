@@ -173,10 +173,13 @@ export const Params = {
   "project.new": z.object({ name: ProjectName, path: z.string().min(1), git: z.boolean().default(true) }),
   "project.open": z.object({ path: z.string().min(1), name: ProjectName.optional() }),
   "controller.set": z.object({ project: ProjectName, controller: ControllerChoice }),
-  // kinds: only events of these kinds (e.g. the latest turn boundaries, however long the turn).
+  // kinds: only events of these kinds (e.g. the latest turn boundaries, however long the turn), in
+  // the project or, without one, in every project.
   // after: the events after that seq, oldest first, instead of the newest (an export pages with it).
   "trace.list": z.object({ project: ProjectName.optional(), limit: z.number().int().min(1).max(1000).default(50),
     kinds: z.array(z.string().regex(/^[a-z.]{1,40}$/)).max(20).optional(), after: z.number().int().min(0).optional() }),
+  // since: what happened from then on, counted over the whole Trace (Watch's Today).
+  "trace.totals": z.object({ since: z.string().datetime({ offset: true }) }),
   // continuationOf: the user continues a turn a usage limit stopped (T-n), with their own prompt.
   ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000), continuationOf: z.string().regex(/^T-\d+$/).optional() }),
   "gate.list": z.object({}),
