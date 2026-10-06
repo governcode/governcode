@@ -645,3 +645,6 @@ kbd { font: 500 10.5px/1 var(--sans); color: var(--label-3); padding: 3px 5px; b
 .suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 10px; }
 .suggest .chip { padding: 7px 12px; border-radius: 10px; font-size: 12.5px; background: var(--surface); box-shadow: var(--shadow-card); border: 1px solid var(--card-edge); color: var(--label); }
 .suggest .chip:hover { background: var(--surface-2); }
+
+/* A screen's error reads as a banner, not loose red text. */
+.view > .error.pad, .detail .error.pad { margin: 12px 24px 0; padding: 10px 14px; border-radius: 10px; background: var(--red-tint); color: var(--red); font-size: 12.5px; }
