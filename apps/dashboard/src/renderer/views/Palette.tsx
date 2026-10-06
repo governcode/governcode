@@ -5,13 +5,14 @@
 // different Gate can never slide under it. It never starts on an answer, and one answer at a time.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { gateFitsInline } from "../../shared/status.ts";
+import { filterItems, initialSelection, moveSelection, selected } from "../../shared/palette.ts";
 import { call, type Gate, type Project, type Spec } from "../api.ts";
 import { providerName } from "../brand.tsx";
 import { Icon, type IconName } from "../icons.tsx";
 import { setThemeChoice } from "../theme.ts";
 import type { Place, Tab } from "./Sidebar.tsx";
 
-type Item = { id: string; group: string; label: string; detail?: string; icon: IconName; tone?: "amber" | "accent"; answer?: boolean; run: () => void | Promise<void> };
+type Item = { id: string; group: string; label: string; detail?: string; icon: IconName; tone?: "amber" | "accent"; answer?: boolean; hidden?: boolean; run: () => void | Promise<void> };
 const TAB_NAMES: Array<[Tab, string]> = [["conversation", "Conversation"], ["specs", "Specs"], ["checkpoints", "Checkpoints"], ["notes", "Notes"], ["trace", "Trace"], ["crew", "Crew card"]];
 
 export function Palette(props: { projects: Project[]; gates: Gate[]; specs: Spec[]; onPlace: (p: Place) => void; onClose: () => void;
@@ -58,7 +59,7 @@ export function Palette(props: { projects: Project[]; gates: Gate[]; specs: Spec
     for (const p of props.projects) {
       out.push({ id: `p:${p.name}`, group: "Projects", label: p.name, detail: `Conversation · ${providerName(p.controller.provider)}`, icon: "folder", run: go({ kind: "project", name: p.name, tab: "conversation" }) });
       for (const [tab, name] of TAB_NAMES.slice(1)) {
-        out.push({ id: `p:${p.name}:${tab}`, group: "Projects", label: `${p.name} · ${name}`, icon: "chevronRight", run: go({ kind: "project", name: p.name, tab }) });
+        out.push({ id: `p:${p.name}:${tab}`, group: "Projects", label: `${p.name} · ${name}`, icon: "chevronRight", hidden: true, run: go({ kind: "project", name: p.name, tab }) });
       }
     }
     out.push({ id: "new", group: "Actions", label: "New project", icon: "plus", run: () => { props.onClose(); props.onNewProject(); } });
@@ -69,13 +70,12 @@ export function Palette(props: { projects: Project[]; gates: Gate[]; specs: Spec
     return out;
   }, [props]);
 
-  // Every word typed must appear in the label or its detail; project tabs only show once asked for.
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = items.filter((it) => words.length ? words.every((w) => `${it.label} ${it.detail ?? ""}`.toLowerCase().includes(w))
-    : !(it.group === "Projects" && it.icon === "chevronRight"));
+  // Project tabs show only once searched for (shared/palette.ts has the rules, and their tests).
+  const shown = filterItems(items, query);
   // A new search starts on its first result that is not an answer; an answer is chosen by moving to it.
-  useEffect(() => { setSel(shown.find((it) => !it.answer)?.id ?? null); }, [query]);   // only when the search changes
-  const at = shown.findIndex((it) => it.id === sel);   // -1 when the highlighted item went away: nothing runs
+  useEffect(() => { setSel(initialSelection(shown)); }, [query]);   // only when the search changes
+  const current = selected(shown, sel);   // null when the highlighted item went away: nothing runs
+  const at = current ? shown.indexOf(current) : -1;
   useEffect(() => { list.current?.querySelector(".it.on")?.scrollIntoView({ block: "nearest" }); }, [sel]);
 
   const run = async (it: Item | undefined) => {
@@ -83,17 +83,13 @@ export function Palette(props: { projects: Project[]; gates: Gate[]; specs: Spec
     setBusy(true); setError(null);
     try { await it.run(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
-  const move = (by: number) => {
-    if (!shown.length) return;
-    const from = at < 0 ? (by > 0 ? -1 : shown.length) : at;
-    setSel(shown[Math.max(0, Math.min(shown.length - 1, from + by))].id);
-  };
+  const move = (by: 1 | -1) => setSel(moveSelection(shown, sel, by));
   const onKey = (e: KeyboardEvent) => {
     e.stopPropagation();   // keys here are the palette's, not a dialog's below it
     if (e.key === "Escape") { e.preventDefault(); props.onClose(); }
     else if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
-    else if (e.key === "Enter") { e.preventDefault(); if (at >= 0) void run(shown[at]); }
+    else if (e.key === "Enter") { e.preventDefault(); if (current) void run(current); }
     else if (e.key === "Tab") { e.preventDefault(); input.current?.focus(); }   // focus stays in the palette
   };
 
