@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { COUNTED_LABEL, COUNTED_WINDOWS, Effort, Params, ProjectName, RUNNERS, SpecCheckpoints, SpecDiff, setBudget, type CountedWindow } from "@governcode/protocol";
 import type { AcpStoredRuntimeObservation } from "../../govd/src/acp-install.ts";
 import { runDemo } from "./demo.ts";
+import { FRICTION_KINDS, friction, readTrace, type FrictionReport } from "./friction.ts";
 import { checkHost, localSocket, stateDir, tunnelSocket } from "./tunnel.ts";
 
 const env = process.env;
@@ -20,12 +21,12 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp inspect-installed INSTALLATION_ID [--json]|acp cancel I-N|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|friction [--project NAME] [--days N] [--json]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp inspect-installed INSTALLATION_ID [--json]|acp cancel I-N|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
   "turns", "undo", "settings", "budget", "local", "memory", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
-  "limits", "limited", "resume", "auto-resume", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "ask", "demo", "acp"]);
+  "limits", "limited", "resume", "auto-resume", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "friction", "ask", "demo", "acp"]);
 
 /** A Runner name, checked before anything is saved (govd checks too): a typo would be saved and never used. */
 function runner(name: string): string {
@@ -966,6 +967,25 @@ async function main(argv: string[]): Promise<number> {
         for (const e of events) console.log(`${new Date(e.ts).toTimeString().slice(0, 8)}  ${e.kind.padEnd(16)} ${(e.project ?? "-").padEnd(12)} ${dim(e.actor)}`);
         return 0;
       }
+      case "friction": {
+        // gov friction [--project NAME] [--days N] [--json]: Gates, failed turns and refusals, read
+        // from the Trace. It changes nothing.
+        const usage = "usage: gov friction [--project NAME] [--days N] [--json]";
+        let project: string | undefined, days = 7, json = false;
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === "--json" && !json) json = true;
+          else if (rest[i] === "--project" && project === undefined && rest[i + 1] !== undefined) project = projectName(rest[++i]);
+          else if (rest[i] === "--days" && /^\d{1,4}$/.test(rest[i + 1] ?? "") && +rest[i + 1] >= 1 && +rest[i + 1] <= 3650) days = +rest[++i];
+          else throw new Error(usage);
+        }
+        const since = new Date(Date.now() - days * 86_400_000);
+        const events = await readTrace(async (after, limit) => (await api.call("trace.list", { project, limit, ...(after === undefined ? {} : { after }) })).events,
+          since, (e) => FRICTION_KINDS.has(e.kind));
+        const report = friction(events, { since, project });
+        if (json) console.log(JSON.stringify(report, null, 2));
+        else printFriction(report, days);
+        return 0;
+      }
       case "ask": {
         const prompt = rest.join(" ");
         if (!prompt.trim()) throw new Error('usage: gov ask "PROMPT"');
@@ -995,6 +1015,28 @@ async function main(argv: string[]): Promise<number> {
 // slow reader (| less, | jq) had not taken yet.
 const exit = (code: number) => process.stdout.write("", () => process.exit(code));
 main(process.argv.slice(2)).then(exit, (err) => { console.error(`gov: ${err.message}`); exit(1); });
+
+/** gov friction's report, short and aligned. */
+function printFriction(r: FrictionReport, days: number): void {
+  const counts = (m: Record<string, number>) => Object.entries(m).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => `${n} ${k}`).join(", ");
+  const why = (m: Record<string, number>) => (Object.keys(m).length ? ` (${counts(m)})` : "");
+  const limited = (n: number) => (n ? ` (${n} at a usage limit)` : "");
+  const { turns: t, gates: g, sandbox: s, specs } = r;
+  console.log(`Friction in the last ${days} day${days === 1 ? "" : "s"}, ${r.project ?? "all projects"} ${dim("(read from the Trace; nothing is changed)")}`);
+  console.log(`Turns    ${t.started} started · ${t.completed} completed · ${t.failed} failed${limited(t.limited)}`);
+  console.log(`Gates    ${g.opened} opened (${g.byControllers} by Controllers, ${g.byRunners} by Runners)${g.perTurn === null ? "" : ` · ${g.perTurn.toFixed(1)} per Controller turn`}`);
+  console.log(`         ${g.allowed} allowed by you · ${g.denied} denied by you · ${g.autoDenied} denied by govd${why(g.autoDeniedBy)}`);
+  console.log(`         ${g.passed} let through without a Gate${why(g.passedBy)}`);
+  console.log(`Sandbox  ${s.refused} turn${s.refused === 1 ? "" : "s"} refused${why(s.refusedBy)} · .git restored ${s.gitScrubbed} time${s.gitScrubbed === 1 ? "" : "s"} · .git guard failed ${s.gitGuardFailed} time${s.gitGuardFailed === 1 ? "" : "s"}`);
+  console.log(`Specs    ${specs.created} created · ${specs.failed} failed${limited(specs.limited)} · ${specs.held} held`);
+  if (!r.tools.length) return;
+  const w = Math.min(40, Math.max(4, ...r.tools.map((x) => x.tool.length)));
+  console.log(`\n${"Tool".padEnd(w)}  asked  allowed  denied  by govd`);
+  for (const x of r.tools) {
+    console.log(`${x.tool.slice(0, w).padEnd(w)}  ${String(x.asked).padStart(5)}  ${String(x.allowed).padStart(7)}  ${String(x.denied).padStart(6)}  ${String(x.autoDenied).padStart(7)}${x.allowedEveryTime ? "  allowed every time" : ""}`);
+  }
+  console.log(dim("Grouped by tool: the Trace does not record a Gate's kind of step. Allowed every time: 5 or more, never denied by you. No rule was made."));
+}
 
 async function daemon(verb: string | undefined): Promise<number> {
   const svc = await import("./service.ts");

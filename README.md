@@ -108,6 +108,7 @@ gov gates          # from another terminal: what is waiting, exactly as it will 
 gov gate G-3 allow # answer it there: allow|deny, and --turn, --spec or --project to remember it
 gov allows         # the standing allows you remembered for projects (revocable)
 gov trace          # what happened (gov trace --jsonl to export it)
+gov friction       # the last 7 days' Gates, failed turns and refusals, read from the Trace (changes nothing)
 gov turns          # Checkpoints of the Controller's turns that changed files
 gov undo T-12      # put those files back, if you have not changed them since
 gov status         # govd's version and sandbox; gov projects and gov settings list the rest
@@ -128,7 +129,9 @@ kind of step for the rest of this turn** (a Runner: this Spec) **or this project
 not asked about every `npm test`; a command like `cd app && npm test | tail` counts as
 `npm test`. That only skips the question: the sandbox applies to every step at every level,
 risky steps always ask (deleting, git commands that change the repository, installing packages,
-network tools, interpreters, handing work to a paid Runner), and everything is in the Trace. Details:
+network tools, interpreters, handing work to a paid Runner), and everything is in the Trace.
+`gov friction [--project NAME] [--days N] [--json]` counts from it how often you were asked, who
+answered, and which tools you allowed every time; it only reads, and makes no rule. Details:
 [docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
 
 **Project memory.** GovernCode, not the AI tool, keeps what a Controller knows about a project,

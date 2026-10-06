@@ -596,6 +596,48 @@ test("gov trace --jsonl exports every event, oldest first, a page at a time; an 
   assert.equal(old.methods().filter((m) => m === "trace.list").length, 2);
 });
 
+test("gov friction reads only the window it reports, a page at a time, and asks govd to change nothing", async () => {
+  const now = Date.now(), old = new Date(now - 30 * 86_400_000).toISOString(), recent = new Date(now - 86_400_000).toISOString();
+  const all: any[] = [];
+  const add = (kind: string, data: any, ts = recent, actor = "controller · claude-code") => all.push({ seq: all.length + 1, ts, project: "app", kind, actor, data });
+  for (let i = 0; i < 1500; i++) add("turn.text", { text: "old" }, old);
+  add("gate.opened", { gate: "G-1", tool: "Edit" }, old);
+  add("gate.allowed", { gate: "G-1", tool: "Edit", by: "user" }, old);
+  add("turn.started", {}); add("turn.failed", { turn: "T-1", limit: { provider: "claude-code", resetsAt: null } });
+  for (let i = 0; i < 5; i++) { add("gate.opened", { gate: `G-${i + 2}`, tool: "Edit" }); add("gate.allowed", { gate: `G-${i + 2}`, tool: "Edit", by: "user" }); }
+  add("gate.opened", { gate: "G-9", tool: "Bash" }); add("gate.denied", { gate: "G-9", tool: "Bash", by: "nobody answered within the hour" });
+  add("gate.allowed", { tool: "Bash", by: "quiet read" });
+  add("sandbox.refused", { reason: "bwrap missing" });
+  const page = (p: any) => p.after === undefined ? all.slice(-p.limit) : all.filter((e) => e.seq > p.after).slice(0, p.limit);
+  const g = await fakeGovd((m, p) => (m === "trace.list" ? { events: page(p) } : undefined));
+  const r = await run(g.dir, ["friction", "--project", "app"]).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual([...new Set(g.methods())], ["trace.list"], "it only reads the Trace");
+  assert.ok(g.calls.every((c) => c.params.project === "app"));
+  // The window's start is found one event at a time; the 1500 old events are never paged.
+  assert.deepEqual(g.calls.filter((c) => c.params.limit === 1000).map((c) => c.params.after), [1502]);
+  assert.match(r.stdout, /^Friction in the last 7 days, app \(read from the Trace; nothing is changed\)$/m);
+  assert.match(r.stdout, /^Turns +1 started · 0 completed · 1 failed \(1 at a usage limit\)$/m);
+  assert.match(r.stdout, /^Gates +6 opened \(6 by Controllers, 0 by Runners\) · 6\.0 per Controller turn$/m);
+  assert.match(r.stdout, /5 allowed by you · 0 denied by you · 1 denied by govd \(1 nobody answered within the hour\)$/m);
+  assert.match(r.stdout, /1 let through without a Gate \(1 quiet read\)$/m);
+  assert.match(r.stdout, /^Sandbox +1 turn refused \(1 bwrap missing\)/m);
+  assert.match(r.stdout, /^Edit +5 +5 +0 +0 +allowed every time$/m);
+  assert.match(r.stdout, /^Bash +1 +0 +0 +1$/m);
+  const j = await run(g.dir, ["friction", "--days", "60", "--json"]).done;
+  assert.equal(j.code, 0, j.stderr);
+  const report = JSON.parse(j.stdout);
+  assert.equal(report.gates.opened, 7);
+  assert.deepEqual(report.tools.find((t: any) => t.tool === "Edit"), { tool: "Edit", asked: 6, allowed: 6, denied: 0, autoDenied: 0, allowedEveryTime: true });
+  const before = g.calls.length;
+  for (const args of [["friction", "--days", "0"], ["friction", "--days"], ["friction", "--project", "My App"], ["friction", "extra"], ["friction", "--json", "--json"]]) {
+    const bad = await run(g.dir, args).done;
+    assert.equal(bad.code, 1, args.join(" "));
+    assert.match(bad.stderr, /^gov: (usage: gov friction|a project name)/);
+  }
+  assert.equal(g.calls.length, before, "bad arguments ask govd nothing");
+});
+
 test("gov disconnect grok is accepted", async () => {
   const g = await fakeGovd((m, p) => (m === "tools.disconnect" ? { note: `${p.tool} is disconnected` } : {}));
   const r = await run(g.dir, ["disconnect", "grok"]).done;
