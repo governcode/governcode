@@ -11,8 +11,8 @@
 // - a hook named in a project's `.agents/hooks.json` with "enabled": false switched a named hook
 //   off on the next run, so the hook's name is random per run, a Spec whose copy holds Antigravity
 //   customizations is refused, and a Runner that creates one fails its Spec.
+import { jsonLines } from "@governcode/protocol/lines";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { closeSync, constants, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -328,7 +328,7 @@ export async function runAgyTurn(o: { supervisor: string; policyDir: string; sta
   child.on("error", (e) => { rh.finish(); finish({ ok: false, summary: `agy did not start: ${e.message}`, started: false }); });
   child.stderr.on("data", (b) => (stderr = (stderr + b).slice(-4000)));
   let result: any = null;
-  createInterface({ input: child.stdout }).on("line", (line) => {
+  jsonLines(child.stdout).on("line", (line) => {
     let m: any;
     try { m = JSON.parse(line); } catch { return; }
     const s = m?.step_update;

@@ -60,3 +60,33 @@ export function mergeEvents(a: readonly TraceEvent[], b: readonly TraceEvent[]):
   for (const e of [...a, ...b]) seen.set(e.seq, e);
   return [...seen.values()].sort((x, y) => x.seq - y.seq);
 }
+
+/** What Watch holds: its feed, where turns and Runners began (kept apart from the feed, as a long
+ *  turn's start soon leaves it), every live event as it arrived (so a totals reply can add the ones
+ *  after its count), and Today from govd's count plus what came after it. */
+export type WatchState = {
+  events: TraceEvent[];
+  marks: TraceEvent[];
+  live: TraceEvent[];
+  totals: { today: WatchToday; seq: number } | null;
+};
+
+/** One live event: into the feed and the marks once each, and into Today if govd's count is
+ *  already in and the event came after it. (tally counts today's events only; a new day's count
+ *  comes from govd again.) */
+export function applyLiveEvent(state: WatchState, e: TraceEvent, keep: number, now = new Date()): WatchState {
+  const has = (list: readonly TraceEvent[]) => list.some((x) => x.seq === e.seq);
+  if (has(state.live)) return state;   // the same event twice: counted once, before or after govd's count
+  return {
+    live: [...state.live, e].slice(-keep),
+    events: has(state.events) ? state.events : [...state.events, e].slice(-keep),
+    marks: !MARKS.includes(e.kind) || has(state.marks) ? state.marks : [...state.marks, e].slice(-keep),
+    totals: state.totals && e.seq > state.totals.seq ? { today: tally([e], now, state.totals.today), seq: e.seq } : state.totals,
+  };
+}
+
+/** govd's count of today up to its `seq`, plus the live events that arrived after it, each once. */
+export function combineTotals(state: WatchState, reply: { today: WatchToday; seq: number }, now = new Date()): WatchState {
+  const after = state.live.filter((e) => e.seq > reply.seq);
+  return { ...state, totals: { today: tally(after, now, reply.today), seq: Math.max(reply.seq, ...after.map((e) => e.seq)) } };
+}

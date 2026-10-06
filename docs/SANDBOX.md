@@ -464,6 +464,12 @@ fixture evidence remain retained.
   planned with GovernCode's secrets storage.
 - Existing Runner policies do not restrict UDP (DNS needs it); TCP is restricted by port,
   not by address. The optional child syscall block above instead denies socket creation.
+  Landlock restricts UDP from ABI 10; GovernCode will use it (DNS only, by default) once it can
+  be tested on such a kernel.
+- A sandboxed tool cannot read another process's environment, memory or working folder unless
+  that process runs in the same sandbox (Landlock limits it to its own domain), but it can see
+  the command lines of your other programs, as any program you run can. Do not pass secrets as
+  command-line arguments.
 - A tool that refreshes its login during a run keeps it (govd copies the new login back as it
   is). Grok's login is read-only inside a run, so when it expires, `gov connect grok` signs it in
   again.

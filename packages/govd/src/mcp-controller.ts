@@ -3,8 +3,8 @@
 // INSIDE its own sandbox; the only thing it can reach is the per-turn socket govd opened for
 // this turn (listed in the turn's unix_connect, nothing else). That socket offers delegation
 // and read-only views, never Gate answers or undo: those stay with the user.
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
 import { connect } from "node:net";
-import { createInterface } from "node:readline";
 
 const socketPath = process.argv[2];
 if (!socketPath) { process.stderr.write("usage: mcp-controller SOCKET\n"); process.exit(2); }
@@ -70,15 +70,15 @@ let next = 1;
 const waiting = new Map<number, (m: any) => void>();
 const sock = connect(socketPath);
 sock.on("error", (e) => { process.stderr.write(`governcode: ${e.message}\n`); });
-const replies = createInterface({ input: sock });
+const replies = jsonLines(sock);
 replies.on("error", () => {});
 replies.on("line", (l) => { const m = JSON.parse(l); waiting.get(m.id)?.(m); waiting.delete(m.id); });
 const call = (method: string, params: unknown) => new Promise<any>((ok) => {
-  const id = next++; waiting.set(id, ok); sock.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  const id = next++; waiting.set(id, ok); sock.write(jsonLine({ jsonrpc: "2.0", id, method, params }));
 });
 
-const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
-createInterface({ input: process.stdin }).on("line", async (line) => {
+const out = (o: unknown) => process.stdout.write(jsonLine(o));
+jsonLines(process.stdin).on("line", async (line) => {
   let m: any;
   try { m = JSON.parse(line); } catch { return; }
   if (m.id === undefined) return;                         // notifications need no reply

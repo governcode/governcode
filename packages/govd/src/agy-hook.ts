@@ -4,10 +4,10 @@
 // socket (the only socket the policy lets it reach) and prints govd's answer. Anything that goes
 // wrong prints a denial and exits non-zero: Antigravity treats a failing hook as a denial too
 // (verified 2026-09-28: crash, timeout and garbage output all blocked the write).
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
 import { connect } from "node:net";
-import { createInterface } from "node:readline";
 
-const deny = (reason: string) => { process.stdout.write(JSON.stringify({ decision: "deny", reason }) + "\n"); process.exit(1); };
+const deny = (reason: string) => { process.stdout.write(jsonLine({ decision: "deny", reason })); process.exit(1); };
 const socketPath = process.argv[2];
 if (!socketPath) deny("GovernCode hook: no socket");
 
@@ -20,13 +20,13 @@ process.stdin.on("end", () => {
   const sock = connect(socketPath);
   sock.on("error", (e) => deny(`GovernCode hook: ${e.message}`));
   sock.on("close", () => deny("GovernCode hook: govd closed the connection"));
-  createInterface({ input: sock }).once("line", (l) => {
+  jsonLines(sock).once("line", (l) => {
     let m: any;
     try { m = JSON.parse(l); } catch { return deny("GovernCode hook: unreadable answer"); }
     const d = m?.result?.decision;
     if (d !== "allow" && d !== "deny") return deny(m?.error?.message ? `GovernCode: ${m.error.message}` : "GovernCode hook: no decision");
-    process.stdout.write(JSON.stringify({ decision: d, ...(m.result.reason ? { reason: String(m.result.reason) } : {}) }) + "\n");
+    process.stdout.write(jsonLine({ decision: d, ...(m.result.reason ? { reason: String(m.result.reason) } : {}) }));
     process.exit(0);   // a decided answer (allow or deny) exits cleanly so its reason reaches the agent
   });
-  sock.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "agy.pretool", params: payload }) + "\n");
+  sock.write(jsonLine({ jsonrpc: "2.0", id: 1, method: "agy.pretool", params: payload }));
 });

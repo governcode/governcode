@@ -2,6 +2,7 @@
 // start on it now. Measuring starts the tool briefly, so it happens on open and on request,
 // never on a timer; the Trace still refreshes what is shown.
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Place } from "./Sidebar.tsx";
 import { call, clock, useWatch } from "../api.ts";
 import { ago, until, when } from "../../shared/time.ts";
 import { Empty, Pill, Ring } from "../ui.tsx";
@@ -13,13 +14,13 @@ type Reading = { window: string; usedPercent: number; resetsAt: string | null; r
   counted?: { unit: "tokens" | "turns"; used: number; cap: number } };
 export type ProviderLimit = {
   provider: string; unmetered: boolean; counted?: string | null; local?: { maxRunning: number; maxMinutes: number } | null; reservePercent: number; reserves?: Record<string, number>; measuredAt: number | null; readings: Reading[];
-  reservedPercent: number; owedPercent: number;
+  reservedPercent: number; owedPercent: number; needsBudget?: boolean;
   verdict: { ok: true; note?: string } | { ok: false; reason: string; resetsAt: string | null };
   // At this pace (an older govd sends none): from readings govd took since it started.
   forecasts?: Array<{ window: string; perHour: number; reachesReserveAt: string | null; resetsFirst: boolean; since: string }>;
 };
 
-export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
+export function Limits({ onMeasured, onPlace }: { onMeasured?: () => void; onPlace?: (p: Place) => void } = {}) {
   const measured = useRef(onMeasured);
   measured.current = onMeasured;
   const [providers, setProviders] = useState<ProviderLimit[] | null>(null);
@@ -54,7 +55,7 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
             <p>What each AI has left in its usage windows, and the share you keep back. A Spec that would reach into the reserve is held, never started.
               Unknown or stale usage (over 5 minutes) holds too. Paid API billing is never switched on.</p></div>
           <div className="prov-grid">
-            {providers?.map((p) => <ProviderCard key={p.provider} p={p} />)}
+            {providers?.map((p) => <ProviderCard key={p.provider} p={p} onPlace={onPlace} />)}
           </div>
           <ResetTimeline providers={providers ?? []} />
         </div></div>
@@ -66,7 +67,7 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
 const keepOf = (p: ProviderLimit, r: Reading) => r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;
 /** One AI: its rings (the window closest to the reserve outside, the next inside), each window's bar
  *  with the reserve hatched, and when each resets. */
-function ProviderCard({ p }: { p: ProviderLimit }) {
+function ProviderCard({ p, onPlace }: { p: ProviderLimit; onPlace?: (p: Place) => void }) {
   const held = !p.verdict.ok;
   const color = held ? "var(--violet)" : "var(--accent)";
   const readings = [...p.readings].sort((a, b) => (100 - keepOf(p, a) - a.usedPercent) - (100 - keepOf(p, b) - b.usedPercent));
@@ -83,13 +84,15 @@ function ProviderCard({ p }: { p: ProviderLimit }) {
       </div>
       <div className="prov-body">
         <div className="prov-title"><ProviderMark id={p.provider} size={20} /><b>{providerName(p.provider)}</b>
-          {p.unmetered ? <Pill tone="info" title="nothing counted, no Limit">unmetered (your opt-in)</Pill>
+          { p.needsBudget ? <Pill tone="violet" title="Needs a budget">needs budget</Pill>
+            : p.unmetered ? <Pill tone="info" title="nothing counted, no Limit">unmetered (your opt-in)</Pill>
             : p.verdict.ok ? <Pill tone="ok">available</Pill>
             : <Pill tone="violet" title={p.verdict.reason}>holding new Specs{p.verdict.resetsAt ? ` until ${clock(p.verdict.resetsAt).replace(/:\d{2}$/, "")}` : ""}</Pill>}</div>
         <div className="prov-sub">
-          {p.local ? `A local model: your machine's Limit is at most ${p.local.maxRunning} at once, ${p.local.maxMinutes} min each.`
+          {p.needsBudget ? <>{providerName(p.provider)} reports no usage, so GovernCode counts its turns or tokens against a budget you set. Until then it takes no Specs. {onPlace && <button className="linkish" onClick={() => onPlace({ kind: "global", id: "settings", section: "budget" })}>Set a budget</button>}</>
+            : p.local ? `A local model: your machine's Limit is at most ${p.local.maxRunning} at once, ${p.local.maxMinutes} min each.`
             : inner ? `Outer ring: ${outer.window} · inner ring: ${inner.window}.` : p.counted ? `GovernCode counts against the budget you set (${p.counted}).` : ""}
-          {!p.verdict.ok ? ` ${p.verdict.reason}.` : ""}</div>
+          {!p.verdict.ok && !p.needsBudget ? ` ${p.verdict.reason}.` : ""}</div>
         {readings.map((r) => {
           const keep = keepOf(p, r), inside = r.usedPercent > 100 - keep;
           return (

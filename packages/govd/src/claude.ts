@@ -1,8 +1,9 @@
 // The Claude Code driver: one sandboxed `claude` process per turn (phase 0), driven over its
 // stream-json protocol. Permission requests arrive as control_request/can_use_tool and become
 // Gates answered by the user through govd, never by the harness itself.
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
+import { blockFor, resultText, type Block } from "./blocks.ts";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { runHome } from "./homes.ts";
 import { homedir, tmpdir } from "node:os";
@@ -56,6 +57,8 @@ export type TurnHooks = {
   tool(name: string, input: Record<string, unknown>): void;
   gate(req: GateRequest): Promise<"allow" | "deny">;
   notice?(text: string): void;
+  // A failed step whose output shows a sandbox refusal (#224; blocks.ts): recorded as an estimate.
+  blocked?(b: Block): void;
   // started false: no process of the tool got going (it could not start), so nothing was used.
   done(result: { ok: boolean; summary: string; usage?: unknown; started?: false; limit?: { resetsAt: string | null } }): void;
 };
@@ -248,7 +251,7 @@ export function runTurn(opts: {
   child.on("close", () => rh.finish());
   // A sandbox that could not even start ends the turn too (no exit event may follow).
   child.on("error", (e) => { rh.finish(); finish({ ok: false, summary: `the sandbox could not start: ${e.message}` }); });
-  const send = (obj: unknown) => child.stdin.write(JSON.stringify(obj) + "\n");
+  const send = (obj: unknown) => child.stdin.write(jsonLine(obj));
   send({ type: "user", message: { role: "user", content: [{ type: "text", text: opts.prompt }] } });
 
   let finished = false;
@@ -291,14 +294,28 @@ export function runTurn(opts: {
   };
 
   const pendingIds = new Set<string>();
-  createInterface({ input: child.stdout }).on("line", async (line) => {
+  const uses = new Map<string, { name: string; input: Record<string, unknown> }>();   // tool_use id: what it was
+  const declined = new Set<string>();   // tool_use ids a Gate declined: their failure is not the sandbox's
+  jsonLines(child.stdout).on("line", async (line) => {
     let e: Record<string, any>;
     try { e = JSON.parse(line); } catch { return; }
     if (e.type === "assistant") {
       armLimitStall();
       for (const c of e.message?.content ?? []) {
         if (c.type === "text") opts.hooks.text(c.text);
-        if (c.type === "tool_use") opts.hooks.tool(c.name, c.input ?? {});
+        if (c.type === "tool_use") {
+          opts.hooks.tool(c.name, c.input ?? {});
+          if (typeof c.id === "string" && uses.size < 5000) uses.set(c.id, { name: String(c.name), input: c.input ?? {} });
+        }
+      }
+    } else if (e.type === "user") {
+      // A failed tool's result: did the sandbox refuse it? (Its text is looked at here, never kept.)
+      for (const c of e.message?.content ?? []) {
+        if (c?.type !== "tool_result" || c.is_error !== true || declined.has(String(c.tool_use_id))) continue;
+        if (resultText(c.content).includes("Denied at the Gate.")) continue;   // (our own refusal, should the id be missing)
+        const use = uses.get(String(c.tool_use_id));
+        const b = use ? blockFor(use.name, use.input, resultText(c.content)) : null;
+        if (b) opts.hooks.blocked?.(b);
       }
     } else if (e.type === "tool_progress") {
       armLimitStall();
@@ -313,6 +330,7 @@ export function runTurn(opts: {
         canonical: canonical({ tool: e.request.tool_name, input }) };
       const answer = await opts.hooks.gate(req);
       pendingIds.delete(String(e.request_id));
+      if (answer !== "allow" && typeof e.request.tool_use_id === "string" && declined.size < 5000) declined.add(e.request.tool_use_id);
       // Allow runs exactly the input that was shown, never a variant (the #177 lesson).
       send({ type: "control_response", response: { subtype: "success", request_id: e.request_id,
         response: answer === "allow" ? { behavior: "allow", updatedInput: input }

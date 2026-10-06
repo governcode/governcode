@@ -10,7 +10,7 @@ export const KIND_LABEL: Record<ProtocolTraceEvent["kind"], string> = {
   "project.declined": "Project declined", "controller.set": "Controller chosen", "settings.changed": "Settings changed",
   "allow.added": "Allow remembered", "allow.revoked": "Allow revoked",
   "turn.started": "Turn started", "turn.text": "Turn text", "turn.tool": "Turn step", "turn.completed": "Turn done", "turn.failed": "Turn failed",
-  "gate.opened": "Gate opened", "gate.allowed": "Gate allowed", "gate.denied": "Gate denied", "sandbox.refused": "Sandbox refused",
+  "gate.opened": "Gate opened", "gate.allowed": "Gate allowed", "gate.denied": "Gate denied", "sandbox.refused": "Sandbox refused", "sandbox.blocked": "Probably blocked",
   "git.scrubbed": ".git restored", "git.guard_failed": ".git guard failed", "conversation.reset": "New conversation",
   "checkpoint.taken": "Checkpoint taken", "checkpoint.failed": "Checkpoint failed", "checkpoint.undone": "Checkpoint undone",
   "spec.created": "Spec created", "spec.held": "Spec held", "spec.started": "Spec started", "spec.done": "Spec done",
@@ -91,6 +91,8 @@ export function describe(e: TraceEvent): Described {
     case "checkpoint.undone": return { text: `You undid ${str(d.turn)}${files(d.files)}`, tone: "warn", icon: "undo" };
     case "checkpoint.failed": return { text: `No Checkpoint for ${str(d.turn)}${d.reason ? ` · ${str(d.reason)}` : ""}`, tone: "warn", icon: "undo" };
     case "sandbox.refused": return { text: `Refused to run: the sandbox is not verified${d.reason ? ` (${str(d.reason)})` : ""}`, tone: "danger", icon: "shieldX" };
+    // An estimate: a step failed saying what the sandbox says when it refuses something.
+    case "sandbox.blocked": return { text: `${str(d.tool)} failed, probably at the sandbox (${str(d.pattern)})`, tone: "warn", icon: "shieldX" };
     case "recovery.set": return { text: `${d.atReset ? "Resume at reset on" : "Resume at reset off"} for ${str(d.target)}${you ? "" : " (set by GovernCode)"}`, tone: "held", icon: "clock" };
     case "recovery.resumed": return { text: `${str(d.target)} resumed${e.actor === "govd" ? " at its reset" : " by you"}`, tone: "info", icon: "play" };
     case "recovery.cleared": return { text: `You forgot the recovery choice for ${str(d.target)}`, tone: "", icon: "x" };

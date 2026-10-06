@@ -610,6 +610,7 @@ test("gov friction reads only the window it reports, a page at a time, and asks 
   add("gate.opened", { gate: "G-9", tool: "Bash", ...step }); add("gate.denied", { gate: "G-9", tool: "Bash", by: "nobody answered within the hour", ...step });
   add("gate.allowed", { tool: "Bash", by: "quiet read" });
   add("sandbox.refused", { reason: "bwrap missing" });
+  add("sandbox.blocked", { tool: "Bash", ...step, pattern: "permission denied" });
   const page = (p: any) => p.after === undefined ? all.slice(-p.limit) : all.filter((e) => e.seq > p.after).slice(0, p.limit);
   const g = await fakeGovd((m, p) => (m === "trace.list" ? { events: page(p) } : undefined));
   const r = await run(g.dir, ["friction", "--project", "app"]).done;
@@ -626,8 +627,10 @@ test("gov friction reads only the window it reports, a page at a time, and asks 
   assert.match(r.stdout, /^Sandbox +1 turn refused \(1 bwrap missing\)/m);
   assert.match(r.stdout, /^Edit +5 +5 +0 +0 +allowed every time$/m);
   assert.match(r.stdout, /^Bash +1 +0 +0 +1$/m);
-  assert.match(r.stdout, /^Kind of step +asked +allowed +denied +by govd +let through$/m);
-  assert.match(r.stdout, /^npm test +1 +0 +0 +1 +0$/m);
+  assert.match(r.stdout, /^Kind of step +asked +allowed +denied +by govd +let through +blocked\*$/m);
+  assert.match(r.stdout, /^npm test +1 +0 +0 +1 +0 +1$/m);
+  assert.match(r.stdout, /^ +1 step probably blocked by the sandbox \(1 permission denied\)$/m);
+  assert.match(r.stdout, /^\*blocked: steps that failed saying what the sandbox says/m);
   assert.match(r.stdout, /^5 Gates from an older govd recorded only the tool, not the kind\.$/m);
   const j = await run(g.dir, ["friction", "--days", "60", "--json"]).done;
   assert.equal(j.code, 0, j.stderr);
@@ -931,4 +934,145 @@ test("with no input, gov controller records no share answer: the new Controller 
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /no input here: nothing is shared, so it starts fresh/);
   assert.deepEqual(g.methods(), ["project.list", "context.state", "controller.set"]);
+});
+
+test("Gate commands and trace fields show terminal controls without executing them", async () => {
+  const canonical = "printf '\x1b]0;owned\x07'\n\techo \u202edanger\u200b";
+  const event = { seq: 1, ts: new Date().toISOString(), kind: "gate.\x1b[2Jopened", project: "p\nforged",
+    actor: "controller\x9b1;1H", data: { canonical } };
+  const g = await fakeGovd((method) => method === "project.list" ? { projects: [] }
+    : method === "gate.list" ? { gates: [{ id: "G-1", project: "p", tool: "Bash", opened: event.ts, canonical }] }
+    : method === "trace.list" ? { events: [event] } : undefined);
+  const gates = await run(g.dir, ["gates"]).done;
+  assert.equal(gates.code, 0, gates.stderr);
+  assert.ok(gates.stdout.includes("printf '\\x1b]0;owned\\x07'\n\techo \\u202edanger\\u200b"));
+  const trace = await run(g.dir, ["trace"]).done;
+  assert.equal(trace.code, 0, trace.stderr);
+  for (const text of ["gate.\\x1b[2Jopened", "p\\x0aforged", "controller\\x9b1;1H"]) assert.ok(trace.stdout.includes(text), text);
+  for (const r of [gates, trace]) {
+    assert.doesNotMatch(r.stdout, /[\x00-\x08\x0b-\x1f\x7f-\x9f\u202e\u200b]/);
+    // GovernCode's own dim/warn colours are the only raw escape sequences permitted.
+    assert.doesNotMatch(r.rawStdout.replace(/\x1b\[(?:0|2|33)m/g, ""), /\x1b/);
+  }
+  const jsonl = await run(g.dir, ["trace", "--jsonl"]).done;
+  assert.equal(jsonl.code, 0, jsonl.stderr);
+  assert.doesNotMatch(jsonl.rawStdout, /[\x1b\x7f-\x9f\u202e\u200b]/);
+  assert.deepEqual(JSON.parse(jsonl.rawStdout), event, "JSON export keeps the original data");
+});
+
+test("gov ask escapes streamed text, Gate prompts, plans and Spec messages", async () => {
+  const unsafe = "odd\x1b]52;c;YQ==\x07\u2066\u200b", safe = "odd\\x1b]52;c;YQ==\\x07\\u2066\\u200b";
+  const g = await withProject((m, _p, notify) => {
+    if (m === "tools.list") return tools(false, false);
+    if (m === "spec.list") return { specs: [] };
+    if (m !== "ask") return undefined;
+    notify({ kind: "text", text: unsafe + "\n\t中文 😀" });
+    notify({ kind: "tool", name: unsafe });
+    notify({ kind: "spec", id: "S-0001", to: unsafe, brief: unsafe });
+    notify({ kind: "spec.text", id: "S-0001", text: unsafe });
+    notify({ kind: "spec.tool", id: "S-0001", name: unsafe });
+    notify({ kind: "gate", id: "G-1" + unsafe, tool: unsafe, canonical: unsafe, scopes: ["turn"], covers: unsafe, suggest: "turn" });
+    notify({ kind: "plan", id: "GP-1" + unsafe, items: [{ who: unsafe, what: unsafe, scope: [unsafe] }], note: unsafe, handoff: "ask" });
+    notify({ kind: "proposal", id: "P-1" + unsafe, name: unsafe, path: unsafe, reason: unsafe });
+    notify({ kind: "allowed", why: unsafe });
+    return { ok: false, summary: unsafe };
+  });
+  const r = await run(g.dir, ["ask", "go"], { cwd: g.path }).done;
+  assert.equal(r.code, 1, r.stderr);
+  for (const text of [safe + "\n\t中文 😀", `· ${safe}`, `Runner · ${safe}: ${safe}`, `G-1${safe} allow|deny`,
+    `${safe}: ${safe} (${safe})`, `proposes a new project: ${safe} at ${safe}`, `— failed: ${safe}`]) {
+    assert.ok(r.stdout.includes(text), text);
+  }
+  assert.doesNotMatch(r.stdout, /[\x1b\x07\u2066\u200b]/);
+  assert.deepEqual(g.methods().filter((x) => ANSWERS.includes(x)), []);
+});
+
+test("diffs and project notes stay multi-line while file and actor fields stay in their rows", async () => {
+  const text = "first\n\t\x1b[2J\r\u202eend", safe = "first\n\t\\x1b[2J\\x0d\\u202eend";
+  const g = await withProject((m) => m === "notes.get" ? { text, history: [{ seq: 1, ts: new Date().toISOString(), actor: text, text }] }
+    : m === "spec.diff" ? { diff: text, checkpoints: { before: "a".repeat(40), after: "b".repeat(40) } }
+    : m === "turn.list" ? { turns: [{ id: "T-1", at: new Date().toISOString(), files: [text] }] }
+    : m === "spec.accept" ? { id: "S-0001", applied: [text] } : undefined);
+  for (const args of [["notes"], ["diff", "S-0001"], ["accept", "S-0001", "--before", "a".repeat(40), "--after", "b".repeat(40)]]) {
+    const r = await run(g.dir, args, { cwd: g.path }).done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(r.stdout.includes(safe));
+    assert.doesNotMatch(r.stdout, /[\x1b\r\u202e]/);
+  }
+  for (const args of [["notes", "history"], ["turns"]]) {
+    const r = await run(g.dir, args, { cwd: g.path }).done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(r.stdout.includes("first\\x0a\\x09\\x1b[2J\\x0d\\u202eend"));
+    assert.doesNotMatch(r.stdout, /[\x1b\r\u202e]/);
+  }
+});
+
+test("friction shows full escaped tool and kind names, and refusal reasons", async () => {
+  const tool = "Bash" + "x".repeat(42) + "\x1b[2J\u200b", kind = "command:npm\x9b1H\u202etest";
+  const events = [
+    { seq: 1, ts: new Date().toISOString(), project: "p", actor: "controller", kind: "gate.opened", data: { tool, kinds: [kind] } },
+    { seq: 2, ts: new Date().toISOString(), project: "p", actor: "controller", kind: "sandbox.refused", data: { reason: "bad\x1b]0;owned\x07" } },
+  ];
+  const g = await fakeGovd((m, p) => m === "trace.list" ? { events: p.after === undefined ? events.slice(-p.limit) : events.filter((e) => e.seq > p.after).slice(0, p.limit) } : undefined);
+  const r = await run(g.dir, ["friction"]).done;
+  assert.equal(r.code, 0, r.stderr);
+  for (const text of ["Bash" + "x".repeat(42) + "\\x1b[2J\\u200b", "npm\\x9b1H\\u202etest", "bad\\x1b]0;owned\\x07"]) {
+    assert.ok(r.stdout.includes(text), text);
+  }
+  assert.doesNotMatch(r.stdout, /[\x1b\x07\x9b\u200b\u202e]/);
+});
+
+test("a rejected async connect listener ends once with gov's error, even while sign-in is pending", { timeout: 10_000 }, async (t) => {
+  const message = "sign-in reply failed\x1b]0;owned\x07";
+  const g = await fakeGovd((m, _p, notify) => {
+    if (m === "connect.start") {
+      notify({ kind: "connect", id: "C-1", url: "https://example.org/sign-in" });
+      return new Promise(() => {});   // the event failure must end a still-running command
+    }
+    if (m === "connect.input") throw new Error(message);
+  });
+  const r = run(g.dir, ["connect", "claude"], { live: true });
+  t.after(() => { if (r.p.exitCode === null) r.p.kill(); });
+  await answer(r, "Paste the code it gives you here: ", "fixture-code");
+  const res = await r.done;
+  assert.equal(res.code, 1);
+  assert.equal(res.stderr, "gov: sign-in reply failed\\x1b]0;owned\\x07\n");
+  assert.doesNotMatch(res.stderr, /UnhandledPromiseRejection|Error:|\n\s+at |\x1b/);
+});
+
+test("a listener that throws before awaiting ends gov without a stack or hanging on stdin", { timeout: 10_000 }, async (t) => {
+  const g = await fakeGovd((m, _p, notify) => {
+    if (m === "connect.start") {
+      notify({ kind: "connect", id: "C-1", text: {} });
+      notify({ kind: "connect", id: "C-2", text: {} });
+      return new Promise(() => {});
+    }
+  });
+  const r = run(g.dir, ["connect", "claude"], { live: true });
+  t.after(() => { if (r.p.exitCode === null) r.p.kill(); });
+  const res = await r.done;
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /^gov: .*\n$/);
+  assert.equal((res.stderr.match(/gov:/g) ?? []).length, 1);
+  assert.doesNotMatch(res.stderr, /UnhandledPromiseRejection|TypeError:|\n\s+at /);
+});
+
+test("U+2028 from a govd that leaves it raw neither breaks gov nor reaches the terminal; a diff with hidden characters says so", async () => {
+  const sneaky = "// disabled:\u2028run()\u{e0041}\u00ad";
+  const g = await withProject((m, _p, notify) => {
+    if (m === "tools.list") return tools(false, false);
+    if (m === "spec.list") return { specs: [] };
+    if (m === "spec.diff") return { diff: `+${sneaky}\n`, checkpoints: { before: "a".repeat(40), after: "b".repeat(40) } };
+    if (m !== "ask") return undefined;
+    notify({ kind: "text", text: `reply ${sneaky}` });
+    return { ok: true, summary: "done" };
+  });
+  const r = await run(g.dir, ["ask", "go"], { cwd: g.path }).done;
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes("reply // disabled:\\u2028run()\\u{e0041}\\xad"), r.stdout);
+  assert.doesNotMatch(r.stdout + r.stderr, new RegExp("[\\u2028\\u00ad\\u{e0041}]", "u"));   // (built from a string: Node's TypeScript stripping can write such escapes raw in a regex literal)
+  assert.doesNotMatch(r.stderr, /SyntaxError/);
+  const d = await run(g.dir, ["diff", "S-0001"], { cwd: g.path }).done;
+  assert.equal(d.code, 0, d.stderr);
+  assert.match(d.stdout, /This diff holds 3 hidden or control characters/);
 });

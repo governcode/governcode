@@ -4,8 +4,8 @@
 // its own (2026-10-02, after T3 Code's child threads): it can outlive the turn that made it, run
 // beside others, be followed up or cancelled, and the Controller hears when it finishes. Its result
 // is always a diff only the user accepts, and a Runner never delegates.
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
 import { createServer, type Server, type Socket } from "node:net";
-import { createInterface } from "node:readline";
 import { mkdirSync, rmSync, chmodSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -19,6 +19,7 @@ import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
 import { runGrokTurn } from "./grok.ts";
 import { runOpencodeTurn } from "./opencode.ts";
+import type { Block } from "./blocks.ts";
 import { mayShare, notesOf, setNotes, readConversation } from "./memory.ts";
 import { runnerAllowed } from "./crew.ts";
 import { specEpisode } from "./recovery.ts";
@@ -297,7 +298,7 @@ export function openTurnSocket(runtimeDir: string, handle: (method: string, para
       else pending = c.length - c.lastIndexOf(10) - 1;               // (lines wholly inside a chunk are under 64 KB)
       if (pending > 1_000_000) sock.destroy();
     });
-    const lines = createInterface({ input: sock });
+    const lines = jsonLines(sock);
     lines.on("error", () => {});
     lines.on("line", (line) => {
       void (async () => {
@@ -305,7 +306,7 @@ export function openTurnSocket(runtimeDir: string, handle: (method: string, para
         try { m = JSON.parse(line); } catch { return; }
         if (!m || typeof m !== "object" || Array.isArray(m) || typeof m.method !== "string") return;
         const id = typeof m.id === "number" || typeof m.id === "string" ? m.id : null;
-        const reply = (o: object) => { if (sock.writable) sock.write(JSON.stringify({ jsonrpc: "2.0", id, ...o }) + "\n"); };
+        const reply = (o: object) => { if (sock.writable) sock.write(jsonLine({ jsonrpc: "2.0", id, ...o })); };
         try {
           if (closed) throw new Error("this turn has ended");
           reply({ result: await handle(m.method, m.params) });
@@ -649,6 +650,9 @@ async function runRound(ctx: DelegationContext, spec: Spec, input: SpecInput, pr
       const hooks = {
         text: (t: string) => { texts.push(t); ctx.notify({ kind: "spec.text", id: spec.id, text: t }); },
         notice: (text: string) => ctx.notify({ kind: "spec.text", id: spec.id, text }),
+        // A failed step that probably ran into the sandbox (#224): its tool and kind, never its output.
+        // (its tool named as this Runner's Gates name it, so a report puts both in the same row)
+        blocked: (b: Block) => { L.append(ctx.project.name, "sandbox.blocked", `runner · ${input.to} · ${spec.id}`, { ...b, tool: `${b.tool} (Runner · ${input.to}, ${spec.id})`, spec: spec.id }); },
         tool: (name: string) => {
           ctx.notify({ kind: "spec.tool", id: spec.id, name });
           // Each Runner step is on the record too (the Crew board shows the latest), up to 200 per

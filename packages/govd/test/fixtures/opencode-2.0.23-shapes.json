@@ -1,0 +1,107 @@
+{
+ "source": "Captured from opencode 2.0.23 (`opencode serve`, free model, shell allowed once, shell rejected, a read then an edit). The keys of each event's data that GovernCode's driver reads, nested one level for tokens, source and error. Regenerate when OpenCode's events change, and update fake-opencode.mjs to match.",
+ "shapes": {
+  "permission.asked": [
+   [
+    "action",
+    "id",
+    "metadata",
+    "resources",
+    "save",
+    "sessionID",
+    "source",
+    "source.id",
+    "source.messageID",
+    "source.type"
+   ],
+   [
+    "action",
+    "id",
+    "resources",
+    "save",
+    "sessionID",
+    "source",
+    "source.id",
+    "source.messageID",
+    "source.type"
+   ]
+  ],
+  "session.execution.interrupted": [
+   [
+    "reason",
+    "sessionID"
+   ]
+  ],
+  "session.execution.succeeded": [
+   [
+    "sessionID"
+   ]
+  ],
+  "session.step.started": [
+   [
+    "agent",
+    "assistantMessageID",
+    "model",
+    "sessionID",
+    "started"
+   ]
+  ],
+  "session.text.delta": [
+   [
+    "assistantMessageID",
+    "delta",
+    "ordinal",
+    "sessionID"
+   ]
+  ],
+  "session.tool.called": [
+   [
+    "assistantMessageID",
+    "executed",
+    "id",
+    "input",
+    "sessionID"
+   ]
+  ],
+  "session.tool.failed": [
+   [
+    "assistantMessageID",
+    "error",
+    "error.message",
+    "error.type",
+    "executed",
+    "id",
+    "sessionID"
+   ]
+  ],
+  "session.tool.input.started": [
+   [
+    "assistantMessageID",
+    "id",
+    "name",
+    "sessionID"
+   ]
+  ],
+  "session.tool.success": [
+   [
+    "assistantMessageID",
+    "content",
+    "executed",
+    "id",
+    "metadata",
+    "sessionID"
+   ]
+  ],
+  "session.usage.updated": [
+   [
+    "cost",
+    "sessionID",
+    "tokens",
+    "tokens.cache",
+    "tokens.input",
+    "tokens.output",
+    "tokens.reasoning"
+   ]
+  ]
+ }
+}

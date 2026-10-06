@@ -13,7 +13,7 @@ import markLight from "../../../../../docs/brand/governcode-mark-mono.svg";
 
 export type Global = "overview" | "needs" | "watch" | "home" | "allowance" | "trace" | "settings";
 export type Tab = "conversation" | "specs" | "checkpoints" | "notes" | "trace" | "crew";
-export type Place = { kind: "global"; id: Global } | { kind: "project"; name: string; tab: Tab };
+export type Place = { kind: "global"; id: Global; section?: string } | { kind: "project"; name: string; tab: Tab };
 
 export function Sidebar(props: { place: Place; onPlace: (p: Place) => void; projects: Project[]; specs: Spec[]; gates: Gate[];
   limits: ProviderLimit[]; needs: number; status: Status | null; hello: Hello | null; up: boolean; live: boolean; socketPath?: string; onSearch: () => void; onNewProject: () => void; onOpenFolder: () => void }) {
@@ -65,7 +65,7 @@ export function Sidebar(props: { place: Place; onPlace: (p: Place) => void; proj
           {props.limits.map((p) => {
             const u = providerUsage(p);
             const n = running(p.provider);
-            const sub = p.local ? "Local model" : p.unmetered ? "Unmetered" : !p.verdict.ok
+            const sub = p.needsBudget ? "Needs a budget" : p.local ? "Local model" : p.unmetered ? "Unmetered" : !p.verdict.ok
               ? (p.verdict.resetsAt ? `Held until ${clock(p.verdict.resetsAt).replace(/:\d{2}$/, "")}` : "Held") : n ? `${n} running` : "Available";
             const color = !p.verdict.ok ? "var(--violet)" : n ? "var(--blue)" : "var(--accent)";
             return (

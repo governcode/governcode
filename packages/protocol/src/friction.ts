@@ -9,8 +9,10 @@
 //   events have only the tool: they are counted by tool, and left out of the kinds.
 // - A turn the user stopped is not recorded apart from other failed turns (its summary is free text).
 // - sandbox.refused records why govd would not start a turn (the sandbox is not verified here), not a
-//   tool; a step the kernel sandbox blocked inside a tool is not in the Trace at all.
-import type { TraceEvent } from "@governcode/protocol";
+//   tool. sandbox.blocked (from this version on) records a failed step whose output showed what the
+//   sandbox says when it refuses something (EACCES, EPERM, a read-only file system): probably the
+//   sandbox, an estimate, since an ordinary permission error in a project looks the same.
+import type { TraceEvent } from "./index.ts";
 
 export type FrictionOptions = {
   since?: Date;
@@ -24,7 +26,9 @@ export type ToolFriction = { tool: string; asked: number; allowed: number; denie
 /** One kind of step: `command:npm test`, `runner:edit`..., or `always:<tool>` for steps no rule may
  *  cover (rm, curl, shell syntax: they always ask). A Gate for a command of several kinds counts
  *  under each. passed: let through without a Gate (your rule, an approved plan, relaxed). */
-export type KindFriction = { kind: string; asked: number; allowed: number; denied: number; autoDenied: number; passed: number; allowedEveryTime: boolean };
+export type KindFriction = { kind: string; asked: number; allowed: number; denied: number; autoDenied: number; passed: number;
+  /** Steps of this kind that failed, probably at the sandbox (sandbox.blocked: an estimate). */
+  blocked: number; allowedEveryTime: boolean };
 
 export type FrictionReport = {
   since: string | null;
@@ -47,13 +51,15 @@ export type FrictionReport = {
   kinds: KindFriction[];
   /** Gates opened with their kind recorded (an older govd recorded only the tool). */
   kindsRecorded: number;
-  sandbox: { refused: number; refusedBy: Record<string, number>; gitScrubbed: number; gitGuardFailed: number };
+  sandbox: { refused: number; refusedBy: Record<string, number>; gitScrubbed: number; gitGuardFailed: number;
+    /** Failed steps that probably ran into the sandbox, by what their output said (an estimate). */
+    blocked: number; blockedBy: Record<string, number> };
   specs: { created: number; failed: number; limited: number; held: number };
 };
 
 /** The only kinds the report reads: a caller paging the Trace can keep just these. */
 export const FRICTION_KINDS: ReadonlySet<TraceEvent["kind"]> = new Set<TraceEvent["kind"]>(["turn.started", "turn.completed", "turn.failed",
-  "gate.opened", "gate.allowed", "gate.denied", "sandbox.refused", "git.scrubbed", "git.guard_failed", "spec.created", "spec.failed", "spec.held"]);
+  "gate.opened", "gate.allowed", "gate.denied", "sandbox.refused", "sandbox.blocked", "git.scrubbed", "git.guard_failed", "spec.created", "spec.failed", "spec.held"]);
 
 // A Runner's Gate names its Spec ("Bash (Runner · codex, S-0012)"); grouped without it, or every
 // Spec would be a tool of its own.
@@ -67,7 +73,7 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
     turns: { started: 0, completed: 0, failed: 0, limited: 0 },
     gates: { opened: 0, byControllers: 0, byRunners: 0, perTurn: null, allowed: 0, denied: 0, autoDenied: 0, autoDeniedBy: {}, passed: 0, passedBy: {} },
     tools: [], kinds: [], kindsRecorded: 0,
-    sandbox: { refused: 0, refusedBy: {}, gitScrubbed: 0, gitGuardFailed: 0 },
+    sandbox: { refused: 0, refusedBy: {}, gitScrubbed: 0, gitGuardFailed: 0, blocked: 0, blockedBy: {} },
     specs: { created: 0, failed: 0, limited: 0, held: 0 },
   };
   const tools = new Map<string, ToolFriction>();
@@ -85,7 +91,7 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
     const keys = d.always === true ? [`always:${toolOf(e)}`] : d.kinds.length ? d.kinds.map(String) : [`other:${toolOf(e)}`];
     return keys.map((k) => {
       let x = kinds.get(k);
-      if (!x) kinds.set(k, x = { kind: k, asked: 0, allowed: 0, denied: 0, autoDenied: 0, passed: 0, allowedEveryTime: false });
+      if (!x) kinds.set(k, x = { kind: k, asked: 0, allowed: 0, denied: 0, autoDenied: 0, passed: 0, blocked: 0, allowedEveryTime: false });
       return x;
     });
   };
@@ -125,6 +131,7 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
         else { r.gates.autoDenied++; bump(r.gates.autoDeniedBy, String(d.by ?? "unknown")); tool(e).autoDenied++; for (const k of kindsOf(e)) k.autoDenied++; }
         break;
       case "sandbox.refused": r.sandbox.refused++; bump(r.sandbox.refusedBy, String(d.reason ?? "unknown")); break;
+      case "sandbox.blocked": r.sandbox.blocked++; bump(r.sandbox.blockedBy, String(d.pattern ?? "unknown")); for (const k of kindsOf(e)) k.blocked++; break;
       case "git.scrubbed": r.sandbox.gitScrubbed++; break;
       case "git.guard_failed": r.sandbox.gitGuardFailed++; break;
       case "spec.created": r.specs.created++; break;
@@ -138,7 +145,7 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
   r.tools = [...tools.values()].sort((a, b) => b.asked - a.asked || b.allowed - a.allowed || a.tool.localeCompare(b.tool));
   // A step that always asks is never a candidate: no rule may cover it.
   for (const k of kinds.values()) k.allowedEveryTime = !k.kind.startsWith("always:") && k.allowed >= min && k.denied === 0;
-  r.kinds = [...kinds.values()].sort((a, b) => b.asked - a.asked || b.passed - a.passed || a.kind.localeCompare(b.kind));
+  r.kinds = [...kinds.values()].sort((a, b) => b.asked - a.asked || b.blocked - a.blocked || b.passed - a.passed || a.kind.localeCompare(b.kind));
   return r;
 }
 

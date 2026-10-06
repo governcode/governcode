@@ -1,8 +1,8 @@
 // A client of govd's Unix socket: JSON-RPC 2.0, one object per line, `event` notifications
 // while an ask runs. The same pattern as packages/gov, with no Electron in it so it can be
 // tested with node:test.
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
 import { connect as netConnect, type Socket } from "node:net";
-import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Params, issues } from "@governcode/protocol";
@@ -52,7 +52,7 @@ export function connect(path: string, timeoutMs = 3000): Promise<Connection> {
     });
     // readline re-emits the socket's errors on itself (Node 26); the socket handlers above
     // deal with them, so this one only keeps them from becoming uncaught.
-    const lines = createInterface({ input: sock });
+    const lines = jsonLines(sock);
     lines.on("error", () => {});
     lines.on("line", (line) => {
       let msg: any;
@@ -71,7 +71,7 @@ export function connect(path: string, timeoutMs = 3000): Promise<Connection> {
           if (!sock.writable) return rej(new GovdError("govd connection is closed"));
           const id = next++;
           waiting.set(id, { res, rej });
-          sock.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+          sock.write(jsonLine({ jsonrpc: "2.0", id, method, params }));
         }),
         onEvent: (f) => { eventListener = f; },
         onClose: (f) => { closeListeners.push(f); },

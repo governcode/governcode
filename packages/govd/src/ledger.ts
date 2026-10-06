@@ -73,6 +73,14 @@ export class Ledger {
     return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
   }
 
+  /** Every project's events of some kinds since a time, oldest first (for gov friction's report;
+   *  at most `limit`, the newest). */
+  eventsOfKindSince(kinds: string[], since: string, limit = 200_000): TraceEvent[] {
+    const rows = this.db.prepare(`SELECT * FROM events WHERE ts >= ? AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT ?`)
+      .all(since, ...kinds, limit) as Array<Record<string, unknown>>;
+    return rows.reverse().map((r) => ({ ...(r as unknown as TraceEvent), data: JSON.parse(String(r.data)) }));
+  }
+
   /** What happened since a time, in every project: turns begun, Specs finished, Gates the user
    *  answered and steps let through without one (as Watch counts them); `seq` is the newest event
    *  counted, so a caller can add the ones that follow. */

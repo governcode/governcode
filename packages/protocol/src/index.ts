@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry", "acp-install", "trace-totals"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry", "acp-install", "trace-totals", "friction"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -180,6 +180,8 @@ export const Params = {
     kinds: z.array(z.string().regex(/^[a-z.]{1,40}$/)).max(20).optional(), after: z.number().int().min(0).optional() }),
   // since: what happened from then on, counted over the whole Trace (Watch's Today).
   "trace.totals": z.object({ since: z.string().datetime({ offset: true }) }),
+  // gov friction's report over the last `days` (in one project, or every one): read-only.
+  "friction.report": z.object({ days: z.number().int().min(1).max(90).default(7), project: ProjectName.optional() }),
   // continuationOf: the user continues a turn a usage limit stopped (T-n), with their own prompt.
   ask: z.object({ project: ProjectName.nullable(), prompt: z.string().min(1).max(100_000), continuationOf: z.string().regex(/^T-\d+$/).optional() }),
   "gate.list": z.object({}),
@@ -275,7 +277,7 @@ export type TraceEvent = {
   kind:
     | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed" | "allow.added" | "allow.revoked"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
-    | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused"
+    | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused" | "sandbox.blocked"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"
     | "spec.created" | "spec.held" | "spec.started" | "spec.done" | "spec.failed" | "spec.accepted" | "spec.discarded" | "spec.undone" | "spec.cancel" | "spec.cancelled" | "spec.followup"
     | "recovery.set" | "recovery.resumed" | "recovery.cleared"

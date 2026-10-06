@@ -3,13 +3,14 @@
 // real captures of its events (permission.asked, the tool and step events, usage, the end).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyze } from "../src/allows.ts";
 import type { GateRequest } from "../src/claude.ts";
 import { isConnected, setConnected, toolHome } from "../src/homes.ts";
-import { checkModel, opencodeConfig, opencodeGate, opencodeModel, opencodePolicy, opencodeSettings, opencodeSignedIn, opencodeSignIn,
+import { checkModel, versionNote, opencodeConfig, opencodeGate, opencodeModel, opencodePolicy, opencodeSettings, opencodeSignedIn, opencodeSignIn,
   runOpencodeTurn, OPENCODE_DB } from "../src/opencode.ts";
 import { scratch } from "./scratch.ts";
 
@@ -130,11 +131,11 @@ async function runTurn(prompt: string, opts: { answer?: "allow" | "deny"; model?
   const work = join(root, `work-${Math.random().toString(36).slice(2)}`);
   mkdirSync(work);
   for (const [f, body] of Object.entries(opts.files ?? {})) writeFileSync(join(work, f), body);
-  const gates: GateRequest[] = [], texts: string[] = [], tools: string[] = [];
+  const gates: GateRequest[] = [], texts: string[] = [], tools: string[] = [], blocks: unknown[] = [];
   const result = await new Promise<any>((done) => void runOpencodeTurn({ ...o, worktree: work, writePaths: [work], model: opts.model ?? "opencode/big-pickle",
     effort: opts.effort ?? null, prompt, signal: opts.signal, turnMs: 20_000,
-    hooks: { text: (t) => texts.push(t), tool: (n) => tools.push(n), gate: async (r) => { gates.push(r); return opts.answer ?? "allow"; }, done } }));
-  return { result, gates, text: texts.join(""), tools, work };
+    hooks: { text: (t) => texts.push(t), notice: (t) => texts.push(t), tool: (n) => tools.push(n), blocked: (b) => blocks.push(b), gate: async (r) => { gates.push(r); return opts.answer ?? "allow"; }, done } }));
+  return { result, gates, text: texts.join(""), tools, blocks, work };
 }
 
 test("opencode Runner: not connected, a paid model, or a project with OpenCode settings is refused before anything starts", async () => {
@@ -312,4 +313,78 @@ test("opencode Runner: a turn OpenCode ends itself reports its whole use; two Ga
   assert.equal(r.result.ok, true, r.result.summary);
   assert.deepEqual(r.gates.map((g) => g.input.command), ["echo one", "echo two"]);
   assert.deepEqual(replies().map((x) => x.body.decision).slice(-2), ["once", "once"]);
+});
+
+test("versions: a 2.x OpenCode runs (a newer one with a note in the Spec's output); another major version is refused before anything is asked", async () => {
+  assert.deepEqual(versionNote("2.0.23"), {});
+  assert.match(versionNote("2.1.0").note!, /checked with 2\.0\.23 and 2\.0\.24/);
+  assert.match(versionNote("3.0.0").refuse!, /not a 2\.x release/);
+  assert.match(versionNote("").refuse!, /no version given/);
+  setConnected(stateDir, "opencode", true);
+  let r = await runTurn("plain", { env: "export FAKE_OPENCODE_VERSION=3.0.0\n" });
+  assert.equal(r.result.started, false);
+  assert.match(r.result.summary, /not a 2\.x release/);
+  assert.ok(!requests().some((x) => x.path.endsWith("/prompt")));
+  r = await runTurn("plain", { env: "export FAKE_OPENCODE_VERSION=2.1.0\n" });
+  assert.equal(r.result.ok, true, r.result.summary);
+  assert.match(r.text, /OpenCode 2\.1\.0/, "the note is in the Spec's output");
+});
+
+// The fake must keep to the real thing: every event the driver reads has the same keys as in the
+// captures of OpenCode 2.0.23 (fixtures/opencode-2.0.23-shapes.json).
+test("the fake speaks like OpenCode 2.0.23: the events the driver reads have the real shapes", async () => {
+  const real = JSON.parse(readFileSync(new URL("./fixtures/opencode-2.0.23-shapes.json", import.meta.url), "utf8")).shapes as Record<string, string[][]>;
+  const keysOf = (d: Record<string, unknown>, prefix = ""): string[] => Object.entries(d).flatMap(([k, v]) =>
+    [prefix + k, ...(v && typeof v === "object" && !Array.isArray(v) && ["tokens", "source", "error"].includes(k) ? keysOf(v as Record<string, unknown>, `${prefix}${k}.`) : [])]);
+  const work = join(root, "shapes-work");
+  mkdirSync(work, { recursive: true });
+  writeFileSync(join(work, "readme.txt"), "hello\n");
+  const fake = spawn(process.env.GOVERNCODE_OPENCODE_BIN!, ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
+    { cwd: work, env: { PATH: process.env.PATH ?? "", OPENCODE_PASSWORD: "pw", XDG_DATA_HOME: join(root, "shapes-data") }, stdio: ["pipe", "pipe", "ignore"] });
+  try {
+    const url = await new Promise<string>((ok) => fake.stdout.on("data", (b) => { const m = /"url":"([^"]+)"/.exec(String(b)); if (m) ok(m[1]); }));
+    const auth = { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" };
+    const api = async (method: string, path: string, body?: unknown) => (await fetch(url + path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) })).json().catch(() => null);
+    const seen: Array<{ type: string; data: Record<string, unknown> }> = [];
+    const stream = await fetch(url + "/api/event", { headers: auth });
+    const reader = stream.body!.getReader();
+    let buf = "", waiting: Array<() => void> = [];
+    void (async () => { for (;;) { const { value, done } = await reader.read(); if (done) return; buf += new TextDecoder().decode(value);
+      let k; while ((k = buf.indexOf("\n\n")) >= 0) { const e = JSON.parse(buf.slice(0, k).replace(/^data: /, "")); buf = buf.slice(k + 2); seen.push(e); for (const w of waiting.splice(0)) w(); } } })();
+    const until = async (pred: () => boolean) => { while (!pred()) await new Promise<void>((ok) => waiting.push(ok)); };
+    const sid = (await api("POST", "/api/session", {})).data.id;
+    const turn = async (prompt: string, decide: (n: number) => Record<string, unknown>) => {
+      const from = seen.length;
+      await api("POST", `/api/session/${sid}/prompt`, { text: prompt });
+      for (let n = 0; ; n++) {
+        await until(() => seen.slice(from).some((e) => /^session\.execution\.(succeeded|interrupted|failed)$/.test(e.type)) || seen.slice(from).filter((e) => e.type === "permission.asked").length > n);
+        const asked = seen.slice(from).filter((e) => e.type === "permission.asked");
+        if (asked.length <= n) return;
+        await api("POST", `/api/session/${sid}/permission/${asked[n].data.id}/reply`, decide(n));
+      }
+    };
+    await turn("SHELL:echo hi", () => ({ decision: "once" }));
+    await turn("SHELL:echo no", () => ({ decision: "reject" }));
+    await turn("EDIT:readme.txt:hello:goodbye", () => ({ decision: "once" }));
+    const checked = new Set<string>();
+    for (const e of seen) {
+      if (!real[e.type]) continue;
+      const got = keysOf(e.data).sort();
+      assert.ok(real[e.type].some((shape) => JSON.stringify(shape) === JSON.stringify(got)), `${e.type}: the fake sends ${got.join(", ")}; OpenCode sends ${real[e.type].map((x) => x.join(", ")).join(" | ")}`);
+      checked.add(e.type);
+    }
+    // Every kind of event the captures hold was sent and checked (a type renamed or dropped in the fake fails here).
+    assert.deepEqual([...checked].sort(), Object.keys(real).sort());
+  } finally { fake.kill("SIGTERM"); }
+});
+
+test("opencode Runner: a command that fails at a refusal is reported as probably blocked by the sandbox, with its kind and not its output", async () => {
+  setConnected(stateDir, "opencode", true);
+  let r = await runTurn("SHELL:touch /etc/governcode-blocked-check");
+  // (touch on a path outside the project always asks, so its kind is "always", as its Gate would record it)
+  assert.deepEqual(r.blocks, [{ tool: "opencode command", kinds: [], always: true, pattern: "permission denied" }]);
+  r = await runTurn("SHELL:ls /no-such-folder-here");
+  assert.deepEqual(r.blocks, [], "another failure is not a block");
+  r = await runTurn("SHELL:echo permission denied");
+  assert.deepEqual(r.blocks, [], "words in a step that worked are not a block");
 });

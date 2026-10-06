@@ -438,6 +438,27 @@ test("trace.list by kind reaches every project and all of history; trace.totals 
   c.end(); d.close();
 });
 
+test("friction.report: gov friction's report for the Dashboard, from the Trace, read-only", async () => {
+  const d = daemon("friction");
+  await d.listen();
+  const c = client(join(root, "friction", "govd.sock"));
+  d.ledger.append("q", "gate.opened", "controller · claude-code", { gate: "G-1", tool: "Bash", kinds: ["command:npm test"], always: false });
+  d.ledger.append("q", "gate.allowed", "user", { gate: "G-1", tool: "Bash", by: "user", kinds: ["command:npm test"], always: false });
+  d.ledger.append("q", "sandbox.blocked", "controller · claude-code", { tool: "Bash", kinds: ["command:npm install"], always: false, pattern: "permission denied" });
+  d.ledger.append("q", "turn.text", "controller · claude-code", { text: "not counted" });
+  const before = d.ledger.events(undefined, 1)[0].seq;
+  const { report, days } = (await c.call("friction.report", {})).result;
+  assert.equal(days, 7);
+  assert.equal(report.gates.opened, 1);
+  assert.equal(report.gates.allowed, 1);
+  assert.equal(report.sandbox.blocked, 1);
+  assert.deepEqual(report.kinds.map((k: any) => [k.kind, k.asked, k.blocked]), [["command:npm test", 1, 0], ["command:npm install", 0, 1]]);
+  assert.equal((await c.call("friction.report", { days: 7, project: "other" })).result.report.gates.opened, 0);
+  assert.match((await c.call("friction.report", { days: 400 })).error?.message ?? "", /days/);
+  assert.equal(d.ledger.events(undefined, 1)[0].seq, before, "it records nothing");
+  c.end(); d.close();
+});
+
 test("standing allows: a turn rule covers the same kind for this turn only; quiet reads never ask; a project rule stays", async () => {
   const d = daemon("allows");
   d.selftest();

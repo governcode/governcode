@@ -28,6 +28,7 @@ import { agyEnv, customizations, hold } from "./agy.ts";
 import { isConnected, removeTree, toolDir, toolHome } from "./homes.ts";
 import { canonical, resolverFiles, toolchainDirs, RUNNER_CONTEXT, type GateRequest, type Policy, type TurnHooks } from "./claude.ts";
 import { unsafeLinks } from "./grok.ts";
+import { blockFor, resultText } from "./blocks.ts";
 
 /** The real opencode binary: $GOVERNCODE_OPENCODE_BIN, else `opencode` on PATH followed to the
  *  program itself (npm installs a link to it; a wrapper script is looked through with mise). */
@@ -41,6 +42,16 @@ export function opencodeBinary(): string {
     try { return realpathSync(execFileSync("mise", ["which", "opencode"], { encoding: "utf8" }).trim()); } catch { /* not mise */ }
   }
   throw new Error("opencode not found (install OpenCode, or set GOVERNCODE_OPENCODE_BIN)");
+}
+
+/** The OpenCode versions this driver was built and checked against. A newer 2.x runs, with a note in
+ *  the Spec's output; another major version is refused (its API may have changed). */
+export const OPENCODE_TESTED = ["2.0.23", "2.0.24"];
+export function versionNote(version: string): { refuse?: string; note?: string } {
+  const major = /^(\d+)\./.exec(version)?.[1];
+  if (major !== "2") return { refuse: `OpenCode ${version || "(no version given)"} is not a 2.x release; GovernCode's OpenCode Runner is built for OpenCode 2 (tested with ${OPENCODE_TESTED.join(", ")})` };
+  if (!OPENCODE_TESTED.includes(version)) return { note: `(OpenCode ${version}: GovernCode was checked with ${OPENCODE_TESTED.join(" and ")}; it runs, but tell GovernCode if anything looks wrong.)` };
+  return {};
 }
 
 // OpenCode's own free models that do not end in -free (seen in 2.0.23's list).
@@ -157,6 +168,8 @@ export function freePort(): Promise<number> {
 export type OpencodeEvent = { type: string; data: Record<string, unknown> };
 export type OpencodeServer = {
   url: string;
+  /** The version the server reports (GET /api/info), or "" when it gives none. */
+  version: string;
   api(method: string, path: string, body?: unknown, ms?: number): Promise<{ status: number; body: any }>;
   /** Every event the server sends from now on, until close; settles once the stream is open (or
    *  could not be opened). `lost` is told why the stream ended, if it ends before close. */
@@ -195,11 +208,12 @@ export async function startOpencodeServer(o: { supervisor: string; policyFile: s
   }).catch(async (e) => { stop("SIGKILL"); await closed; throw e; });
   const auth = "Basic " + Buffer.from(`opencode:${o.password}`).toString("base64");
   // OpenCode prints its address before it accepts connections (seen with 2.0.23): wait until it answers.
+  let version = "";
   for (const until = Date.now() + (o.startMs ?? 20_000); ;) {
     try {
       const r = await fetch(url + "/api/info", { headers: { authorization: auth }, signal: AbortSignal.timeout(2000) });
-      await r.body?.cancel();
-      if (r.status === 200) break;
+      const info = await r.json().catch(() => null) as { version?: unknown } | null;
+      if (r.status === 200) { version = typeof info?.version === "string" ? info.version.slice(0, 40) : ""; break; }
       throw new Error(`OpenCode answered ${r.status}`);
     } catch (e) {
       if (Date.now() > until) { stop("SIGKILL"); await closed; throw new Error(`OpenCode did not answer in time: ${e instanceof Error ? e.message : e}`); }
@@ -216,7 +230,7 @@ export async function startOpencodeServer(o: { supervisor: string; policyFile: s
     setTimeout(() => stop("SIGKILL"), 5000).unref();
   };
   return {
-    url, closed, close,
+    url, version, closed, close,
     async api(method, path, body, ms = 30_000) {
       const r = await fetch(url + path, { method, headers: { authorization: auth, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.any([aborter.signal, AbortSignal.timeout(ms)]) });
@@ -378,6 +392,9 @@ export function checkModel(list: unknown, model: { providerID: string; id: strin
 /** The session itself: create it, prove every action asks, prompt, follow its events to the end. */
 async function turn(srv: OpencodeServer, o: { worktree: string; prompt: string; hooks: TurnHooks; signal?: AbortSignal; effort: string | null; turnMs?: number },
   model: { providerID: string; id: string }): Promise<{ ok: boolean; summary: string; usage?: unknown; limit?: { resetsAt: string | null } }> {
+  const v = versionNote(srv.version);
+  if (v.refuse) throw new Refused(v.refuse);
+  if (v.note) o.hooks.notice?.(v.note);
   // OpenCode fills its model list a moment after it starts (it fetches its catalog): wait for it,
   // then the model must be in it.
   let list: unknown = null;
@@ -413,6 +430,7 @@ async function turn(srv: OpencodeServer, o: { worktree: string; prompt: string; 
   let tokens: { input: number; output: number; reasoning: number } | null = null;
   const texts: string[] = [];
   const names = new Map<string, string>();
+  const inputs = new Map<string, Record<string, unknown>>();   // a call's input, for a probable sandbox block
   let settle: (r: { ok: boolean; summary: string; usage?: unknown; limit?: { resetsAt: string | null } }) => void = () => {};
   const ended = new Promise<{ ok: boolean; summary: string; usage?: unknown; limit?: { resetsAt: string | null } }>((ok) => { settle = ok; });
   let finished = false, prompted = false;
@@ -457,7 +475,21 @@ async function turn(srv: OpencodeServer, o: { worktree: string; prompt: string; 
       case "session.tool.called": {
         const name = names.get(String(d.id)) ?? "tool";
         const input = d.input && typeof d.input === "object" ? d.input as Record<string, unknown> : {};
+        if (inputs.size < 5000) inputs.set(String(d.id), input);
         o.hooks.tool(`${name}${typeof input.command === "string" ? ` ${input.command}` : typeof input.path === "string" ? ` ${input.path}` : ""}`.slice(0, 80), input);
+        break;
+      }
+      // A failed step whose output shows a sandbox refusal (#224): recorded as an estimate.
+      case "session.tool.success": case "session.tool.failed": {
+        const name = names.get(String(d.id)) ?? "tool";
+        const failed = e.type === "session.tool.failed" ? (d.error as any)?.type !== "permission.rejected" && (d.error as any)?.type !== "aborted"
+          : (name === "shell" || name === "bash") && typeof (d.metadata as any)?.exit === "number" && (d.metadata as any).exit !== 0;   // (a shell's result carries its exit status)
+        if (!failed) break;
+        const out = e.type === "session.tool.failed" ? String((d.error as any)?.message ?? "") : resultText(d.content);
+        const input = inputs.get(String(d.id)) ?? {};
+        const tool = name === "shell" || name === "bash" ? "opencode command" : name === "edit" || name === "write" ? "opencode fileChange" : `opencode_${name}`;
+        const b = blockFor(tool, tool === "opencode command" ? { command: typeof input.command === "string" ? input.command : null } : input, out, "runner");
+        if (b) o.hooks.blocked?.(b);
         break;
       }
       case "session.usage.updated": {

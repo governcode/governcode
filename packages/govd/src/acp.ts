@@ -8,6 +8,8 @@
 // or the totals in xAI's `_meta`); a plain ACP agent may report none. A stop from outside sends
 // `session/cancel` and then ends the process; an agent that dies ends the turn with its last
 // words on stderr.
+import { jsonLine } from "@governcode/protocol/lines";
+import { blockFor, resultText } from "./blocks.ts";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { types } from "node:util";
@@ -100,7 +102,7 @@ export function startAcp(o: { supervisor: string; policyFile: string; bin: strin
   let onNote: (method: string, params: any) => void = () => {};
   const send = (obj: unknown) => {
     if (failure || gone || !child.stdin?.writable) return;
-    const line = JSON.stringify({ jsonrpc: "2.0", ...(obj as object) }) + "\n";
+    const line = jsonLine({ jsonrpc: "2.0", ...(obj as object) });
     if (!failure && !gone && child.stdin?.writable) child.stdin.write(line);
   };
   // One message per line, JSON-RPC 2.0 only; malformed envelopes and overlong lines are ignored.
@@ -368,6 +370,9 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
   // its next step or Gate and at the end of the turn. A long message goes in parts of a few
   // thousand characters, cut at a line or a space.
   let words = "";
+  // Tool calls by id (as the agent described them), and those a Gate declined: for a probable sandbox block.
+  const calls = new Map<string, Record<string, unknown>>();
+  const declined = new Set<string>();
   const say = (w: string) => { if (w && within(w)) o.hooks.text(w); };
   const flush = () => { const w = words; words = ""; say(w); };
   const flushLong = () => {
@@ -394,7 +399,10 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
       pending.add(onEnd);
       o.hooks.gate(req).then(settle, () => settle("deny"));
     });
-    return pickOption(params?.options, answer === "allow" && prompting && stopped === null ? "allow" : "deny");
+    const allowed = answer === "allow" && prompting && stopped === null;
+    // A declined call's failure is the Gate's doing, not the sandbox's.
+    if (!allowed && typeof params?.toolCall?.toolCallId === "string" && declined.size < 5000) declined.add(params.toolCall.toolCallId);
+    return pickOption(params?.options, allowed ? "allow" : "deny");
   });
   rpc.onNotify((method, params) => {
     // xAI's own channel carries only token use here; it may leave the session out, and a turn
@@ -415,6 +423,16 @@ export async function runAcpTurn(o: { rpc: AcpRpc; agent: string; cwd: string; p
       flush();
       const step = `${o.agent} ${typeof u.kind === "string" ? u.kind : "tool"}${typeof u.title === "string" ? `: ${u.title.slice(0, 60)}` : ""}`;
       if (within(step)) o.hooks.tool(step, {});
+      if (typeof u.toolCallId === "string" && calls.size < 5000) calls.set(u.toolCallId, u);
+    }
+    // A failed call whose output shows a sandbox refusal (#224): recorded as an estimate, with the
+    // kind its Gate would have (the same mapping); never a call a Gate declined.
+    if (u.sessionUpdate === "tool_call_update" && u.status === "failed" && typeof u.toolCallId === "string" && !declined.has(u.toolCallId)) {
+      const call = calls.get(u.toolCallId);
+      const out = resultText(Array.isArray(u.content) ? u.content.map((c: any) => c?.content ?? c) : u.content);
+      const req = permissionGate(o.agent, { toolCall: call ?? {} }, u.toolCallId);
+      const b = blockFor(req.tool, req.input, out, "runner", req.base);
+      if (b) o.hooks.blocked?.(b);
     }
   });
   let closer: NodeJS.Timeout | undefined;

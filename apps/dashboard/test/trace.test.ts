@@ -52,3 +52,10 @@ test("the timeline describes events from what govd records, and never guesses", 
   assert.equal(describe(ev("turn.started", { prompt: "x".repeat(200) }, "user")).text.length < 110, true, "a long prompt is shortened");
   assert.equal(describe(ev("acp.install.started", { name: "agent" })).text, "Artifact install started · agent", "unknown sentences fall back to the label");
 });
+
+test("a step that probably ran into the sandbox reads as an estimate", () => {
+  const d = describe({ seq: 1, ts: "2026-10-06T05:00:00.000Z", project: "a", kind: "sandbox.blocked", actor: "runner · opencode · S-0001",
+    data: { tool: "opencode command", kinds: ["runner:command:npm install"], always: false, pattern: "permission denied", spec: "S-0001" } });
+  assert.equal(d.text, "opencode command failed, probably at the sandbox (permission denied)");
+  assert.equal(d.tone, "warn");
+});

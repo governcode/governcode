@@ -2,8 +2,9 @@
 // Sandboxed AI tools cannot connect to it: Landlock allows only the Unix sockets their
 // policy names (or, on older kernels, seccomp refuses Unix sockets altogether), so every
 // connection here is the user (the CLI now, apps later). docs/SANDBOX.md, invariant 5.
+import { FRICTION_KINDS, friction } from "@governcode/protocol/friction";
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
 import { createServer, type Server, type Socket } from "node:net";
-import { createInterface } from "node:readline";
 import { mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, existsSync, statSync, chmodSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -58,6 +59,9 @@ type Gate = { id: string; project: string | null; tool: string; canonical: strin
 // a rule covers them or not; `always`: a step no rule may cover (rm, curl, shell syntax...), so it
 // always asks. Recorded with each Gate and each step let through, never the request's own text.
 type StepKinds = { kinds: string[]; always: boolean };
+
+/** Runners with no usage report of their own: only a budget the user sets meters them. */
+const COUNTED_ONLY = new Set(["opencode"]);
 
 export class Daemon {
   readonly ledger: Ledger;
@@ -384,7 +388,7 @@ export class Daemon {
     sock.on("close", disconnect);
     const write = (obj: unknown) => {
       if (retiring || !sock.writable) return;
-      const line = JSON.stringify(obj) + "\n";
+      const line = jsonLine(obj);
       if (this.watchers.has(sock) && sock.writableLength + Buffer.byteLength(line, "utf8") > WATCH_OUTPUT_BYTES) {
         retire();
         return;
@@ -394,7 +398,7 @@ export class Daemon {
     // A client that drops mid-line (ECONNRESET) must not take govd down: the error is the
     // client's problem; retire synchronously rather than waiting for "close".
     sock.on("error", retire);
-    const lines = createInterface({ input: sock });
+    const lines = jsonLines(sock);
     lines.on("error", () => {});
     lines.on("line", async (line) => {
       if (retiring) return; // readline may still emit requests buffered before retirement.
@@ -784,6 +788,11 @@ export class Daemon {
       case "trace.list":
         if (p.kinds && p.after !== undefined) throw new RpcError(Errors.badParams, "after: pages by kind are not offered; page without kinds");
         return { events: p.kinds ? L.eventsOfKind(p.project, p.kinds as TraceEvent["kind"][], p.limit) : L.events(p.project, p.limit, p.after) };
+      case "friction.report": {
+        // gov friction's report, for the Dashboard: counted from the Trace, read-only.
+        const since = new Date(Date.now() - p.days * 86_400_000);
+        return { report: friction(L.eventsOfKindSince([...FRICTION_KINDS], since.toISOString()), { since, project: p.project }), days: p.days };
+      }
       case "trace.totals":
         return { totals: L.totals(new Date(p.since).toISOString()) };
       case "ask": {
@@ -829,7 +838,11 @@ export class Daemon {
           const m = await src.read();
           if (m) this.limits.record(m); else this.limits.forget(src.provider, src.why?.());   // unknown holds
         }));
-        return { providers: Object.keys(this.usage).map((name) => this.limits.view(name)) };
+        // needsBudget: a Runner metered only by a budget the user sets (OpenCode) that has none yet,
+        // so it is held until one is set.
+        const budgets = this.settings().budgets;
+        return { providers: Object.keys(this.usage).map((name) => ({ ...this.limits.view(name),
+          ...(COUNTED_ONLY.has(name) ? { needsBudget: !Object.keys(budgets[name]?.windows ?? {}).length } : {}) })) };
       }
       case "recovery.list":
         if (p.project && !L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);
@@ -1146,6 +1159,8 @@ export class Daemon {
       const hooks: TurnHooks = {
           text: (t) => { notify({ kind: "text", text: t }); L.append(project.name, "turn.text", actor, { text: t.slice(0, 20_000) }); },
           notice: (text) => notify({ kind: "text", text }),
+          // A failed step that probably ran into the sandbox (#224): its tool and kind, never its output.
+          blocked: (b) => { L.append(project.name, "sandbox.blocked", actor, b); },
           tool: (name, input) => {
             notify({ kind: "tool", name, input });
             // A subagent keeps what it was asked (short), so the Crew board and the Trace can show it.

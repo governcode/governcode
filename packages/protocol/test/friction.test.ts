@@ -72,10 +72,10 @@ test("by kind of step: what a standing allow would cover, with the steps that al
   ];
   const r = friction(events);
   const by = Object.fromEntries(r.kinds.map((k) => [k.kind, k]));
-  assert.deepEqual(by["command:npm test"], { kind: "command:npm test", asked: 5, allowed: 5, denied: 0, autoDenied: 0, passed: 1, allowedEveryTime: true });
-  assert.deepEqual(by["command:npm run"], { kind: "command:npm run", asked: 2, allowed: 1, denied: 1, autoDenied: 0, passed: 0, allowedEveryTime: false });
+  assert.deepEqual(by["command:npm test"], { kind: "command:npm test", asked: 5, allowed: 5, denied: 0, autoDenied: 0, passed: 1, blocked: 0, allowedEveryTime: true });
+  assert.deepEqual(by["command:npm run"], { kind: "command:npm run", asked: 2, allowed: 1, denied: 1, autoDenied: 0, passed: 0, blocked: 0, allowedEveryTime: false });
   assert.equal(by["command:git status"].asked, 1, "a command of two kinds counts under each");
-  assert.deepEqual(by["always:Bash"], { kind: "always:Bash", asked: 3, allowed: 2, denied: 0, autoDenied: 1, passed: 0, allowedEveryTime: false });
+  assert.deepEqual(by["always:Bash"], { kind: "always:Bash", asked: 3, allowed: 2, denied: 0, autoDenied: 1, passed: 0, blocked: 0, allowedEveryTime: false });
   assert.equal(friction(events, { minAllowed: 2 }).kinds.find((k) => k.kind === "always:Bash")!.allowedEveryTime, false, "a step that always asks is never a candidate");
   assert.equal(by["runner:edit"].autoDenied, 1);
   assert.equal(r.kinds[0].kind, "command:npm test", "most asked first");
@@ -113,7 +113,7 @@ test("Runner Gates are counted apart from Controller turns; sandbox, .git and Sp
   assert.equal(r.gates.byRunners, 2);
   assert.equal(r.gates.perTurn, 1);
   assert.deepEqual(r.tools.find((t) => t.tool === "codex exec (Runner · codex)"), { tool: "codex exec (Runner · codex)", asked: 2, allowed: 2, denied: 0, autoDenied: 0, allowedEveryTime: false });
-  assert.deepEqual(r.sandbox, { refused: 2, refusedBy: { "bwrap missing": 2 }, gitScrubbed: 1, gitGuardFailed: 1 });
+  assert.deepEqual(r.sandbox, { refused: 2, refusedBy: { "bwrap missing": 2 }, gitScrubbed: 1, gitGuardFailed: 1, blocked: 0, blockedBy: {} });
   assert.deepEqual(r.specs, { created: 1, failed: 2, limited: 1, held: 1 });
   assert.equal(friction([]).gates.perTurn, null, "no turns: no average");
 });
@@ -156,4 +156,28 @@ test("readTrace finds the window's start by seq and pages from there, keeping on
   // An older govd ignores `after` and repeats its newest page: the reading ends.
   const old = await readTrace(async (_after, limit) => all.slice(-limit), since);
   assert.equal(old.length, 1000);
+});
+
+test("steps that probably ran into the sandbox are counted by kind and by what they said, as an estimate", () => {
+  const blocked = (kinds: string[], pattern: string, always = false) => ev("sandbox.blocked", { tool: "Bash", kinds, always, pattern }, { actor: C });
+  const r = friction([
+    blocked(["command:npm install"], "permission denied"), blocked(["command:npm install"], "permission denied"),
+    blocked(["command:cargo build"], "read-only file system"), blocked([], "operation not permitted", true),
+  ]);
+  assert.equal(r.sandbox.blocked, 4);
+  assert.deepEqual(r.sandbox.blockedBy, { "permission denied": 2, "read-only file system": 1, "operation not permitted": 1 });
+  const by = Object.fromEntries(r.kinds.map((k) => [k.kind, k.blocked]));
+  assert.deepEqual(by, { "command:npm install": 2, "command:cargo build": 1, "always:Bash": 1 });
+  assert.equal(r.gates.opened, 0, "a block is no Gate");
+});
+
+test("a Runner's probable blocks share a row with its Gates, apart from the Controller's", () => {
+  const runner = "runner · codex · S-0001";
+  const r = friction([
+    ev("gate.opened", { gate: "G-1", tool: "codex command (Runner · codex, S-0001)", kinds: [], always: true }, { actor: runner }),
+    ev("sandbox.blocked", { tool: "codex command (Runner · codex, S-0001)", kinds: [], always: true, pattern: "permission denied", spec: "S-0001" }, { actor: runner }),
+    ev("sandbox.blocked", { tool: "codex command", kinds: [], always: true, pattern: "permission denied" }, { actor: "controller · codex" }),
+  ]);
+  const rows = Object.fromEntries(r.kinds.map((k) => [k.kind, [k.asked, k.blocked]]));
+  assert.deepEqual(rows, { "always:codex command (Runner · codex)": [1, 1], "always:codex command": [0, 1] });
 });

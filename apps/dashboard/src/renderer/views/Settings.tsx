@@ -1,7 +1,7 @@
 // Settings: the Controller of each project, each Runner's Limits (the share of every usage
 // window held back for you), and the sandbox. Settings live in govd's state, out of every
 // AI tool's reach; the renderer only asks govd to change them.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { call, controllerLabel, type Project } from "../api.ts";
 import type { Hello } from "../../shared/contract.ts";
 import { Pill } from "../ui.tsx";
@@ -34,8 +34,11 @@ const POLICIES: Array<[SettingsValue["specModels"], string, string]> = [
 ];
 const WINDOWS = ["weekly", "5-hour"];      // shown before a Runner has been measured
 
-export function Settings(props: { projects: Project[]; hello: Hello | null; onChangeController: (project: string) => void }) {
+export function Settings(props: { projects: Project[]; hello: Hello | null; onChangeController: (project: string) => void; section?: string }) {
   const [providers, setProviders] = useState<ProviderLimit[]>([]);
+  // "Set a budget" elsewhere opens Settings here: scrolled to the budgets once, not on every change after.
+  const budgetHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { if (props.section === "budget") budgetHeading.current?.scrollIntoView({ block: "start" }); }, [props.section]);
   const [saved, setSaved] = useState<SettingsValue>(EMPTY);
   const [draft, setDraft] = useState<SettingsValue>(EMPTY);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -117,7 +120,7 @@ export function Settings(props: { projects: Project[]; hello: Hello | null; onCh
           ))}
         </div>
 
-        <h2>Runners · Limits</h2>
+        <h2 id="budget" ref={budgetHeading}>Runners · Limits</h2>
         <p className="dim small">The share of each usage window kept back for you: a Spec never starts if it would reach into it. Unknown or stale usage always holds.</p>
         {!providers.length && <p className="dim small">No Runners with a usage source yet.</p>}
         {providers.map((p) => {

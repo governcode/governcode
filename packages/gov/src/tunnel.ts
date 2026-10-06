@@ -2,9 +2,10 @@
 // socket in a private local folder, and `gov --host HOST ...` (or the Dashboard, pointed at that
 // folder) talks to it as if it were local. The SSH user is the govd user there, so nothing new is
 // trusted: whoever can ssh in could already run gov on that machine.
+import { oneLine } from "./terminal.ts";
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { connect } from "node:net";
-import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeSync } from "node:fs";
@@ -231,8 +232,8 @@ function hello(path: string, timeoutMs = 8000): Promise<string | null> {
     const timer = setTimeout(() => finish(null), timeoutMs);
     sock.on("error", () => finish(null));
     sock.on("close", () => finish(null));
-    sock.on("connect", () => sock.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "hello", params: { client: "gov", protocol: 1 } }) + "\n"));
-    const lines = createInterface({ input: sock });
+    sock.on("connect", () => sock.write(jsonLine({ jsonrpc: "2.0", id: 1, method: "hello", params: { client: "gov", protocol: 1 } })));
+    const lines = jsonLines(sock);
     lines.on("error", () => {});
     lines.on("line", (l) => {
       try { const m = JSON.parse(l); if (m.id === 1) finish(m.result ? String(m.result.version ?? "?") : null); } catch { finish(null); }
@@ -290,9 +291,9 @@ export async function runTunnel(hostArg: string | undefined, remoteArg: string |
         `ssh to ${host} exited before the tunnel was up: ${lastLine(stderr) || "no message"}. ${SSH_ONLY_KEYS.replace("HOST", host)}`);
     }
     const version = await hello(local);
-    if (!version) throw new Error(`the tunnel to ${host} opened, but no govd answered at ${remote} there${lastLine(stderr) ? ` (${lastLine(stderr)})` : ""}. Is govd running on ${host}?`);
+    if (!version) throw new Error(`the tunnel to ${host} opened, but no govd answered at ${remote} there${lastLine(stderr) ? ` (${oneLine(lastLine(stderr))})` : ""}. Is govd running on ${host}?`);
 
-    console.log(`tunnel to ${host}: govd ${version} at ${remote} there, reachable here at ${local}`);
+    console.log(`tunnel to ${host}: govd ${oneLine(String(version))} at ${remote} there, reachable here at ${local}`);   // (the remote's words, shown safely)
     console.log(`  gov --host ${host} status        # any gov command, run against ${host}`);
     console.log(`  GOVERNCODE_RUNTIME_DIR=${dir}    # set for the Dashboard to use it`);
     console.log(`Ctrl-C (or gov tunnel --stop ${host}) closes it.`);
@@ -300,7 +301,7 @@ export async function runTunnel(hostArg: string | undefined, remoteArg: string |
     await Promise.race([exit, signalled]);
     const lost = !stopping;
     await stop();
-    if (lost) { console.error(`gov: the tunnel to ${host} closed: ${lastLine(stderr) || "ssh exited"}`); return 1; }
+    if (lost) { console.error(`gov: the tunnel to ${host} closed: ${oneLine(lastLine(stderr)) || "ssh exited"}`); return 1; }
     console.log(`tunnel to ${host} closed`);
     return 0;
   } catch (e) {

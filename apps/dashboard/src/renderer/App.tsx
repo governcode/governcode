@@ -297,9 +297,9 @@ export function App() {
         ) : place.kind === "global" && place.id === "needs" ? (
           <NeedsYou gates={gates} specs={specs} held={held} onAnswered={() => void refreshGates()} onPlace={setPlace} />
         ) : place.kind === "global" && place.id === "watch" ? <Watch onNeeds={() => setPlace({ kind: "global", id: "needs" })} />
-          : place.kind === "global" && place.id === "allowance" ? <Limits onMeasured={() => void refreshLimits()} />
+          : place.kind === "global" && place.id === "allowance" ? <Limits onMeasured={() => void refreshLimits()} onPlace={setPlace} />
           : place.kind === "global" && place.id === "trace" ? <Trace project={null} live={live} />
-          : place.kind === "global" && place.id === "settings" ? <Settings projects={projects} hello={hello} onChangeController={(name) => { setProject(name); setDialog("controller"); }} />
+          : place.kind === "global" && place.id === "settings" ? <Settings projects={projects} hello={hello} onChangeController={(name) => { setProject(name); setDialog("controller"); }} section={place.section} />
           : <Overview projects={projects} specs={specs.filter((s) => IN_FLIGHT.has(s.status))} gates={gates} limits={limits} hello={hello} held={held}
               onPlace={setPlace} onGatesChanged={() => void refreshGates()} onNewProject={() => setDialog("new")} onOpenFolder={() => setDialog("open")} />}
       </main>

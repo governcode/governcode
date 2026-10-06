@@ -1,6 +1,7 @@
 // Overview: the first thing you see. What needs you (answerable here), every project at a glance,
 // what each AI has left, the sandbox, and the latest things that happened. Read from govd; the only
 // actions are the ones you take (allow or deny a Gate exactly as shown, open something).
+import { FrictionCard } from "./FrictionCard.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { greeting } from "../../shared/greeting.ts";
 import { gateAsker, gateFitsInline, gateTool, projectStatus, providerUsage } from "../../shared/status.ts";
@@ -200,7 +201,7 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
                     {p.local || p.unmetered ? <ProviderMark id={p.provider} size={36} /> : <Ring size={40} stroke={5} percent={u.percent} reserve={u.reserve} color={color} />}
                     <div style={{ minWidth: 0 }}>
                       <div className="n"><ProviderMark id={p.provider} size={16} />{providerName(p.provider)}</div>
-                      <div className="s">{p.local ? "Local model on this machine" : !p.verdict.ok ? p.verdict.reason : "Available"}</div>
+                      <div className="s">{p.needsBudget ? <button className="linkish" onClick={() => props.onPlace({ kind: "global", id: "settings", section: "budget" })}>Needs a budget: set one</button> : p.local ? "Local model on this machine" : !p.verdict.ok ? p.verdict.reason : "Available"}</div>
                     </div>
                     <div className="pct">{p.local ? "" : u.counted ? `${u.counted.used}/${u.counted.cap}` : u.window ? `${Math.round(u.percent)}%` : "–"}
                       <small>{u.counted ? u.counted.unit : u.window ?? (p.local ? "" : "not measured")}</small></div>
@@ -213,6 +214,7 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
               <div><b>{sandboxOk ? "Sandbox enforced" : "Sandbox not verified"}</b>
                 <p>{sandboxOk ? `Every step runs inside the sandbox (${props.hello?.sandbox.reason}). Gates decide what it may do beyond that.` : `${props.hello?.sandbox.reason ?? "govd is not connected"}. GovernCode runs nothing until the sandbox is verified.`}</p></div>
             </div>
+            <FrictionCard />
           </div>
         </div>
       </div></div>

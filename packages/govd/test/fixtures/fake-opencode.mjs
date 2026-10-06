@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { dirname, isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
-const VERSION = "2.0.23";
+const VERSION = process.env.FAKE_OPENCODE_VERSION ?? "2.0.23";   // (a test can pose as another release)
 const ROOT = process.cwd();
 const LOG = process.env.FAKE_OPENCODE_LOG ?? "";
 const PASSWORD = process.env.OPENCODE_PASSWORD ?? "";
@@ -204,8 +204,8 @@ function runShell(session, id, callID, command) {
     emit("session.tool.progress", { sessionID: session.id, assistantMessageID: id, id: callID, metadata: { shellID } });
     const child = spawn("/bin/sh", ["-c", command], { cwd: ROOT });
     let out = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { out += chunk; });
+    // Both streams, as OpenCode's shell tool reports them.
+    for (const stream of [child.stdout, child.stderr]) { stream.setEncoding("utf8"); stream.on("data", (chunk) => { out += chunk; }); }
     const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
     child.on("close", (code, signal) => {
       clearTimeout(timer);

@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Params, SpecCheckpoints, SpecDiff } from "@governcode/protocol";
+import { oneLine, shown } from "./terminal.ts";
 
 type Api = { call(method: string, params: unknown): Promise<any> };
 type Tty = { next(prompt: string): Promise<string | null>; close(): void };   // null: no answer here
@@ -29,7 +30,7 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
 
   const hello = await api.call("hello", { client: "gov-demo", protocol: 1 });
   if (!hello.sandbox?.ok) {
-    say(`The sandbox is not verified on this machine (${hello.sandbox?.reason ?? "unknown"}), so GovernCode will not start any AI tool.`);
+    say(`The sandbox is not verified on this machine (${oneLine(String(hello.sandbox?.reason ?? "unknown"))}), so GovernCode will not start any AI tool.`);
     say("That is on purpose: it fails closed. Run ./target/release/govern-sup selftest to see what is missing.");
     return 1;
   }
@@ -77,7 +78,7 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
   say("file edits and for npm test: you will see the later ones go through without asking.");
   const first = await o.runAsk(api, name, "Add a function range(from, to) to src/tide.js that returns the lowest and highest level " +
     "for the whole hours from..to, with a test for it in test/tide.test.js. Then run npm test and tell me the result in one line.", o.tty);
-  say(dim(first.ok ? "— done" : `— the turn ended: ${first.summary}`));
+  say(dim(first.ok ? "— done" : `— the turn ended: ${shown(String(first.summary))}`));
 
   step(3, "handing a job to a Runner");
   const runners = connected("codex") ? (await api.call("limits.list", { measure: true })).providers as Array<{ provider: string; verdict: { ok: boolean; reason?: string } }> : [];
@@ -86,7 +87,7 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
   if (!connected("codex")) {
     say("Skipped: Codex is not connected for GovernCode (gov connect codex, then run the demo again).");
   } else if (!codex?.verdict.ok) {
-    say(`Skipped: ${codex ? `Codex is held (${codex.verdict.reason}).` : "no Runner is set up (install and log in to Codex to try this)."}`);
+    say(`Skipped: ${codex ? `Codex is held (${oneLine(String(codex.verdict.reason))}).` : "no Runner is set up (install and log in to Codex to try this)."}`);
     // Only a Limit or budget hold is the Limit working; a Runner held without a reading says why above.
     if (codex?.verdict.reason?.startsWith("inside its ")) {
       say(dim("A held Runner is the Limit working: GovernCode starts no job that would reach into the reserve you"));
@@ -99,7 +100,7 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
     const second = await o.runAsk(api, name, "Use the governcode delegate tool to have codex (model gpt-5.5, effort low, budget 5%) " +
       "add a short Usage section to README.md showing how to import and call level() from src/tide.js. " +
       "Scope: read [\"src\", \"README.md\"], write [\"README.md\"]. Reason: a small isolated job. Then just report the Spec id.", o.tty);
-    say(dim(second.ok ? "— done" : `— the turn ended: ${second.summary}`));
+    say(dim(second.ok ? "— done" : `— the turn ended: ${shown(String(second.summary))}`));
     const specs = ((await api.call("spec.list", { project: name })).specs as Array<{ id: string; status: string }>).filter((s) => s.status === "needs-review");
     const spec = specs.at(-1);
     if (spec) {
@@ -115,7 +116,7 @@ export async function runDemo(api: Api, o: Opts): Promise<number> {
         say("The Runner changed nothing, so there is nothing to review. (Discarded.)");
       } else {
         say(`${id}: ${checkpoints.before} → ${checkpoints.after}`);
-        say(diff);
+        say(shown(diff));   // (a file's contents: escape codes in it shown, never sent to the terminal)
         const a = (await o.tty.next(`Accept ${id} into the project? [y/N] `))?.trim().toLowerCase();
         if (a === undefined) {
           say(dim(`no input here: ${id} waits for your review (gov accept ${id} or gov discard ${id})`));

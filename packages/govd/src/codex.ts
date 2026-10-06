@@ -1,8 +1,9 @@
 // The Codex driver: `codex app-server` (JSON-RPC over stdio) under govern-sup. Codex's own
 // approval requests (commands, file changes) become Gates; account/rateLimits/read feeds the
 // Limit gate, so Codex is a measured Runner.
+import { jsonLine, jsonLines } from "@governcode/protocol/lines";
+import { blockFor, resultText } from "./blocks.ts";
 import { spawn, execFileSync } from "node:child_process";
-import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, lstatSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -66,8 +67,8 @@ function start(supervisor: string, policyFile: string, bin: string, env: Record<
   const waiting = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void }>();
   let onReq: (m: any) => Promise<unknown> = async () => ({});
   let onNote: (m: any) => void = () => {};
-  const send = (o: unknown) => child.stdin.writable && child.stdin.write(JSON.stringify(o) + "\n");
-  createInterface({ input: child.stdout }).on("line", async (line) => {
+  const send = (o: unknown) => child.stdin.writable && child.stdin.write(jsonLine(o));
+  jsonLines(child.stdout).on("line", async (line) => {
     let m: any;
     try { m = JSON.parse(line); } catch { return; }
     if (m.id !== undefined && m.method) {                        // a request from Codex to us
@@ -308,6 +309,11 @@ export async function runCodexTurn(o: { supervisor: string; policyDir: string; s
       o.hooks.text(p.item.text); text = "";
     }
     if ((m.method === "item/started" || m.method === "item/completed") && p.item?.id) items.set(String(p.item.id), p.item);
+    // A command that failed: did the sandbox refuse it? (#224; its output is looked at here, never kept.)
+    if (m.method === "item/completed" && p.item?.type === "commandExecution" && (p.item.status === "failed" || (typeof p.item.exitCode === "number" && p.item.exitCode !== 0))) {
+      const b = blockFor("codex command", { command: p.item.command ?? null }, resultText(p.item.aggregatedOutput), o.mcp ? undefined : "runner");   // (a Runner's steps are a Runner's kinds)
+      if (b) o.hooks.blocked?.(b);
+    }
     if (m.method === "item/started" && p.item?.type && p.item.type !== "agentMessage" && p.item.type !== "userMessage") {
       o.hooks.tool(`codex ${p.item.type}`, {});
     }
