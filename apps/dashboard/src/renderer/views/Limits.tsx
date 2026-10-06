@@ -3,6 +3,7 @@
 // never on a timer; the Trace still refreshes what is shown.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { call, clock, useWatch } from "../api.ts";
+import { ago, until, when } from "../../shared/time.ts";
 import { Empty, Pill, Ring } from "../ui.tsx";
 import { ProviderMark, providerName } from "../brand.tsx";
 import { Icon } from "../icons.tsx";
@@ -17,11 +18,6 @@ export type ProviderLimit = {
   // At this pace (an older govd sends none): from readings govd took since it started.
   forecasts?: Array<{ window: string; perHour: number; reachesReserveAt: string | null; resetsFirst: boolean; since: string }>;
 };
-
-export function ago(ms: number, now = Date.now()): string {
-  const s = Math.max(0, Math.round((now - ms) / 1000));
-  return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
-}
 
 export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
   const measured = useRef(onMeasured);
@@ -67,22 +63,7 @@ export function Limits({ onMeasured }: { onMeasured?: () => void } = {}) {
   );
 }
 
-/** A time to come, in words: "14:20", "tomorrow 09:10" or "Thu 14:00". */
-function when(iso: string): string {
-  const d = new Date(iso), now = new Date();
-  if (Number.isNaN(d.getTime())) return iso;   // a vendor's own text, shown as given
-  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86_400_000);
-  return days <= 0 ? hm : days === 1 ? `tomorrow ${hm}` : days < 7 ? `${d.toLocaleDateString([], { weekday: "short" })} ${hm}`
-    : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
-}
-
 const keepOf = (p: ProviderLimit, r: Reading) => r.reservePercent ?? p.reserves?.[r.window] ?? p.reservePercent;
-const until = (iso: string) => {
-  const m = Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60_000));
-  return m < 60 ? `in ${m} min` : m < 48 * 60 ? `in ${Math.floor(m / 60)} h ${m % 60} min` : `in ${Math.round(m / 1440)} days`;
-};
-
 /** One AI: its rings (the window closest to the reserve outside, the next inside), each window's bar
  *  with the reserve hatched, and when each resets. */
 function ProviderCard({ p }: { p: ProviderLimit }) {

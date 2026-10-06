@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { gateFitsInline, projectStatus, providerUsage } from "../src/shared/status.ts";
+import { gateAsker, gateFitsInline, gateTool, projectStatus, providerUsage } from "../src/shared/status.ts";
 
 const spec = (id: string, project: string, status: string, to = "codex") => ({ id, project, status, to, brief: "b" });
 
@@ -33,4 +33,14 @@ test("a Gate is answerable from a one-line row only when all of its request is s
   for (const hidden of ["echo a\tb", "echo ok\u2028rm -rf ~", "echo \u202egnp.exe", "rm\u200b -rf build", "echo \ufeffx"]) {
     assert.equal(gateFitsInline(hidden), false, JSON.stringify(hidden));
   }
+});
+
+test("a Gate's asker is the Runner named in its tool, else the project's Controller, else unknown", () => {
+  const projects = [{ name: "web", controller: { provider: "claude" } }];
+  assert.equal(gateAsker({ tool: "Runner · codex · Bash", project: "web" }, projects), "codex");
+  assert.equal(gateAsker({ tool: "Bash", project: "web" }, projects), "claude");
+  assert.equal(gateAsker({ tool: "Bash", project: null }, projects), null);
+  assert.equal(gateAsker({ tool: "Bash", project: "removed" }, projects), null);
+  assert.equal(gateTool("Runner · codex · Bash"), "Bash");
+  assert.equal(gateTool("Edit"), "Edit");
 });

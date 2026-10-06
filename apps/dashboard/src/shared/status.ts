@@ -41,6 +41,17 @@ export function gateFitsInline(canonical: string): boolean {
 }
 
 /** The window a provider is closest to its reserve in, as one number for a ring. */
+/** Which AI asked for a Gate, as a provider id: the Runner named in its tool, else the project's
+ *  Controller; null when neither is known (a Gate at Home, or for a project since removed). */
+export function gateAsker(g: { tool: string; project: string | null }, projects: readonly { name: string; controller: { provider: string } }[]): string | null {
+  const runner = /^Runner · ([^·]+)/.exec(g.tool)?.[1]?.trim();
+  if (runner) return runner;
+  return projects.find((x) => x.name === g.project)?.controller.provider ?? null;
+}
+
+/** What a Gate asks to use, without the Runner prefix: "Runner · codex · Bash" → "Bash". */
+export const gateTool = (tool: string) => tool.replace(/^Runner · [^·]+ · /, "");
+
 export function providerUsage(p: LimitLike): { percent: number; reserve: number; window: string | null; counted: { used: number; cap: number; unit: string } | null } {
   let best: { percent: number; reserve: number; window: string | null; counted: { used: number; cap: number; unit: string } | null } = { percent: 0, reserve: p.reservePercent, window: null, counted: null };
   let room = Infinity;

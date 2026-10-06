@@ -3,7 +3,7 @@
 // actions are the ones you take (allow or deny a Gate exactly as shown, open something).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { greeting } from "../../shared/greeting.ts";
-import { gateFitsInline, projectStatus, providerUsage } from "../../shared/status.ts";
+import { gateAsker, gateFitsInline, gateTool, projectStatus, providerUsage } from "../../shared/status.ts";
 import { eventLabel, summary } from "../../shared/trace.ts";
 import type { Hello } from "../../shared/contract.ts";
 import { call, clock, useWatch, type Gate, type Project, type RecoveryItem, type Spec, type TraceEvent } from "../api.ts";
@@ -21,19 +21,13 @@ const SHOWN = ["turn.started", "turn.completed", "turn.failed", "gate.opened", "
   "recovery.resumed", "crew.set", "notes.updated", "project.created"];
 // A Gate is answered here only when its whole request fits on the card; anything longer opens in Needs you.
 const fitsInline = (g: Gate) => gateFitsInline(g.canonical);
+const asker = (g: Gate, projects: Project[]) => { const p = gateAsker(g, projects); return p ? providerName(p) : "The Controller"; };
 const TONE: Record<string, [IconName, string]> = {
   "gate.opened": ["lock", "warn"], "gate.allowed": ["check", "ok"], "gate.denied": ["x", "danger"], "spec.done": ["branch", "info"],
   "spec.accepted": ["check", "ok"], "spec.failed": ["x", "danger"], "spec.held": ["hourglass", "held"], "spec.started": ["play", "info"],
   "sandbox.refused": ["shieldX", "danger"], "checkpoint.taken": ["undo", ""], "turn.started": ["chat", ""], "turn.failed": ["x", "danger"],
   "recovery.resumed": ["play", "info"], "crew.set": ["people", ""], "notes.updated": ["note", ""],
 };
-
-function gateAsker(g: Gate, projects: Project[]): string {
-  const runner = /^Runner · ([^·]+)/.exec(g.tool)?.[1]?.trim();
-  if (runner) return providerName(runner);
-  const p = projects.find((x) => x.name === g.project);
-  return p ? providerName(p.controller.provider) : "The Controller";
-}
 
 export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gate[]; limits: ProviderLimit[]; hello: Hello | null; held: RecoveryItem[];
   onPlace: (p: Place) => void; onGatesChanged: () => void; onNewProject: () => void; onOpenFolder: () => void }) {
@@ -113,7 +107,7 @@ export function Overview(props: { projects: Project[]; specs: Spec[]; gates: Gat
                   <div key={g.id} className="card need">
                     <span className="tile"><Icon name="lock" /></span>
                     <div style={{ minWidth: 0 }}>
-                      <div className="t">{gateAsker(g, props.projects)} wants to use {g.tool.replace(/^Runner · [^·]+ · /, "")}{g.project ? ` in ${g.project}` : " at Home"}</div>
+                      <div className="t">{asker(g, props.projects)} wants to use {gateTool(g.tool)}{g.project ? ` in ${g.project}` : " at Home"}</div>
                       {fitsInline(g)
                         ? <div className="s"><code className="cmd full">{g.canonical}</code><span className="dim nowrap">· {clock(g.opened).replace(/:\d{2}$/, "")}</span></div>
                         : <div className="s"><span className="dim">A longer request: read all of it before answering · {clock(g.opened).replace(/:\d{2}$/, "")}</span></div>}
