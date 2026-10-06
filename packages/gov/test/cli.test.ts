@@ -344,7 +344,7 @@ test("gov help, --help and -h print the usage on stdout and need no govd; an unk
     assert.equal(r.code, 0, r.stderr);
     assert.equal(r.stderr, "");
     assert.match(r.stdout, /^usage: gov /);
-    for (const part of ["open [PATH [NAME]]", "controller claude-code|codex [--model M]", "connect [agy|claude|codex|grok]", "disconnect agy|claude|codex|grok"]) {
+    for (const part of ["open [PATH [NAME]]", "controller claude-code|codex [--model M]", "connect [agy|claude|codex|grok|opencode]", "disconnect agy|claude|codex|grok|opencode"]) {
       assert.ok(r.stdout.includes(part), part);
     }
   }
@@ -383,7 +383,7 @@ test("a Runner or window GovernCode does not have is refused before anything is 
   const settings = { reserves: {}, runners: {}, budgets: { antigravity: { unit: "turns", windows: { daily: 5 } } } };
   const g = await withProject((m) => (m === "settings.get" ? { settings } : m === "crew.get" ? { crew: { runners: null, maxPercent: {} } } : undefined));
   for (const [args, said] of [
-    [["runner", "antigravity", "--model", "x"], "gov: unknown Runner antigravity (Runners: agy, codex, grok, ollama)"],
+    [["runner", "antigravity", "--model", "x"], "gov: unknown Runner antigravity (Runners: agy, codex, grok, ollama, opencode)"],
     [["reserve", "gemini", "weekly", "20"], "gov: unknown Runner gemini"],
     [["budget", "antigravity", "daily", "5", "turns"], "gov: unknown Runner antigravity"],
     [["budget", "codex", "5h", "5", "turns"], "gov: unknown window 5h (windows: 5-hour, daily, weekly, monthly)"],

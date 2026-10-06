@@ -203,7 +203,7 @@ function quietArgs(words: string[]): boolean {
 
 /** The tool of a Gate request, without the Runner suffix govd adds for display. */
 // Tools whose input is a shell command, judged by the same command analysis.
-const COMMAND_TOOLS = new Set(["Bash", "codex command", "agy command", "grok command"]);
+const COMMAND_TOOLS = new Set(["Bash", "codex command", "agy command", "grok command", "opencode command"]);
 
 function baseTool(req: { tool: string; base?: string }): string {
   return req.base ?? req.tool;
@@ -284,7 +284,7 @@ function controllerKind(req: { tool: string; base?: string; input: Record<string
     const words = plainWords(req.input.command);
     return words ? commandKind(words) : null;
   }
-  if (["Edit", "Write", "MultiEdit", "NotebookEdit", "codex fileChange", "agy fileChange", "grok fileChange"].includes(tool)) {
+  if (["Edit", "Write", "MultiEdit", "NotebookEdit", "codex fileChange", "agy fileChange", "grok fileChange", "opencode fileChange"].includes(tool)) {
     return { key: "edit", label: "file edits (only where the sandbox already lets it write)" };
   }
   if (tool.startsWith("mcp__") || tool.startsWith("governcode ")) return null;   // delegation and GovernCode's tools always ask
@@ -418,6 +418,8 @@ const QUIET_TOOLS: Record<string, { kind: string; path: string; optional?: true 
   grok_ReadFile: { kind: "read", path: "target_file" },
   grok_ListDir: { kind: "other", path: "target_directory" },
   grok_Grep: { kind: "search", path: "path", optional: true },   // none: the workspace
+  // OpenCode's read permission (2.0.23), as opencode.ts shapes it: the file it reads.
+  opencode_read: { kind: "read", path: "path" },
 };
 /** null: not one of those tools. false: one of them with another kind, without its path, or
  *  reaching a special place (as `cat /dev/zero` does): it always asks, and is never remembered. */

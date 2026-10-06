@@ -12,15 +12,17 @@ import { setConnected } from "./homes.ts";
 import { resolverFiles, toolchainDirs, which, type Policy } from "./claude.ts";
 import { codexBinary, readCodexUsage } from "./codex.ts";
 import { grokBinary, GROK_ENV, readGrokUsage } from "./grok.ts";
+import { opencodeBinary, opencodeSignedIn, opencodeSignIn } from "./opencode.ts";
 
-export type Tool = "agy" | "claude" | "codex" | "grok";
+export type Tool = "agy" | "claude" | "codex" | "grok" | "opencode";
 type Opts = { supervisor: string; policyDir: string; stateDir: string };
 
 /** How each tool signs in, in its GovernCode home. flow: "paste" = the user pastes a code back;
  *  "browser" = the browser hands the login back to the tool on this machine, nothing to paste;
- *  "code" = the tool shows a code the user enters on the sign-in page, then finishes by itself.
+ *  "code" = the tool shows a code the user enters on the sign-in page, then finishes by itself;
+ *  "key" = the user pastes an API key from the tool's own page, which goes to the tool's store.
  *  bind: the local ports its sign-in listens on for that (0: one the kernel picks). */
-export type Flow = "paste" | "browser" | "code";
+export type Flow = "paste" | "browser" | "code" | "key";
 type Spec = { name: string; revoke: string; flow: Flow; binary(): string; signIn: string[];
   env(tmp: string, home: string): Record<string, string>; bind?: number[]; writable(home: string): string[];
   check(o: Opts, home: string): Promise<boolean> };
@@ -68,6 +70,12 @@ export const TOOLS: Record<Tool, Spec> = {
   grok: { name: "Grok", revoke: "https://accounts.x.ai", flow: "code", binary: grokBinary,
     signIn: ["login", "--device-auth"], env: (tmp, home) => GROK_ENV(tmp, home), writable: (home) => [home],
     check: async (o, home) => (await readGrokUsage({ ...o, scratch: join(o.stateDir, "usage-scratch") })) !== null },
+  // OpenCode Go: the key from opencode.ai/auth, pasted here and stored in OpenCode's own database
+  // in GovernCode's home, for OpenCode Go only (opencode.ts). No sign-in command: govd hands the key
+  // to a sandboxed OpenCode server in that home, as it hands a pasted code to a sign-in.
+  opencode: { name: "OpenCode", revoke: "https://opencode.ai/auth", flow: "key", binary: opencodeBinary, signIn: [],
+    env: (tmp, home) => agyEnv(tmp, home), writable: (home) => [home],
+    check: (o, home) => opencodeSignedIn(o, home) },
 };
 
 /** What a sign-in (or its status check) may touch: its own home, the network on 443, no keyring,
@@ -86,7 +94,7 @@ export function signInPolicy(o: { work: string; tmp: string; home: string; bin: 
   };
 }
 
-type Session = { tool: Tool; child: ChildProcess; sent: Set<string> };
+type Session = { tool: Tool; child?: ChildProcess; sent: Set<string>; key?: (text: string) => void; stop?: () => void };
 const URL_RE = /https:\/\/[^\s"'<>]+/;
 
 export class Connector {
@@ -124,7 +132,30 @@ export class Connector {
     const release = hold(this.o.stateDir, tool);
     return this.alreadySignedIn(tool, home).finally(release).then((yes) => yes
       ? { id, connected: true, note: `${spec.name} is connected for GovernCode (it was already signed in here)` }
-      : this.signIn(id, tool, bin, home, notify));
+      : spec.flow === "key" ? this.keySignIn(id, tool, home, notify) : this.signIn(id, tool, bin, home, notify));
+  }
+
+  /** A key the user pastes (connect.input), handed to the tool's own store; nothing runs until then. */
+  private keySignIn(id: string, tool: Tool, home: string, notify: (n: unknown) => void): Promise<{ id: string; connected: boolean; note: string }> {
+    const spec = TOOLS[tool];
+    const release = hold(this.o.stateDir, tool);
+    return new Promise((ok) => {
+      let ended = false;
+      const end = (connected: boolean, note: string) => { if (ended) return; ended = true; clearTimeout(timer); this.sessions.delete(id); release(); ok({ id, connected, note }); };
+      const timer = setTimeout(() => end(false, `${spec.name} was not signed in (no key was pasted in time)`), 10 * 60_000);
+      this.sessions.set(id, { tool, sent: new Set(), stop: () => end(false, `${spec.name} sign-in cancelled`), key: (text) => {
+        const s = this.sessions.get(id)!;
+        s.key = undefined; s.stop = undefined;   // one key per sign-in; once it is being stored, it finishes
+        void (async () => {
+          let connected = false;
+          try { connected = await opencodeSignIn(this.o, home, text) && await spec.check(this.o, home); } catch { connected = false; }
+          setConnected(this.o.stateDir, tool, connected);
+          end(connected, connected ? `${spec.name} is connected for GovernCode (OpenCode Go and OpenCode's free models)` : `${spec.name} did not take that key`);
+        })();
+      } });
+      notify({ kind: "connect", id, text: "GovernCode keeps the key in OpenCode's own store, in a home of its own, and uses it for OpenCode Go only." });
+      notify({ kind: "connect", id, url: spec.revoke });
+    });
   }
 
   /** Signed in already (a sign-in that finished but was not recorded, or a re-Connect)? The tool's
@@ -207,13 +238,15 @@ export class Connector {
   input(id: string, text: string): void {
     const s = this.sessions.get(id);
     if (!s) throw new Error(`no sign-in ${id} is running`);
+    if (!s.child) { if (!s.key) throw new Error(`sign-in ${id} already has its key`); s.key(text); return; }
     s.sent.add(text.trim());
     s.child.stdin!.write(text + "\r");      // Enter, on a terminal
   }
 
   cancel(id: string): void {
     const s = this.sessions.get(id);
-    if (s) { try { process.kill(-s.child.pid!, "SIGTERM"); } catch { /* gone */ } }
+    if (s?.child) { try { process.kill(-s.child.pid!, "SIGTERM"); } catch { /* gone */ } }
+    else s?.stop?.();
   }
 
   /** Forget the tool's login: its private home is deleted. The grant itself is revoked from the

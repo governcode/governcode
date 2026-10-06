@@ -18,6 +18,7 @@ import { runCodexTurn } from "./codex.ts";
 import { runLocalTurn } from "./local.ts";
 import { runAgyTurn } from "./agy.ts";
 import { runGrokTurn } from "./grok.ts";
+import { runOpencodeTurn } from "./opencode.ts";
 import { mayShare, notesOf, setNotes, readConversation } from "./memory.ts";
 import { runnerAllowed } from "./crew.ts";
 import { specEpisode } from "./recovery.ts";
@@ -341,7 +342,10 @@ async function crew(ctx: DelegationContext) {
       ...(local ? { local: true, models: ctx.usage[provider].models?.() ?? [], limit: `at most ${local.maxRunning} at once, ${local.maxMinutes} min each`,
         note: "A local model: no tools, no commands. It sees the files in the Spec's scope and proposes whole new file contents, " +
           "which GovernCode checks against the write scope. Best for small, well-scoped jobs (docs, comments, small fixes); " +
-          "keep the scope to a few small files. effort does not apply (use null); budgetPercent is ignored." } : {}) });
+          "keep the scope to a few small files. effort does not apply (use null); budgetPercent is ignored." } : {}),
+      ...(provider === "opencode" ? { note: "OpenCode runs only OpenCode Go models (model \"opencode-go/<name>\", e.g. opencode-go/glm-5.3) or " +
+          "OpenCode's free models (\"opencode/big-pickle\", \"opencode/<name>-free\"); any other model is refused. With no model it uses " +
+          "opencode/big-pickle (free). effort is passed only where the model offers it." } : {}) });
   }
   const policy = ctx.settings?.().specModels ?? "free";
   return { runners: out, modelPolicy: policy === "free" ? "pick model and effort per Spec"
@@ -669,6 +673,12 @@ async function runRound(ctx: DelegationContext, spec: Spec, input: SpecInput, pr
           noSubagents: ctx.crew?.()?.subagents.runners === false,
           openSocket: (h) => openTurnSocket(ctx.runtimeDir, h) })
           .catch((e) => done({ ok: false, summary: `the Antigravity Runner failed: ${e instanceof Error ? e.message : e}` }));
+        return;
+      }
+      if (input.to === "opencode") {
+        void runOpencodeTurn({ supervisor: ctx.supervisor, policyDir: ctx.policyDir, stateDir: ctx.stateDir, worktree: w.paths.work, writePaths: w.writePaths,
+          model: input.model, effort: input.effort, prompt, signal: stop.signal, hooks })   // (subagents are off for every OpenCode run)
+          .catch((e) => done({ ok: false, summary: `the OpenCode Runner failed: ${e instanceof Error ? e.message : e}` }));
         return;
       }
       if (input.to === "grok") {

@@ -22,6 +22,7 @@ export const PROVIDERS: Record<string, Mark> = {
   agy: { name: "Antigravity", src: antigravity, scale: 0.74 },
   ollama: { name: "Ollama", src: ollama, white: ollamaWhite, scale: 0.6 },
   gemini: { name: "Gemini CLI", src: gemini, scale: 0.62 },
+  opencode: { name: "OpenCode" },   // a monogram until its mark is cleared (brands/README.md)
 };
 
 export function providerName(id: string): string {

@@ -21,7 +21,7 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|friction [--project NAME] [--days N] [--json]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp inspect-installed INSTALLATION_ID [--json]|acp cancel I-N|connect [agy|claude|codex|grok]|disconnect agy|claude|codex|grok|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|friction [--project NAME] [--days N] [--json]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp inspect-installed INSTALLATION_ID [--json]|acp cancel I-N|connect [agy|claude|codex|grok|opencode]|disconnect agy|claude|codex|grok|opencode|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
 const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
@@ -745,11 +745,11 @@ async function main(argv: string[]): Promise<number> {
             const use = t.usage?.readings?.length ? ` · ${t.usage.readings.map((r: any) => `${r.window} ${r.usedPercent}% used`).join(", ")}` : "";
             const state = !t.installed ? "not installed" : !t.connected ? `not connected (gov connect ${t.tool})`
               : t.problem ? `needs attention: ${t.problem}` : "connected" + use;
-            console.log(`${t.tool.padEnd(6)} ${t.name.padEnd(12)} ${state}`);
+            console.log(`${t.tool.padEnd(8)} ${t.name.padEnd(12)} ${state}`);
           }
           return 0;
         }
-        if (!["agy", "claude", "codex", "grok"].includes(tool)) throw new Error("usage: gov connect [agy|claude|codex|grok]");
+        if (!["agy", "claude", "codex", "grok", "opencode"].includes(tool)) throw new Error("usage: gov connect [agy|claude|codex|grok|opencode]");
         // Codex: the browser hands the login back by itself; Grok: the code shown below is entered on the page. Nothing to paste here.
         const device = tool === "codex" || tool === "grok";
         const tty = answers();
@@ -757,7 +757,16 @@ async function main(argv: string[]): Promise<number> {
         api.onEvent(async (ev) => {
           if (ev.kind !== "connect") return;
           id = ev.id;
-          if (ev.url && device) {
+          if (ev.url && tool === "opencode") {
+            // OpenCode signs in with the API key from its own page; typed without being shown.
+            console.log(warn("\nOpen this link and copy your API key (GovernCode uses it for OpenCode Go and OpenCode's free models only):"));
+            console.log(ev.url);
+            const hide = process.stdin.isTTY ? spawnSync("stty", ["-echo"], { stdio: "inherit" }).status === 0 : false;
+            let key: string | undefined;
+            try { key = (await tty.next("\nPaste your OpenCode API key here (it is not shown): "))?.trim(); }
+            finally { if (hide) { spawnSync("stty", ["echo"], { stdio: "inherit" }); process.stdout.write("\n"); } }
+            await (key ? api.call("connect.input", { id, text: key }) : api.call("connect.cancel", { id })).catch((e: Error) => console.error(warn(e.message)));
+          } else if (ev.url && device) {
             console.log(warn(tool === "grok" ? "\nOpen this link, enter the code shown here and sign in; this finishes by itself when you are done:"
               : "\nOpen this link and sign in; this finishes by itself when you are done:"));
             console.log(ev.url);
@@ -777,7 +786,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "disconnect": {
         const tool = rest[0];
-        if (!["agy", "claude", "codex", "grok"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex|grok");
+        if (!["agy", "claude", "codex", "grok", "opencode"].includes(tool)) throw new Error("usage: gov disconnect agy|claude|codex|grok|opencode");
         console.log((await api.call("tools.disconnect", { tool })).note);
         return 0;
       }

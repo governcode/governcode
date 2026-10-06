@@ -8,7 +8,7 @@ import type { AskEvent } from "../../shared/contract.ts";
 import { Pill } from "../ui.tsx";
 
 type Reading = { window: string; usedPercent: number };
-type Flow = "paste" | "browser" | "code";
+type Flow = "paste" | "browser" | "code" | "key";
 type Tool = { tool: string; name: string; flow: Flow; installed: boolean; connected: boolean; problem: string | null;
   usage: { readings: Reading[] } | null };
 type SignIn = { streamId: string; flow: Flow; name: string; id: string | null; url: string | null; lines: string[]; code: string; sent: boolean };
@@ -111,6 +111,19 @@ export function Tools() {
             <p className="small">2. Paste the code it shows you:</p>
             <div className="row">
               <input className="model-input mono" value={signIn.code} placeholder="code" aria-label="sign-in code" autoFocus
+                onChange={(e) => setSignIn((s) => s && { ...s, code: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") void sendCode(); }} />
+              <button className="btn btn-accent" disabled={!signIn.code.trim() || !signIn.id} onClick={sendCode}>Finish</button>
+            </div>
+          </>}
+          {signIn.url && signIn.flow === "key" && !signIn.sent && <>
+            <p className="small">1. Open {signIn.name}'s page and copy your API key. GovernCode uses it for OpenCode Go and OpenCode's free models only, never paid Zen models.</p>
+            <div className="row">
+              <button className="btn btn-accent" onClick={() => void api().openSignIn(signIn.url!)}>Open {signIn.name}'s page</button>
+              <button className="btn" onClick={() => void navigator.clipboard.writeText(signIn.url!)}>Copy link</button>
+            </div>
+            <p className="small">2. Paste the key here:</p>
+            <div className="row">
+              <input className="model-input mono" type="password" value={signIn.code} placeholder="API key" aria-label="API key" autoFocus autoComplete="off" spellCheck={false}
                 onChange={(e) => setSignIn((s) => s && { ...s, code: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") void sendCode(); }} />
               <button className="btn btn-accent" disabled={!signIn.code.trim() || !signIn.id} onClick={sendCode}>Finish</button>
             </div>

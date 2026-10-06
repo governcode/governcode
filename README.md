@@ -79,18 +79,22 @@ gov demo           # the quickest look: a sample project, one Controller turn, o
 ### Connect your tools
 
 Each AI tool signs in for GovernCode once, with its own sign-in, in a home that belongs to
-GovernCode: `gov connect claude`, `gov connect codex`, `gov connect agy`, `gov connect grok`, or
-Settings › Tools in the Dashboard. Claude Code and Antigravity show a link, and you paste back
+GovernCode: `gov connect claude`, `gov connect codex`, `gov connect agy`, `gov connect grok`,
+`gov connect opencode`, or Settings › Tools in the Dashboard. Claude Code and Antigravity show a link, and you paste back
 the code the page gives you; Codex's page finishes the sign-in by itself (its browser hands it
 back on this computer); Grok shows a link and a code to enter on that page, then finishes by
-itself. For the Claude Code and Codex sign-ins the sandbox lets the tool listen on one local port
-for that hand-back; nothing else an AI tool runs may listen at all.
+itself; OpenCode takes the API key you paste from its page. For the Claude Code and Codex sign-ins
+the sandbox lets the tool listen on one local port for that hand-back, and an OpenCode Runner's
+server listens on one port that nothing in its sandbox may connect to (below); nothing else an AI
+tool runs may listen at all.
 
 - Your own setup for these tools (their folders, logins, settings, keyring) is not used, except
   the personal instructions you choose to bring (below). GovernCode never parses the logins it
   keeps; when a tool refreshes its login during a run, govd copies the new file back as it is.
 - Only a subscription sign-in counts as connected, never an API key: GovernCode does not switch
-  anything onto paid API use.
+  anything onto paid API use. OpenCode is the one exception, because its subscription (OpenCode
+  Go) signs in with a key: GovernCode keeps that key for OpenCode Go alone and refuses OpenCode's
+  pay-as-you-go Zen models.
 - Every run of Claude Code, Codex, Antigravity or Grok starts from a fresh home of its own, with
   only the login linked in (and, for Antigravity, its helper programs, read-only), and that home is
   deleted afterwards: nothing a run writes (memory, knowledge, caches, settings, rules, skills)
@@ -344,6 +348,40 @@ Honest limits, for now:
 - The asking itself is Grok's: it brings each call to GovernCode as its permission request. The
   sandbox holds whatever it does to the Spec's scope; the Gate is your review of each call Grok
   brings, not a second sandbox.
+
+### OpenCode as a Runner (development build)
+
+With [OpenCode](https://opencode.ai) 2.0 (`opencode`) and an OpenCode Go subscription, OpenCode can
+take Specs (`gov connect opencode`, or Settings › Tools). Connect asks for the API key from
+opencode.ai/auth and gives it to OpenCode's own credential store in a home that belongs to
+GovernCode, for OpenCode Go only; your own OpenCode setup (`~/.local/share/opencode`, its config,
+plugins and background service) is never used. A Runner may use OpenCode Go's models and OpenCode's
+free models, never a paid Zen model: GovernCode refuses one by name, checks OpenCode's own model
+list before every run, and holds no Zen login for one to use.
+
+OpenCode 2.0 is a client and a server: the server runs the model's tools and answers its own
+permission requests to whoever reaches it on its local port, and a command it runs could read its
+password. So GovernCode does not use OpenCode's ACP mode. govd starts `opencode serve` in the
+sandbox with a rule the kernel enforces: it may listen on its one port and may not connect to it,
+and neither may anything it runs; govd, outside the sandbox, is its only client. The sandbox
+self-test proves that rule on every start.
+
+- Every permission request is a Gate, answered "once" or "reject", never "always". A command is
+  judged like every Runner's; a file change shows its patch; a read is a quiet read. A declined
+  Gate tells the model and it goes on without that step. Subagents are refused.
+- GovernCode's config comes with each run: every action asks, subagents are off, nothing is shared,
+  no updates, no MCP servers; OpenCode's project config is off. Before the prompt, govd checks that
+  an edit and a command really ask, and runs nothing if they do not.
+- Each run gets a fresh home with a copy of Connect's OpenCode database (where OpenCode keeps the
+  key) and nothing is copied back, so nothing a run saves reaches another run. A project with
+  OpenCode settings or instructions (`.opencode/`, `opencode.json`, `AGENTS.md`, `CLAUDE.md`,
+  `CONTEXT.md`, `.agents/`, `.claude/`) is refused, and a Runner that creates one fails its Spec.
+- OpenCode reports no usage window GovernCode can read, so set a counted budget for it
+  (`gov budget opencode ...`); without one its Runners are held. When OpenCode Go says its usage
+  limit is reached, the Spec is held like any limited Spec; no reset time is given, so resume it
+  yourself.
+- New: tested against a fake built from OpenCode 2.0.23's real events, and run live in the sandbox
+  with a free model; not yet run with a real OpenCode Go key.
 
 Gemini CLI (for Gemini API keys) comes later, once GovernCode can hold a key safely.
 

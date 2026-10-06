@@ -35,7 +35,16 @@ mode is not a boundary; this sandbox is.
    git hook or program-running git config (`core.fsmonitor`, `core.sshCommand`, filters, aliases...)
    the tool added, since those would run later outside the sandbox.
 4. **Network is limited** (Landlock TCP rules): outbound TCP to ports 443 (and 80 only if a
-   policy asks) and nothing else; no binding.
+   policy asks) and nothing else; no binding, except the one port a policy lists. A sign-in's
+   browser callback gets one (Claude Code's, Codex's), and so does an OpenCode Runner's server,
+   which govd drives from outside: the sandbox may listen there and may never connect to it, so
+   neither the server nor any command it runs can reach its own API (where it would answer its
+   own permission requests). Binding and connecting are separate Landlock rights; the self-test
+   proves both on every start. Landlock's port rules cover plain TCP only, so seccomp lets an
+   internet socket be only a plain stream or datagram socket (TCP or UDP): MPTCP, SCTP and the
+   rest are refused (an MPTCP socket otherwise reached any port, found in a security review on
+   2026-10-05), and so is every socket family but Unix, netlink and the two internet ones. The
+   self-test tries MPTCP and IPv6 as well.
 5. **No local IPC out, except what the policy lists.** The session bus, the keyring service
    and the daemon are all Unix sockets. From Landlock ABI 9 the kernel refuses connecting to
    any pathname Unix socket except those in the policy's `unix_connect` list (in practice

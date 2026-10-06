@@ -368,7 +368,7 @@ test("settings and the Crew card refuse a Runner or window GovernCode does not h
   await d.listen();
   const c = client(join(root, "names", "govd.sock"));
   const refused = async (method: string, params: unknown) => (await c.call(method, params)).error?.message ?? "";
-  assert.equal(await refused("settings.set", { runners: { antigravity: { model: "x", effort: null } } }), "unknown Runner antigravity (Runners: agy, codex, grok, ollama)");
+  assert.equal(await refused("settings.set", { runners: { antigravity: { model: "x", effort: null } } }), "unknown Runner antigravity (Runners: agy, codex, grok, ollama, opencode)");
   assert.equal(await refused("settings.set", { reserves: { codex: { "5h": 20 } } }), "unknown window 5h (windows: 5-hour, daily, weekly, monthly, period)");
   assert.match(await refused("settings.set", { budgets: { antigravity: { unit: "turns", windows: { daily: 5 } } } }), /^unknown Runner antigravity/);
   // A window the Runner reports now is one the Dashboard offers.

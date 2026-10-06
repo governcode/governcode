@@ -75,7 +75,7 @@ export const ProjectProposal = z.object({
 });
 
 /** The Runners GovernCode has. A setting naming any other is refused: it would be saved and never used. */
-export const RUNNERS = ["agy", "codex", "grok", "ollama"] as const;
+export const RUNNERS = ["agy", "codex", "grok", "ollama", "opencode"] as const;
 /** The usage windows a reserve can name: the Runners' own (Grok's is weekly, monthly or a period)
  *  and counted budgets'. */
 export const RESERVE_WINDOWS = ["5-hour", "daily", "weekly", "monthly", "period"] as const;
@@ -236,10 +236,10 @@ export const Params = {
   "acp.installed": z.object({ limit: z.number().int().min(1).max(100).default(50) }).strict(),
   "acp.installed.inspect": z.object({ id: z.string().length(64).regex(/^[a-f0-9]{64}$/u) }).strict(),
   "acp.install.cancel": z.object({ id: z.string().regex(/^I-\d{1,16}$/) }).strict(),
-  "connect.start": z.object({ tool: z.enum(["agy", "claude", "codex", "grok"]) }),
+  "connect.start": z.object({ tool: z.enum(["agy", "claude", "codex", "grok", "opencode"]) }),
   "connect.input": z.object({ id: z.string().regex(/^C-\d+$/), text: z.string().max(4096).regex(/^[^\x00-\x1f\x7f]*$/) }),
   "connect.cancel": z.object({ id: z.string().regex(/^C-\d+$/) }),
-  "tools.disconnect": z.object({ tool: z.enum(["agy", "claude", "codex", "grok"]) }),
+  "tools.disconnect": z.object({ tool: z.enum(["agy", "claude", "codex", "grok", "opencode"]) }),
   // Project memory: the notes (read, set by the user, with every version), and whether a
   // Controller from another provider may see the project's conversation, record and notes.
   "notes.get": z.object({ project: ProjectName, limit: z.number().int().min(1).max(1000).default(50) }),

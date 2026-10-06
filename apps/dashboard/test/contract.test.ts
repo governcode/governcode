@@ -317,7 +317,7 @@ test("against the real govd: hello reports the sandbox, and lists come back", as
     }
     // Unmeasured Runners show as held, not available (unknown usage holds).
     const { providers } = await link.call("limits.list", { measure: false }) as { providers: Array<{ provider: string; verdict: { ok: boolean } }> };
-    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false], ["ollama", false], ["agy", false], ["grok", false]]);
+    assert.deepEqual(providers.map((x) => [x.provider, x.verdict.ok]), [["codex", false], ["ollama", false], ["agy", false], ["grok", false], ["opencode", false]]);
     // The link watches: a project made and a Controller chosen arrive as live Trace events.
     const seen: string[] = [];
     link.onWatch((w) => { if (w.kind === "trace") seen.push(w.event.kind); });

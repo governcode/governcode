@@ -123,7 +123,10 @@ export class Daemon {
     const budgeted = (provider: string, native?: UsageSource) => withBudget(provider, native, this.counted, () => this.settings().budgets[provider]);
     this.usage = { codex: budgeted("codex", codexUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") })),
       ollama: ollamaUsage(), agy: budgeted("agy", agyUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir })),
-      grok: budgeted("grok", grokUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") })) };
+      grok: budgeted("grok", grokUsage({ supervisor: opts.supervisor, policyDir: opts.policyDir, stateDir, scratch: join(stateDir, "usage-scratch") })),
+      // OpenCode reports no subscription window GovernCode can read: only a counted budget the user
+      // sets meters it, and without one its Runners are held.
+      opencode: budgeted("opencode", undefined) };
     this.limits.setReserves(this.settings().reserves);
     this.limits.setLocal(this.settings().local);
     this.allows = new Allows(join(this.stateDir(), "allows.json"));
