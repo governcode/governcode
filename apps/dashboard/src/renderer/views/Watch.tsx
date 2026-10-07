@@ -37,6 +37,8 @@ export function Watch({ popout = false, onNeeds }: { popout?: boolean; onNeeds?:
     void (async () => { try { const got = (await call<{ events: TraceEvent[] }>("trace.list", { limit: 200, kinds: MARKS })).events; setState((s) => ({ ...s, marks: mergeEvents(got, s.marks).slice(-KEEP) })); } catch { /* shown as quiet */ } })();
     void loadSpecs(); void loadGates(); void loadLimits();
   }, [loadSpecs, loadGates, loadLimits]);
+  // The main window keeps govd's usage readings fresh; Watch only reads them again now and then.
+  useEffect(() => { const t = setInterval(() => void loadLimits(), 60_000); return () => clearInterval(t); }, [loadLimits]);
   useWatch((w) => {
     if (w.kind === "gates") { void loadGates(); return; }
     const e = w.event;

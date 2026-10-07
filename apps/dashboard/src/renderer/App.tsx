@@ -25,6 +25,8 @@ import { Watch } from "./views/Watch.tsx";
 import { ControllerPicker, NewProject, OpenFolder } from "./views/ProjectDialogs.tsx";
 import { hasActiveAsk } from "../shared/pending.ts";
 
+const LIMITS_FRESH_MS = 4 * 60_000;
+
 const HOME = "";
 const TABS: Array<[Tab, string]> = [["conversation", "Conversation"], ["specs", "Specs"], ["checkpoints", "Checkpoints"], ["notes", "Notes"], ["trace", "Trace"], ["crew", "Crew card"]];
 const IN_FLIGHT = new Set(["queued", "held", "running", "needs-review"]);
@@ -95,8 +97,24 @@ export function App() {
   const refreshSpecs = useCallback(async () => {
     try { setSpecs((await call<{ specs: Spec[] }>("spec.list", {})).specs); } catch { /* status shows govd down */ }
   }, []);
+  // govd counts a reading older than 5 minutes as unknown (a new Spec measures afresh anyway), so
+  // the crew would show "held" whenever nobody had measured lately. The window measures again in
+  // the background once its last reading is 4 minutes old: usage reports only, no AI allowance.
+  // A measured reply always shows; a quick unmeasured one is dropped if a measurement landed after it
+  // was asked (it would put the older reading back).
+  const measuredAt = useRef(0), landed = useRef(0);
   const refreshLimits = useCallback(async () => {
-    try { setLimits((await call<{ providers: ProviderLimit[] }>("limits.list", { measure: false })).providers); } catch { /* status shows govd down */ }
+    const read = async (measure: boolean) => {
+      const asked = performance.now();
+      const { providers } = await call<{ providers: ProviderLimit[] }>("limits.list", { measure });
+      if (measure) landed.current = performance.now();
+      else if (landed.current > asked) return;
+      setLimits(providers);
+    };
+    try { await read(false); } catch { /* status shows govd down */ }
+    if (Date.now() - measuredAt.current < LIMITS_FRESH_MS) return;
+    measuredAt.current = Date.now();
+    try { await read(true); } catch { measuredAt.current = 0; }
   }, []);
   const refreshHeld = useCallback(async () => {
     if (!recovery) { setHeld([]); return; }
@@ -112,6 +130,11 @@ export function App() {
     void refreshLimits();
     void refreshHeld();
   }, [up, status, loadProjects, refreshGates, refreshSpecs, refreshLimits, refreshHeld]);
+  useEffect(() => {
+    if (!up) return;
+    const t = setInterval(() => void refreshLimits(), LIMITS_FRESH_MS);
+    return () => clearInterval(t);
+  }, [up, refreshLimits]);
   useFallbackPoll(live || !up, refreshGates);
   useFallbackPoll(live || !up, refreshSpecs);
   useWatch((w) => {
