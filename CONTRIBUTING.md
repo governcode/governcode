@@ -21,8 +21,8 @@ most useful contributions right now. Pull requests go to the `debate` branch.
 ## AI assistance
 
 This project is built with heavy AI assistance and says so (see the README). If you use AI
-tools, say so in your pull request description: which tool, and for what. Please do not
-add AI co-author trailers to commit messages; credit is kept in the README.
+tools too, that's welcome: mention it in your pull request if you like, and AI co-author
+trailers in your own commits are fine.
 
 ## Checks
 
