@@ -545,10 +545,10 @@ should work for as many people as want it, and three platforms find more bugs th
 GovernCode is developed with heavy AI assistance, and we say exactly how:
 
 - **OneLegDave** ([onelegdave.dev](https://www.onelegdave.dev/) · [X](https://x.com/OneLegDavePDX) ·
-  [GitHub](https://github.com/onelegdave)): owner, maintainer and the only contributor. A human
-  holds the controls: he makes every product decision and reviews what ships.
+  [GitHub](https://github.com/onelegdave)): owner and maintainer. A human holds the controls:
+  he makes every product decision, reviews what ships and is responsible for it.
 
-AI tools that helped build it, and broadly what each did:
+AI tools assist with the work. Broadly, each has helped with:
 
 - **Claude (Anthropic)**: architecture, much of the code, reviews and integration.
 - **Codex (OpenAI)**: code, security and code reviews (the sandbox, the git guard, the Gate
@@ -558,8 +558,8 @@ AI tools that helped build it, and broadly what each did:
 - **Antigravity (Google)**: Dashboard and test work.
 - **OpenCode**: test work and a code review.
 
-Credit is recorded here rather than in commit messages. Some designs are adapted from
-[T3 Code](https://github.com/pingdotgg/t3code) (MIT); where code is adapted, its notice is kept.
+Some designs are adapted from [T3 Code](https://github.com/pingdotgg/t3code) (MIT); where code
+is adapted, its notice is kept.
 
 ## Trademarks
 
