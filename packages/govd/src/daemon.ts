@@ -147,6 +147,11 @@ export class Daemon {
   private nameFree(name: string): void {
     const taken = this.ledger.projects().find((x) => x.name === name);
     if (taken) throw new RpcError(Errors.badParams, `there is already a project called ${name} (${taken.path}); choose another name`);
+    // A removed project's history stays in the Trace under its name: a new project must not inherit
+    // its conversation, notes, Crew card or rules.
+    if (this.ledger.eventsOfKind(name, ["project.forgotten"], 1).length) {
+      throw new RpcError(Errors.badParams, `a project called ${name} was removed and its history keeps the name; choose another name`);
+    }
   }
 
   /** Settings live in govd's own state, which no AI tool can reach. A broken file is ignored (defaults). */
@@ -769,6 +774,20 @@ export class Daemon {
         if (!ProjectName.safeParse(name).success) throw new RpcError(Errors.badParams, `cannot derive a project name from ${path}; pass one`);
         this.nameFree(name);
         return { project: L.addProject(name, path, "project.opened") };
+      }
+      case "project.forget": {
+        const project = L.project(p.name);
+        if (!project) throw new RpcError(Errors.notFound, `no project ${p.name}`);
+        this.notWhileTurning(project.name);
+        // Work still waiting on the user would be stranded: settle it first.
+        const open = L.specs(project.name).filter((s) => this.runs.has(s.id) || ["queued", "running", "needs-review", "held"].includes(s.status)).map((s) => s.id);
+        if (open.length) throw new RpcError(Errors.refused, `${project.name} still has Specs to settle (${open.join(", ")}): accept, discard or cancel them first`);
+        if ([...this.gates.values()].some((g) => g.project === project.name)) throw new RpcError(Errors.refused, `${project.name} has a Gate waiting; answer it first`);
+        // A limited turn waiting to be resumed would be left with no project to resume in.
+        const limited = this.recoveryItems(project.name).map((i) => i.target);
+        if (limited.length) throw new RpcError(Errors.refused, `${project.name} has limited work waiting (${limited.join(", ")}): resume it or clear it first (gov resume ID --clear)`);
+        L.forgetProject(project.name, { path: project.path });
+        return { name: project.name, path: project.path, forgotten: true };
       }
       case "controller.set":
         if (!L.project(p.project)) throw new RpcError(Errors.notFound, `no project ${p.project}`);

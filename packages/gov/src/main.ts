@@ -23,10 +23,10 @@ let host: string | null = null;
 
 type Reply = { result?: any; error?: { code: number; message: string } };
 
-const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|friction [--project NAME] [--days N] [--json]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp inspect-installed INSTALLATION_ID [--json]|acp cancel I-N|connect [agy|claude|codex|grok|opencode]|disconnect agy|claude|codex|grok|opencode|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
+const USAGE = "usage: gov [--host HOST] [status|projects|new NAME [--path P]|open [PATH [NAME]]|forget NAME|controller claude-code|codex [--model M] [--effort E]|trace [--jsonl]|friction [--project NAME] [--days N] [--json]|ask PROMPT|demo [--path P]|gates|gate ID allow|deny [--turn|--spec|--project]|plan ID approve [1,3]|just-you|reject|proposal ID create|cancel|allows [revoke R]|specs|diff S|accept S [--before OID --after OID]|discard S|cancel S|turns|undo T|limits|limited|resume ID [--at-reset|--off|--clear]|auto-resume on|off|settings|reserve P W N|budget [P W N tokens|turns|P [W] off]|local N M|memory [CHARS]|runner P --model M [--effort E]|spec-models free|within|defaults|spec-caps N M|level relaxed|balanced|strict|personal claude|codex on|off|acp search [QUERY]|acp inspect ID [--platform P] [--kind binary|npx|uvx]|acp install ID [--kind binary]|acp installed [--json]|acp inspect-installed INSTALLATION_ID [--json]|acp cancel I-N|connect [agy|claude|codex|grok|opencode]|disconnect agy|claude|codex|grok|opencode|notes [edit|history|restore SEQ]|crew [...]|reset|daemon start|install|uninstall|tunnel [HOST [--remote-socket P]|--stop HOST]|socket-path|help]";
 
 // The commands that talk to govd: any other word gets the usage without connecting.
-const COMMANDS = new Set(["status", "projects", "new", "open", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
+const COMMANDS = new Set(["status", "projects", "new", "open", "forget", "controller", "crew", "notes", "gates", "gate", "plan", "proposal", "allows",
   "turns", "undo", "settings", "budget", "local", "memory", "runner", "level", "personal", "connect", "disconnect", "reset", "spec-models", "reserve",
   "limits", "limited", "resume", "auto-resume", "specs", "diff", "accept", "discard", "cancel", "spec-caps", "trace", "friction", "ask", "demo", "acp"]);
 
@@ -399,6 +399,13 @@ async function main(argv: string[]): Promise<number> {
         const { projects } = await api.call("project.list");
         for (const p of projects) console.log(`${oneLine(p.name).padEnd(14)} ${oneLine(p.path)}  ${dim(`${[p.controller.provider, p.controller.model || "default model", p.controller.effort].filter((x): x is string => Boolean(x)).map(oneLine).join(" · ")}`)}`);
         if (!projects.length) console.log(dim("no projects yet"));
+        return 0;
+      }
+      case "forget": {
+        // gov forget NAME: off GovernCode's list. The folder is never touched; its history stays.
+        if (rest.length !== 1) throw new Error("usage: gov forget NAME   (takes a project off GovernCode's list; its folder is not touched)");
+        const r = await api.call("project.forget", { name: rest[0] });
+        console.log(`removed ${oneLine(r.name)} from GovernCode (its folder ${oneLine(r.path)} is untouched; its history stays in the Trace, so the name stays taken)`);
         return 0;
       }
       case "new": {

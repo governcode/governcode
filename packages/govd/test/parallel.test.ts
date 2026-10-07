@@ -3,7 +3,7 @@
 // client watches) or with the user's next message; a restart fails what was running, keeping its copy.
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
@@ -332,4 +332,21 @@ test("the Controller hears with the next message that the user accepted or disca
   await until(() => d.ledger.spec("S-0002")?.status === "needs-review");
   assert.equal((await c.call("spec.discard", { id: "S-0002" })).result.discarded, true);
   assert.equal((await c.call("ask", { project: "p", prompt: "next?" })).result.summary, "decided:Since your last turn the user discarded S-0002");
+});
+
+test("a project comes off the list only once its work is settled; its folder stays, and its name stays taken", async () => {
+  const { d, c, dir } = await setup();
+  await c.call("ask", { project: "p", prompt: "HANDOFF" });
+  await until(() => d.ledger.spec("S-0001")?.status === "needs-review");
+  assert.match((await c.call("project.forget", { name: "p" })).error.message, /still has Specs to settle \(S-0001\)/);
+  assert.equal((await c.call("spec.discard", { id: "S-0001" })).result.discarded, true);
+  const r = (await c.call("project.forget", { name: "p" })).result;
+  assert.deepEqual(r, { name: "p", path: join(dir, "proj"), forgotten: true });
+  assert.ok(!d.ledger.project("p"), "off the list");
+  assert.ok(existsSync(join(dir, "proj", "README.md")), "the folder is untouched");
+  assert.equal(d.ledger.eventsOfKind("p", ["project.forgotten"]).length, 1, "and the Trace says so");
+  assert.match((await c.call("project.forget", { name: "p" })).error.message, /no project p/);
+  // A new project may not take the name (it would inherit the old history), but the folder may come back under another.
+  assert.match((await c.call("project.open", { path: join(dir, "proj"), name: "p" })).error.message, /was removed and its history keeps the name/);
+  assert.equal((await c.call("project.open", { path: join(dir, "proj"), name: "p2" })).result.project.name, "p2");
 });

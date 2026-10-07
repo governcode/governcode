@@ -161,6 +161,19 @@ export class Ledger {
     return project;
   }
 
+  /** Takes a project off the list; its events stay (the Trace is append-only). */
+  forgetProject(name: string, data: Record<string, unknown>): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM projects WHERE name = ?").run(name);
+      this.append(name, "project.forgotten", "user", data);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
   setController(name: string, controller: ControllerChoice): void {
     this.db.prepare("UPDATE projects SET controller = ? WHERE name = ?").run(JSON.stringify(controller), name);
     this.append(name, "controller.set", "user", controller);

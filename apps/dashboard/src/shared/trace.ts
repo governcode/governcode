@@ -6,7 +6,7 @@ import type { TraceEvent } from "./contract.ts";
 
 /** One label for every kind the protocol lists (the type checks that none is missing). */
 export const KIND_LABEL: Record<ProtocolTraceEvent["kind"], string> = {
-  "project.created": "Project created", "project.opened": "Project opened", "project.proposed": "Project proposed",
+  "project.created": "Project created", "project.opened": "Project opened", "project.forgotten": "Project removed", "project.proposed": "Project proposed",
   "project.declined": "Project declined", "controller.set": "Controller chosen", "settings.changed": "Settings changed",
   "allow.added": "Allow remembered", "allow.revoked": "Allow revoked",
   "turn.started": "Turn started", "turn.text": "Turn text", "turn.tool": "Turn step", "turn.completed": "Turn done", "turn.failed": "Turn failed",
@@ -102,6 +102,7 @@ export function describe(e: TraceEvent): Described {
     case "notes.updated": return { text: `Notes updated${you ? " by you" : ""}`, tone: "", icon: "note" };
     case "controller.set": return { text: `Controller set to ${str(d.provider)}${d.model ? ` · ${str(d.model)}` : ""}`, tone: "accent", icon: "people" };
     case "project.created": return { text: "Project created", tone: "accent", icon: "plus" };
+    case "project.forgotten": return { text: "Removed from GovernCode (the folder was not touched)", tone: "", icon: "x" };
     case "conversation.reset": return { text: "New conversation", tone: "", icon: "chat" };
     case "turn.text": return { text: `${e.actor}: ${quote(d.text, 140)}`, tone: "", icon: "chat" };
     case "turn.tool": return { text: d.subagent ? `${e.actor} started a subagent: ${quote(d.subagent, 100)}` : `${e.actor} · ${str(d.name)}`, tone: "", icon: d.subagent ? "people" : "terminal" };

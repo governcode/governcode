@@ -23,7 +23,7 @@ export const Channel = {
  * streams, and it holds the connection that owns its Gates); `watch` is the main process's
  * own, forwarded as `onWatch`.
  */
-export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "controller.set", "gate.list",
+export const CALLABLE = ["hello", "project.list", "project.new", "project.open", "project.forget", "controller.set", "gate.list",
   "gate.answer", "spec.list", "spec.diff", "spec.accept", "spec.discard", "spec.cancel", "trace.list", "trace.totals", "friction.report", "turn.list", "turn.undo", "limits.list", "proposal.answer", "settings.get", "settings.set",
   "recovery.list", "recovery.set", "recovery.resume", "recovery.clear",
   "allows.list", "allows.revoke", "conversation.reset", "tools.list", "tools.disconnect", "connect.input", "connect.cancel",

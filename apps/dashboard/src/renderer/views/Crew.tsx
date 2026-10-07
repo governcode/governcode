@@ -151,7 +151,30 @@ export function CrewView({ project }: { project: string | null }) {
           {dirty && <button className="btn" onClick={() => setDraft(saved)}>Discard changes</button>}
           {msg && <span className={msg.ok ? "ok small" : "error small"}>{msg.text}</span>}
         </div>
+
+        <RemoveProject project={project} />
       </div>
     </section>
   );
+}
+
+/** Takes the project off GovernCode's list (asked twice). Its folder is never touched; its history
+ *  stays in the Trace, so the name stays taken. govd refuses while its work is unsettled. */
+function RemoveProject({ project }: { project: string }) {
+  const [sure, setSure] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { setSure(false); setErr(null); }, [project]);
+  const remove = async () => {
+    try { await call("project.forget", { name: project }); }   // the project list follows from the Trace
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); setSure(false); }
+  };
+  return <>
+    <h2>Remove from GovernCode</h2>
+    <p className="dim small">Takes {project} off GovernCode's list. Its folder and files are not touched, and its history stays in the Trace, so this name cannot be used again. Settle its Specs first.</p>
+    <div className="row">
+      {!sure ? <button className="btn" onClick={() => setSure(true)}>Remove {project}…</button>
+        : <><button className="btn btn-danger" onClick={remove}>Yes, remove {project}</button><button className="btn" onClick={() => setSure(false)}>Keep it</button></>}
+      {err && <span className="error small">{err}</span>}
+    </div>
+  </>;
 }

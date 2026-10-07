@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 export const PROTOCOL = 1;
-export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry", "acp-install", "trace-totals", "friction"] as const;
+export const FEATURES = ["projects", "trace", "ask", "gates", "home", "delegate", "specs", "watch", "parallel-specs", "recovery", "acp-registry", "acp-install", "trace-totals", "friction", "project-forget"] as const;
 
 export const Effort = z.enum(["low", "medium", "high", "max"]);
 
@@ -172,6 +172,9 @@ export const Params = {
   "project.list": z.object({}),
   "project.new": z.object({ name: ProjectName, path: z.string().min(1), git: z.boolean().default(true) }),
   "project.open": z.object({ path: z.string().min(1), name: ProjectName.optional() }),
+  // Takes a project off GovernCode's list; its folder is never touched and its history stays in the
+  // Trace (so the name stays taken).
+  "project.forget": z.object({ name: ProjectName }),
   "controller.set": z.object({ project: ProjectName, controller: ControllerChoice }),
   // kinds: only events of these kinds (e.g. the latest turn boundaries, however long the turn), in
   // the project or, without one, in every project.
@@ -275,7 +278,7 @@ export type TraceEvent = {
   ts: string; // ISO 8601, UTC
   project: string | null;
   kind:
-    | "project.created" | "project.opened" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed" | "allow.added" | "allow.revoked"
+    | "project.created" | "project.opened" | "project.forgotten" | "project.proposed" | "project.declined" | "controller.set" | "settings.changed" | "allow.added" | "allow.revoked"
     | "turn.started" | "turn.text" | "turn.tool" | "turn.completed" | "turn.failed"
     | "gate.opened" | "gate.allowed" | "gate.denied" | "sandbox.refused" | "sandbox.blocked"
     | "git.scrubbed" | "git.guard_failed" | "conversation.reset" | "checkpoint.taken" | "checkpoint.failed" | "checkpoint.undone"

@@ -116,6 +116,7 @@ gov friction       # the last 7 days' Gates, failed turns and refusals, read fro
 gov turns          # Checkpoints of the Controller's turns that changed files
 gov undo T-12      # put those files back, if you have not changed them since
 gov status         # govd's version and sandbox; gov projects and gov settings list the rest
+gov forget NAME    # take a project off the list (its folder is not touched; its name stays taken)
 ```
 
 A Gate waits for your answer: in `gov ask`, from another terminal, or in the Dashboard. In
