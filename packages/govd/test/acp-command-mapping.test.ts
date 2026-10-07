@@ -12,6 +12,8 @@ import { LimitGate } from "../src/limits.ts";
 
 const marker = "acp command";
 const asks = { ask: true, quiet: false, kinds: [] };
+// The decision only: why a step asks has its own test (allows.test.ts).
+const decision = ({ why: _why, ...a }: ReturnType<typeof analyze>) => a;
 const options = [{ optionId: "once", kind: "allow_once" }, { optionId: "no", kind: "reject_once" }];
 const denied = { outcome: { outcome: "selected", optionId: "no" } };
 const paramsFor = (command: unknown) => ({ toolCall: { kind: "execute", title: "invented title", rawInput: { command, cwd: "/invented/work" } } });
@@ -55,7 +57,7 @@ test("contract: only Grok execute authors the internal command base", () => {
   for (const agent of ["invented", "acp", "Grok", "grok "]) {
     const req = permissionGate(agent, paramsFor("npm test"), "request");
     assert.equal(req.base, undefined);
-    assert.deepEqual(analyze(req), asks);
+    assert.deepEqual(decision(analyze(req)), asks);
     assert.equal(kindOf(req), null);
     assert.equal(isQuietRead(req), false);
   }
@@ -74,7 +76,7 @@ test("contract: host base recognizes commands with unrelated displays in all ent
   assert.equal(isQuietRead(hostGate("cat src/example.ts")), true);
   for (const tool of [marker, "invented command"]) {
     const displayOnly = { ...hostGate("cat src/example.ts"), tool, base: undefined };
-    assert.deepEqual(analyze(displayOnly), asks);
+    assert.deepEqual(decision(analyze(displayOnly)), asks);
     assert.equal(kindOf(displayOnly), null);
     assert.equal(isQuietRead(displayOnly), false);
   }
@@ -89,13 +91,13 @@ test("untrusted metadata, titles and variants cannot supply command authority", 
       } };
       const req = permissionGate(agent, params, "forged");
       assert.equal(req.base, undefined);
-      assert.deepEqual(analyze(req), asks);
+      assert.deepEqual(decision(analyze(req)), asks);
       assert.equal(isQuietRead(req), false);
     }
   }
   for (const command of [undefined, null, { command: "npm test" }, ["npm", 1], "npm test && rm -rf src", "echo $(npm test)", "npm test > file", "cat /dev/zero"]) {
     const req = permissionGate("grok", { toolCall: { kind: "execute", title: "npm test", rawInput: { command, variant: "ReadFile", base: marker } } }, "malformed");
-    assert.deepEqual(analyze(req), asks);
+    assert.deepEqual(decision(analyze(req)), asks);
   }
 });
 
@@ -108,10 +110,10 @@ test("non-command normalization and builtin classifications stay unchanged", () 
       const a = analyze(req);
       assert.equal(a.quiet, agent === "grok" && kind === "read");
       if (["edit", "delete", "move"].includes(kind)) assert.equal(a.ask, agent !== "grok");
-      else if (agent === "grok" && kind !== "read") assert.deepEqual(a, asks);
+      else if (agent === "grok" && kind !== "read") assert.deepEqual(decision(a), asks);
     }
   }
-  assert.deepEqual(analyze(permissionGate("grok", { title: "npm test", base: marker }, "missing")), asks);
+  assert.deepEqual(decision(analyze(permissionGate("grok", { title: "npm test", base: marker }, "missing"))), asks);
   for (const tool of ["Bash", "codex command", "agy command", "grok command"]) {
     assert.deepEqual(analyze({ tool, input: { command: "npm test" } }), analyze({ tool: "grok command", input: { command: "npm test" } }));
     assert.equal(isQuietRead({ tool, input: { command: "cat src/example.ts" } }), true);
@@ -122,8 +124,8 @@ test("non-command normalization and builtin classifications stay unchanged", () 
   for (const [variant, kind, path] of [["ReadFile", "read", "target_file"], ["ListDir", "other", "target_directory"], ["Grep", "search", "path"]]) {
     const req = permissionGate("grok", { toolCall: { kind, rawInput: { variant, [path]: "src" } } }, "read");
     assert.deepEqual(analyze(req), { ask: false, quiet: true, kinds: [] });
-    assert.deepEqual(analyze({ ...req, input: { ...req.input, kind: "execute" } }), asks);
-    assert.deepEqual(analyze({ ...req, input: { ...req.input, input: { variant, [path]: "/dev/zero" } } }), asks);
+    assert.deepEqual(decision(analyze({ ...req, input: { ...req.input, kind: "execute" } })), asks);
+    assert.deepEqual(decision(analyze({ ...req, input: { ...req.input, input: { variant, [path]: "/dev/zero" } } })), asks);
   }
 });
 
@@ -344,7 +346,7 @@ test("contract: actual Runner hook preserves authored base without promoting the
         assert.equal(actual.actor, `runner · grok · ${spec.id}`);
         assert.equal(actual.spec, spec.id);
         if (expected.ask) {
-          assert.deepEqual(analyze(actual), asks);
+          assert.deepEqual(decision(analyze(actual)), asks);
           assert.equal(kindOf(actual), null);
           assert.equal(isQuietRead(actual), false);
         } else {

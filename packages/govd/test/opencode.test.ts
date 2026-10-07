@@ -382,7 +382,7 @@ test("opencode Runner: a command that fails at a refusal is reported as probably
   setConnected(stateDir, "opencode", true);
   let r = await runTurn("SHELL:touch /etc/governcode-blocked-check");
   // (touch on a path outside the project always asks, so its kind is "always", as its Gate would record it)
-  assert.deepEqual(r.blocks, [{ tool: "opencode command", kinds: [], always: true, pattern: "permission denied" }]);
+  assert.deepEqual(r.blocks, [{ tool: "opencode command", kinds: [], always: true, pattern: "permission denied", why: "path or variable", where: "system folders" }]);
   r = await runTurn("SHELL:ls /no-such-folder-here");
   assert.deepEqual(r.blocks, [], "another failure is not a block");
   r = await runTurn("SHELL:echo permission denied");

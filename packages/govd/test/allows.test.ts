@@ -215,3 +215,33 @@ test("a kind is recorded in the Trace only in the shape of a program name", () =
   assert.deepEqual(key("'my secret phrase' status", "S-0001"), ["runner:command:(other)"]);
   for (const k of ["edit", "runner:edit", "tool:WebSearch", "delegate:local", "runner:spec:discard"]) assert.equal(recordedKind(k), k);
 });
+
+test("a step that always asks says why, in one word from a fixed list (for gov friction), never the command", () => {
+  const why = (c: string) => analyze(bash(c)).why;
+  assert.equal(why("node src/cli.js --json data/harbor.csv"), "interpreter");
+  assert.equal(why("python3 -m json.tool x.json"), "interpreter");
+  assert.equal(why("echo $(whoami)"), "shell syntax");
+  assert.equal(why("npm test > out.txt"), "shell syntax");
+  assert.equal(why("./run.sh"), "path or variable");
+  assert.equal(why("FOO=1 npm test"), "path or variable");
+  assert.equal(why("tail -f log.txt"), "read option");
+  assert.equal(why("npm install left-pad"), "install");
+  assert.equal(why("pip install x"), "install");
+  assert.equal(why("git commit -m x"), "git change");
+  assert.equal(why("curl https://example.com"), "network");
+  assert.equal(why("rm -rf build"), "delete");
+  assert.equal(why("xargs ls"), "launcher");
+  assert.equal(why("timeout 5 npm test"), "launcher");
+  assert.equal(why("codex exec hi"), "ai tool");
+  assert.equal(why("chmod +x a"), "other program");
+  assert.equal(why("npm --prefix x test"), "option");
+  assert.equal(why("make -f other.mk"), "option");
+  // A step with a kind, or a quiet read, has no reason to ask.
+  assert.equal(why("npm test"), undefined);
+  assert.equal(why("cat README.md"), undefined);
+  // The same reasons inside Codex's bash -lc wrapper, string or argv.
+  assert.equal(analyze({ tool: "codex command", input: { command: "/usr/bin/bash -lc 'node src/cli.js'" } }).why, "interpreter");
+  assert.equal(analyze({ tool: "codex command", input: { command: ["bash", "-lc", "npm test && node x.js"] } }).why, "interpreter");
+  assert.equal(analyze({ tool: "governcode delegate", input: { to: "codex" } }).why, "cloud handoff");
+  assert.equal(analyze({ tool: "mcp__governcode__plan", input: {} }).why, "governcode tool");
+});

@@ -58,7 +58,7 @@ type Gate = { id: string; project: string | null; tool: string; canonical: strin
 // The kinds of step a request is (`command:npm test`, `edit`, `runner:tool:WebSearch`...), whether
 // a rule covers them or not; `always`: a step no rule may cover (rm, curl, shell syntax...), so it
 // always asks. Recorded with each Gate and each step let through, never the request's own text.
-type StepKinds = { kinds: string[]; always: boolean };
+type StepKinds = { kinds: string[]; always: boolean; why?: string };   // why: the one-word reason a step always asks (AskWhy)
 
 /** Runners with no usage report of their own: only a budget the user sets meters them. */
 const COUNTED_ONLY = new Set(["opencode"]);
@@ -472,7 +472,7 @@ export class Daemon {
       const L = this.ledger;
       const { level, quietReads } = this.settings().gates;
       const a = analyze(req);
-      const step: StepKinds = { kinds: a.kinds.map((k) => recordedKind(k.key)), always: a.ask };
+      const step: StepKinds = { kinds: a.kinds.map((k) => recordedKind(k.key)), always: a.ask, ...(a.why ? { why: a.why } : {}) };
       const pass = (by: string, why: string, extra: Record<string, unknown> = {}) => {
         L.append(o.project, "gate.allowed", "govd", { tool: req.tool, by, ...extra, ...step, request: req.canonical.slice(0, 4000), turn: o.ctx.turn, spec: req.spec ?? null });
         o.notify({ kind: "allowed", tool: req.tool, canonical: req.canonical, why });

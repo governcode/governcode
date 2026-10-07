@@ -137,8 +137,10 @@ network tools, interpreters, handing work to a paid Runner), and everything is i
 `gov friction [--project NAME] [--days N] [--json]` counts from it how often you were asked, who
 answered, and which kinds of step (`npm test`, file edits) you allowed every time: candidates for a
 standing allow, and which kinds of step probably ran into the sandbox (a step that failed saying
-what the sandbox says when it refuses something: an estimate, and only the kind is recorded, never
-the output). It only reads, and makes no rule. Details:
+what the sandbox says when it refuses something: an estimate, and only the kind and roughly where
+(`~/.npm`, `/tmp`, system folders) are recorded, never the output). For steps that always ask it
+says why, in one word (an interpreter, shell syntax, an install...), never the command. It only
+reads, and makes no rule. Details:
 [docs/SANDBOX.md](docs/SANDBOX.md#gates-and-standing-allows-fewer-questions-the-same-sandbox).
 
 **Project memory.** GovernCode, not the AI tool, keeps what a Controller knows about a project,

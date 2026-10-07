@@ -113,7 +113,7 @@ test("Runner Gates are counted apart from Controller turns; sandbox, .git and Sp
   assert.equal(r.gates.byRunners, 2);
   assert.equal(r.gates.perTurn, 1);
   assert.deepEqual(r.tools.find((t) => t.tool === "codex exec (Runner · codex)"), { tool: "codex exec (Runner · codex)", asked: 2, allowed: 2, denied: 0, autoDenied: 0, allowedEveryTime: false });
-  assert.deepEqual(r.sandbox, { refused: 2, refusedBy: { "bwrap missing": 2 }, gitScrubbed: 1, gitGuardFailed: 1, blocked: 0, blockedBy: {} });
+  assert.deepEqual(r.sandbox, { refused: 2, refusedBy: { "bwrap missing": 2 }, gitScrubbed: 1, gitGuardFailed: 1, blocked: 0, blockedBy: {}, blockedWhere: {} });
   assert.deepEqual(r.specs, { created: 1, failed: 2, limited: 1, held: 1 });
   assert.equal(friction([]).gates.perTurn, null, "no turns: no average");
 });
@@ -180,4 +180,28 @@ test("a Runner's probable blocks share a row with its Gates, apart from the Cont
   ]);
   const rows = Object.fromEntries(r.kinds.map((k) => [k.kind, [k.asked, k.blocked]]));
   assert.deepEqual(rows, { "always:codex command (Runner · codex)": [1, 1], "always:codex command": [0, 1] });
+});
+
+test("steps that always ask are counted by why; an older Gate without a reason, or a malformed one, is left out", () => {
+  const r = friction([
+    ev("gate.opened", { gate: "G-1", tool: "Bash", kinds: [], always: true, why: "interpreter" }, { actor: C }),
+    ev("gate.opened", { gate: "G-2", tool: "Bash", kinds: [], always: true, why: "interpreter" }, { actor: C }),
+    ev("gate.opened", { gate: "G-3", tool: "Bash", kinds: [], always: true, why: "shell syntax" }, { actor: C }),
+    ev("gate.opened", { gate: "G-4", tool: "Bash", kinds: [], always: true }, { actor: C }),
+    ev("gate.opened", { gate: "G-5", tool: "Bash", kinds: [], always: true, why: "\u001b[31mred" }, { actor: C }),
+    ev("gate.opened", { gate: "G-6", tool: "Bash", kinds: ["command:npm test"], always: false }, { actor: C }),
+  ]);
+  assert.deepEqual(r.alwaysWhy, { interpreter: 2, "shell syntax": 1 });
+});
+
+test("probable blocks are counted by roughly where they were refused; a malformed place is left out", () => {
+  const r = friction([
+    ev("sandbox.blocked", { tool: "Bash", kinds: [], always: true, pattern: "permission denied", where: "~/.npm" }, { actor: C }),
+    ev("sandbox.blocked", { tool: "Bash", kinds: [], always: true, pattern: "permission denied", where: "~/.npm" }, { actor: C }),
+    ev("sandbox.blocked", { tool: "Bash", kinds: [], always: true, pattern: "read-only file system", where: "system folders" }, { actor: C }),
+    ev("sandbox.blocked", { tool: "Bash", kinds: [], always: true, pattern: "permission denied", where: "\u001b]0;x\u0007" }, { actor: C }),
+    ev("sandbox.blocked", { tool: "Bash", kinds: [], always: true, pattern: "permission denied" }, { actor: C }),
+  ]);
+  assert.equal(r.sandbox.blocked, 5);
+  assert.deepEqual(r.sandbox.blockedWhere, { "~/.npm": 2, "system folders": 1 });
 });

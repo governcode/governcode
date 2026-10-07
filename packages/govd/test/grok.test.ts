@@ -400,11 +400,12 @@ test("acp: Grok's reads, searches and listings are quiet reads; every other call
   // A read tool with another kind, without its own path, or reaching a special place always asks
   // (as `cat /dev/zero` does), and is never a kind a rule could remember.
   const asks = { ask: true, quiet: false, kinds: [] };
+  const decision = ({ why: _why, ...a }: ReturnType<typeof analyze>) => a;   // the decision only (why has its own test)
   for (const r of [g("fetch", { variant: "ReadFile", target_file: "/w/a" }), g("read", { variant: "ReadFile", target_file: "/dev/zero" }),
     g("read", { variant: "ReadFile", target_file: "/w/../../proc/self/environ" }), g("read", { variant: "ReadFile", file_path: "/w/a" }),
     g("other", { variant: "ListDir" }), g("other", { variant: "ListDir", target_directory: 7 }), g("search", { variant: "Grep", pattern: "x", path: "/proc" }),
     permissionGate("grok", { toolCall: { kind: "read", rawInput: { variant: "ReadFile", target_file: "/w/a" }, locations: [{ path: "/sys/kernel" }] } }, "g")]) {
-    assert.deepEqual(q(r), asks, JSON.stringify(r.input));
+    assert.deepEqual(decision(q(r)), asks, JSON.stringify(r.input));
   }
   // A lower-case name is not a tool name: it could read as a kind (grok_read).
   assert.equal(g("fetch", { variant: "read" }).tool, "grok_fetch");
@@ -415,7 +416,7 @@ test("acp: Grok's reads, searches and listings are quiet reads; every other call
   // A call of kind "other" with no name, or a name GovernCode cannot use, always asks.
   for (const r of [g("other", {}), g("other", { variant: "Rm -rf" }), g("other", { variant: "x".repeat(31) })]) {
     assert.equal(r.tool, "grok unknown tool");
-    assert.deepEqual(q(r), { ask: true, quiet: false, kinds: [] });
+    assert.deepEqual(decision(q(r)), { ask: true, quiet: false, kinds: [] });
   }
 });
 

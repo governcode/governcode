@@ -43,6 +43,11 @@ const ALWAYS_ASK = new Set(["rm", "rmdir", "sudo", "su", "doas", "curl", "wget",
   // input or another program later (a pipe into any of these runs whatever came before it).
   "ksh", "mksh", "ash", "csh", "tcsh", "coproc", "at", "batch", "parallel", "socat", "ncat", "netcat", "corepack",
   "torsocks", "proot", "bwrap"]);
+// The launchers above: each runs another program named later on the line.
+const LAUNCHERS = new Set(["command", "builtin", "source", ".", "time", "nice", "nohup", "timeout", "stdbuf", "flock", "ionice", "setsid",
+  "watch", "enable", "toybox", "unbuffer", "chrt", "taskset", "cgexec", "firejail", "script", "strace", "ltrace", "fakeroot", "setarch",
+  "numactl", "nsenter", "runuser", "pkexec", "prlimit", "chroot", "setpriv", "unshare", "systemd-run", "doas", "sudo", "su",
+  "ssh-agent", "dbus-launch", "xvfb-run", "valgrind", "gdb", "coproc", "at", "batch", "proot", "bwrap", "corepack"]);
 // Program + subcommand pairs that always ask.
 const ALWAYS_ASK_SUB = new Set(["npm publish", "npm exec", "yarn publish", "pnpm publish", "pnpm exec",
   "cargo publish", "cargo install", "gh",
@@ -260,18 +265,40 @@ const PACKAGE_SAFE: Record<string, Set<string>> = {
   composer: new Set(["show", "test", "run-script"]), deno: new Set(["test", "task", "fmt", "lint", "check"]),
 };
 
+/** Why a step must always ask, in one word from a fixed list (recorded in the Trace for
+ *  `gov friction`; never the command itself). */
+export type AskWhy = "shell syntax" | "path or variable" | "read option" | "interpreter" | "install" | "git change"
+  | "network" | "delete" | "launcher" | "ai tool" | "other program" | "option" | "cloud handoff" | "governcode tool"
+  | "unusual read" | "tool";
+
+const NETWORK = new Set(["curl", "wget", "ssh", "scp", "rsync", "nc", "ncat", "netcat", "socat", "sshpass", "torsocks", "gh"]);
+const AI_TOOLS = new Set(["claude", "codex", "agy", "gemini", "grok", "ollama", "aider", "opencode", "cursor-agent", "goose", "amp", "crush", "qwen"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "ash", "csh", "tcsh", "eval", "exec", "env", "xargs", "sed", "parallel"]);
+
+/** Why one simple command must always ask, or null when it has a kind. */
+function commandAsk(words: string[]): AskWhy | null {
+  const w0 = words[0];
+  if (w0 === "git" && !gitReadOk(words)) return "git change";
+  const pm = Object.hasOwn(PACKAGE_SAFE, w0) ? PACKAGE_SAFE[w0] : undefined;
+  const info = words.length === 2 && ["--version", "-v", "-V", "--help", "-h"].includes(words[1]);
+  if (pm && !info && !pm.has(words[1] ?? "")) return (words[1] ?? "").startsWith("-") ? "option" : "install";
+  const key = commandKey(words);
+  if (key && (ALWAYS_ASK_SUB.has(key) || ALWAYS_ASK_SUB.has(w0))) return /^(npx|gh)$/.test(w0) ? (w0 === "gh" ? "network" : "launcher") : /publish/.test(key) ? "network" : "install";
+  if (INTERPRETER.test(w0)) return "interpreter";
+  if (ALWAYS_ASK.has(w0)) return w0 === "rm" || w0 === "rmdir" ? "delete" : NETWORK.has(w0) ? "network" : AI_TOOLS.has(w0) ? "ai tool"
+    : SHELLS.has(w0) || ["npx", "pnpx", "bunx"].includes(w0) ? "launcher" : LAUNCHERS.has(w0) ? "launcher" : "other program";
+  if (!key) return (words[1] ?? "").startsWith("-") ? "option" : "path or variable";
+  if (words.some((w) => EXEC_FLAG.test(w))) return "option";
+  const short = EXEC_SHORT[w0];
+  if (short && words.slice(1).some((w) => !w.startsWith("--") && short.test(w))) return "option";
+  if (w0 === "find" && words.some((w) => FIND_ACTS.test(w))) return "option";
+  return null;
+}
+
 /** The kind of one simple command (its words), or null when it must always ask. */
 function commandKind(words: string[]): Kind | null {
-    if (words[0] === "git" && !gitReadOk(words)) return null;
-    const pm = Object.hasOwn(PACKAGE_SAFE, words[0]) ? PACKAGE_SAFE[words[0]] : undefined;
-    const info = words.length === 2 && ["--version", "-v", "-V", "--help", "-h"].includes(words[1]);
-    if (pm && !info && !pm.has(words[1] ?? "")) return null;
-    const key = commandKey(words);
-    if (!key || ALWAYS_ASK.has(words[0]) || INTERPRETER.test(words[0]) || ALWAYS_ASK_SUB.has(key) || ALWAYS_ASK_SUB.has(words[0])) return null;
-    if (words.some((w) => EXEC_FLAG.test(w))) return null;
-    const short = EXEC_SHORT[words[0]];
-    if (short && words.slice(1).some((w) => !w.startsWith("--") && short.test(w))) return null;
-    if (words[0] === "find" && words.some((w) => FIND_ACTS.test(w))) return null;
+    if (commandAsk(words)) return null;
+    const key = commandKey(words)!;
     // Honest label: a build or test command runs the project's own scripts, which the AI can edit;
     // git may run programs its config names.
     const what = words[0] === "git" ? "git may run programs its config names" : "they run whatever the project's files say";
@@ -310,7 +337,7 @@ export function isQuietRead(req: { tool: string; base?: string; input: Record<st
 // command (substitution, subshells, background jobs, globs, comments, heredocs, redirection
 // into a file) still makes the whole command ask.
 
-export type Analysis = { ask: boolean; quiet: boolean; kinds: Kind[] };
+export type Analysis = { ask: boolean; quiet: boolean; kinds: Kind[]; why?: AskWhy };
 
 /** A command's simple commands, as shell words, or null when any part cannot be read statically.
  *  Splits at && || ; | and newlines outside quotes; drops `2>&1`, `>&2` and redirection to
@@ -380,17 +407,19 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
       const w = plainWords(command);
       segs = w ? [w] : null;
     }
-    if (!segs) return { ask: true, quiet: false, kinds: [] };
+    const asks = (why: AskWhy): Analysis => ({ ask: true, quiet: false, kinds: [], why });
+    if (!segs) return asks("shell syntax");
     if (!segs.length) return { ask: false, quiet: true, kinds: [] };   // only cd
     const kinds: Kind[] = [];
     for (const w of segs) {
-      if (!w.length || w[0].includes("=") || w[0].includes("/")) return { ask: true, quiet: false, kinds: [] };
+      if (!w.length || w[0].includes("=") || w[0].includes("/")) return asks("path or variable");
       if (versionOnly(w) || (QUIET_READS.has(w[0]) && quietArgs(w))) continue;
       // A read-only program with an option it is not known to read with (sort -o, tail -f,
       // grep -f, a special file) is not a kind a rule may cover: it asks (Grok's red-team).
-      if (QUIET_READS.has(w[0]) && !(w.length === 2 && ["--help", "--version"].includes(w[1]))) return { ask: true, quiet: false, kinds: [] };
-      const k = commandKind(w);
-      if (!k) return { ask: true, quiet: false, kinds: [] };
+      if (QUIET_READS.has(w[0]) && !(w.length === 2 && ["--help", "--version"].includes(w[1]))) return asks("read option");
+      const why = commandAsk(w);
+      if (why) return asks(why);
+      const k = commandKind(w)!;
       if (!kinds.some((x) => x.key === runner(k).key)) kinds.push(runner(k));
     }
     return { ask: false, quiet: kinds.length === 0, kinds };
@@ -399,15 +428,16 @@ export function analyze(req: { tool: string; base?: string; spec?: string; input
   // A follow-up is another round of the same handoff: the same rule.
   if (/^(mcp__governcode__delegate|governcode delegate|mcp__governcode__spec_followup|governcode spec_followup)$/.test(tool)) {
     return LOCAL_RUNNERS.includes(String(req.input.to ?? "")) ? { ask: false, quiet: false, kinds: [runner({ key: "delegate:local", label: "handing jobs to a local model" })] }
-      : { ask: true, quiet: false, kinds: [] };
+      : { ask: true, quiet: false, kinds: [], why: "cloud handoff" };
   }
   if (/^(mcp__governcode__spec_discard|governcode spec_discard)$/.test(tool)) {
     return { ask: false, quiet: false, kinds: [runner({ key: "spec:discard", label: "throwing away a Spec it proposed (accepting is always yours)" })] };
   }
   const read = quietTool(tool, req.input);
-  if (read !== null) return read ? { ask: false, quiet: true, kinds: [] } : { ask: true, quiet: false, kinds: [] };
+  if (read !== null) return read ? { ask: false, quiet: true, kinds: [] } : { ask: true, quiet: false, kinds: [], why: "unusual read" };
   const k = kindOf(req);
-  return k ? { ask: false, quiet: false, kinds: [k] } : { ask: true, quiet: false, kinds: [] };
+  return k ? { ask: false, quiet: false, kinds: [k] }
+    : { ask: true, quiet: false, kinds: [], why: tool.startsWith("mcp__") || tool.startsWith("governcode ") ? "governcode tool" : "tool" };
 }
 const LOCAL_RUNNERS = ["ollama"];
 

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { permissionGate, runAcpTurn, type AcpRpc } from "../src/acp.ts";
 import { analyze, recordedKind } from "../src/allows.ts";
-import { blockFor, blockOf, resultText } from "../src/blocks.ts";
+import { blockFor, blockOf, resultText, whereOf } from "../src/blocks.ts";
 
 test("the sandbox's refusals are recognised; other failures are not", () => {
   assert.equal(blockOf("npm ERR! Error: EACCES: permission denied, mkdir '/home/u/.npm'"), "permission denied");
@@ -16,7 +16,10 @@ test("the sandbox's refusals are recognised; other failures are not", () => {
 
 test("a block names its tool and kind as a Gate would, and keeps none of the output", () => {
   const b = blockFor("Bash", { command: "npm install" }, "EACCES: permission denied, open '/home/u/.npmrc' secret-token-123");
-  assert.deepEqual(b, { tool: "Bash", kinds: [], always: true, pattern: "permission denied" }, "npm install always asks");
+  const { where, ...rest } = b!;
+  assert.deepEqual(rest, { tool: "Bash", kinds: [], always: true, pattern: "permission denied", why: "install" }, "npm install always asks");
+  assert.equal(typeof where, "string", "a place, never the path");
+  assert.ok(!JSON.stringify(b).includes("secret") && !JSON.stringify(b).includes(".npmrc"));
   assert.deepEqual(blockFor("Bash", { command: "cargo build" }, "Read-only file system"), { tool: "Bash", kinds: ["command:cargo build"], always: false, pattern: "read-only file system" });
   assert.deepEqual(blockFor("codex command", { command: "cargo build" }, "Read-only file system", "runner")?.kinds, ["runner:command:cargo build"]);
   assert.ok(!JSON.stringify(blockFor("Bash", { command: "ls" }, "permission denied: secret-token-123")).includes("secret"));
@@ -66,4 +69,20 @@ test("ACP: a failed call's kind is its Gate's kind; a call a Gate declined is no
     assert.ok(!JSON.stringify(blocks).includes("secret-in-output"));
   }
   assert.deepEqual(await acpBlocks({ kind: "execute", rawInput: { command: "cargo build" } }, true), [], "declined at the Gate");
+});
+
+test("a block says roughly where it was refused: a category or one folder under home, never the path", () => {
+  const h = "/home/u";
+  assert.equal(whereOf("npm ERR! EACCES: permission denied, mkdir '/home/u/.npm/_cacache/tmp'", h), "~/.npm");
+  assert.equal(whereOf("touch: cannot touch '/home/u/Documents/secret plans.txt': Permission denied", h), "~/Documents");
+  assert.equal(whereOf("open /home/u/.local/state/governcode/specs/S-1/x: permission denied", h), "GovernCode's own folders (a run's home or a Spec's copy)");
+  assert.equal(whereOf("cat: /proc/1/environ: Permission denied", h), "/proc, /sys or /dev");
+  assert.equal(whereOf("mktemp: failed to create file via template '/tmp/x.XXX': Permission denied", h), "/tmp");
+  assert.equal(whereOf("cp: cannot create regular file '/etc/hosts': Read-only file system", h), "system folders");
+  assert.equal(whereOf("bash: /mnt/data/x: Permission denied", h), "elsewhere");
+  assert.equal(whereOf("Error: EPERM: operation not permitted", h), undefined, "no path, no place");
+  assert.equal(whereOf("all good\n/home/u/.npm is fine", h), undefined, "only the line that shows the refusal");
+  const b = blockFor("Bash", { command: "node build.js" }, "Error: EACCES: permission denied, open '/home/u/.cache/x'")!;
+  assert.equal(b.why, "interpreter");
+  assert.match(b.where!, /^~\/\.cache$|^elsewhere$|^the home folder$/);   // (the real home folder decides)
 });

@@ -1103,8 +1103,11 @@ function printFriction(r: FrictionReport, days: number): void {
   console.log(`Gates    ${g.opened} opened (${g.byControllers} by Controllers, ${g.byRunners} by Runners)${g.perTurn === null ? "" : ` · ${g.perTurn.toFixed(1)} per Controller turn`}`);
   console.log(`         ${g.allowed} allowed by you · ${g.denied} denied by you · ${g.autoDenied} denied by govd${why(g.autoDeniedBy)}`);
   console.log(`         ${g.passed} let through without a Gate${why(g.passedBy)}`);
+  // Why the steps no rule may cover asked (recorded by govd from this version on).
+  if (Object.keys(r.alwaysWhy ?? {}).length) console.log(`         always asked because: ${counts(r.alwaysWhy)}`);
   console.log(`Sandbox  ${s.refused} turn${s.refused === 1 ? "" : "s"} refused${why(s.refusedBy)} · .git restored ${s.gitScrubbed} time${s.gitScrubbed === 1 ? "" : "s"} · .git guard failed ${s.gitGuardFailed} time${s.gitGuardFailed === 1 ? "" : "s"}`);
   if (s.blocked) console.log(`         ${s.blocked} step${s.blocked === 1 ? "" : "s"} probably blocked by the sandbox${why(s.blockedBy)}`);
+  if (Object.keys(s.blockedWhere ?? {}).length) console.log(`         refused at: ${counts(s.blockedWhere)}`);
   console.log(`Specs    ${specs.created} created · ${specs.failed} failed${limited(specs.limited)} · ${specs.held} held`);
   // Steps a rule or plan let through have kinds but no tool row: either table can stand alone.
   if (!r.tools.length && !r.kinds.length) return;

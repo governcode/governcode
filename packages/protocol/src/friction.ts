@@ -7,6 +7,8 @@
 // - A Gate's kind of step (`command:npm test`, `edit`: what a standing allow would cover) is in
 //   gate.opened, gate.allowed and gate.denied from this version on (data.kinds, data.always). Older
 //   events have only the tool: they are counted by tool, and left out of the kinds.
+// - Why a step always asked (data.why on gate.opened: "interpreter", "shell syntax"...) from this
+//   version on: one word from a fixed list, never the command.
 // - A turn the user stopped is not recorded apart from other failed turns (its summary is free text).
 // - sandbox.refused records why govd would not start a turn (the sandbox is not verified here), not a
 //   tool. sandbox.blocked (from this version on) records a failed step whose output showed what the
@@ -51,9 +53,14 @@ export type FrictionReport = {
   kinds: KindFriction[];
   /** Gates opened with their kind recorded (an older govd recorded only the tool). */
   kindsRecorded: number;
+  /** Gates for steps that always ask, by why (data.why: "interpreter", "shell syntax", "install"...;
+   *  recorded from this version on, so older Gates are not in it). */
+  alwaysWhy: Record<string, number>;
   sandbox: { refused: number; refusedBy: Record<string, number>; gitScrubbed: number; gitGuardFailed: number;
     /** Failed steps that probably ran into the sandbox, by what their output said (an estimate). */
-    blocked: number; blockedBy: Record<string, number> };
+    blocked: number; blockedBy: Record<string, number>;
+    /** The same, by roughly where they were refused (data.where: "~/.npm", "/tmp", "system folders"...). */
+    blockedWhere: Record<string, number> };
   specs: { created: number; failed: number; limited: number; held: number };
 };
 
@@ -72,8 +79,8 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
     since: o.since ? o.since.toISOString() : null, project: o.project,
     turns: { started: 0, completed: 0, failed: 0, limited: 0 },
     gates: { opened: 0, byControllers: 0, byRunners: 0, perTurn: null, allowed: 0, denied: 0, autoDenied: 0, autoDeniedBy: {}, passed: 0, passedBy: {} },
-    tools: [], kinds: [], kindsRecorded: 0,
-    sandbox: { refused: 0, refusedBy: {}, gitScrubbed: 0, gitGuardFailed: 0, blocked: 0, blockedBy: {} },
+    tools: [], kinds: [], kindsRecorded: 0, alwaysWhy: {},
+    sandbox: { refused: 0, refusedBy: {}, gitScrubbed: 0, gitGuardFailed: 0, blocked: 0, blockedBy: {}, blockedWhere: {} },
     specs: { created: 0, failed: 0, limited: 0, held: 0 },
   };
   const tools = new Map<string, ToolFriction>();
@@ -111,6 +118,7 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
         else if (e.actor.startsWith("runner")) r.gates.byRunners++;
         tool(e).asked++;
         if (Array.isArray(d.kinds)) r.kindsRecorded++;
+        if (d.always === true && typeof d.why === "string" && /^[a-z ]{1,24}$/.test(d.why)) bump(r.alwaysWhy, d.why);
         for (const k of kindsOf(e)) k.asked++;
         break;
       case "gate.allowed":
@@ -131,7 +139,10 @@ export function friction(events: Iterable<TraceEvent>, o: FrictionOptions = {}):
         else { r.gates.autoDenied++; bump(r.gates.autoDeniedBy, String(d.by ?? "unknown")); tool(e).autoDenied++; for (const k of kindsOf(e)) k.autoDenied++; }
         break;
       case "sandbox.refused": r.sandbox.refused++; bump(r.sandbox.refusedBy, String(d.reason ?? "unknown")); break;
-      case "sandbox.blocked": r.sandbox.blocked++; bump(r.sandbox.blockedBy, String(d.pattern ?? "unknown")); for (const k of kindsOf(e)) k.blocked++; break;
+      case "sandbox.blocked":
+        r.sandbox.blocked++; bump(r.sandbox.blockedBy, String(d.pattern ?? "unknown")); for (const k of kindsOf(e)) k.blocked++;
+        if (typeof d.where === "string" && /^[A-Za-z0-9 ~/.,_()'-]{1,64}$/.test(d.where)) bump(r.sandbox.blockedWhere, d.where);
+        break;
       case "git.scrubbed": r.sandbox.gitScrubbed++; break;
       case "git.guard_failed": r.sandbox.gitGuardFailed++; break;
       case "spec.created": r.specs.created++; break;
